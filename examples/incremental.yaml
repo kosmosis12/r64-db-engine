@@ -1,0 +1,44 @@
+# incremental.yaml — multiple tables, two modes, mixed cadences.
+
+dialect: postgres
+
+postgres:
+  host: ${PG_HOST}
+  port: 5432
+  database: analytics
+  user: ${PG_USER}
+  password: ${PG_PASSWORD}
+  sslmode: prefer
+
+row64:
+  loading_dir: /var/www/ramdb/loading/RAMDB.Row64
+  group: PostgresSource
+
+defaults:
+  cadence: 60s
+  mode: full_refresh
+  ascii_sanitize: true
+
+tables:
+  - source: public.orders
+    target: Orders
+    mode: incremental
+    incremental_key: updated_at
+    cadence: 30s
+
+  - source: public.customers
+    target: Customers
+    mode: full_refresh
+    cadence: 5m
+
+  - source: analytics.event_log
+    target: Events
+    mode: incremental
+    incremental_key: event_id
+    incremental_type: int
+    cadence: 30s
+
+telemetry:
+  log_level: info
+  log_format: json
+  health_port: 8765

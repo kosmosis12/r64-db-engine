@@ -1,0 +1,19 @@
+# minimal.yaml — one table, full_refresh, every 60s.
+# See SPEC §4.2 for the full schema.
+
+dialect: postgres
+
+postgres:
+  host: localhost
+  port: 5432
+  database: analytics
+  user: row64_reader
+  password: ${PG_PASSWORD}
+
+row64:
+  loading_dir: /var/www/ramdb/loading/RAMDB.Row64
+  group: PostgresSource
+
+tables:
+  - source: public.customers
+    target: Customers

@@ -1,0 +1,75 @@
+# production.yaml — every feature exercised, with comments.
+# See SPEC §4 for the canonical reference.
+
+dialect: postgres                           # only 'postgres' in v0.1
+
+postgres:
+  host: ${PG_HOST}
+  port: 5432
+  database: analytics
+  user: ${PG_USER}
+  password: ${PG_PASSWORD}                  # or ~/.pgpass; see SPEC §4.4
+  sslmode: require                          # require TLS in production
+  application_name: r64-db-engine           # shows up in pg_stat_activity
+  connect_timeout: 10
+  statement_timeout: 300                    # SET LOCAL statement_timeout, per query
+
+row64:
+  loading_dir: /var/www/ramdb/loading/RAMDB.Row64
+  group: PostgresSource                     # subdirectory under loading_dir
+
+defaults:
+  cadence: 60s                              # default if not set per-table
+  mode: full_refresh
+  max_rows: null                            # uncapped; integer to limit per-pull
+  ascii_sanitize: true                      # set false to risk non-ASCII crashes
+
+tables:
+  # Timestamp-keyed incremental — most common pattern.
+  - source: public.orders
+    target: Orders
+    mode: incremental
+    incremental_key: updated_at
+    cadence: 60s
+
+  # Full refresh of a dimension table.
+  - source: public.customers
+    target: Customers
+    mode: full_refresh
+    cadence: 5m
+
+  # Inline SQL aggregation pulled fresh every 15 minutes.
+  - source: |
+      SELECT id, region, SUM(amount) AS revenue
+      FROM transactions
+      WHERE created_at >= NOW() - INTERVAL '30 days'
+      GROUP BY 1, 2
+    target: RegionalRevenue30d
+    mode: full_refresh
+    cadence: 15m
+
+  # Integer-keyed incremental for an append-only event stream.
+  - source: analytics.event_log
+    target: Events
+    mode: incremental
+    incremental_key: event_id
+    incremental_type: int
+    cadence: 30s
+
+  # Per-table ascii_sanitize override.
+  - source: public.notes
+    target: Notes
+    mode: full_refresh
+    cadence: 5m
+    ascii_sanitize: false
+
+telemetry:
+  log_level: info                           # debug | info | warning | error
+  log_format: json                          # json | text
+  health_port: 8765                         # 0 to disable
+  metrics_port: 9100                        # 0 to disable Prometheus
+
+runtime:
+  worker_pool_size: 4
+  state_dir: ~/.r64-db-engine
+  shutdown_grace_seconds: 30
