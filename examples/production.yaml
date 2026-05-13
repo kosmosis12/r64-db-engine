@@ -1,15 +1,23 @@
-# production.yaml — every feature exercised, with comments.
-# See SPEC §4 for the canonical reference.
+# production.yaml — env-driven template with every feature exercised.
+#
+# Copy to /etc/r64-db-engine/config.yaml, edit table list to match your
+# source, and provide PG_HOST / PG_USER / PG_PASSWORD via systemd
+# EnvironmentFile=. See SPEC §4 for the canonical reference.
+#
+# To run this against the local dev Postgres seeded by
+# scripts/seed_postgres.py, export:
+#     PG_HOST=localhost PG_PORT=5433 PG_USER=postgres PG_PASSWORD=row64dev
+# (matches scripts/dev_postgres.sh defaults).
 
 dialect: postgres                           # only 'postgres' in v0.1
 
 postgres:
   host: ${PG_HOST}
-  port: 5432
+  port: 5433                                # set to 5432 in real deployments
   database: analytics
   user: ${PG_USER}
   password: ${PG_PASSWORD}                  # or ~/.pgpass; see SPEC §4.4
-  sslmode: require                          # require TLS in production
+  sslmode: prefer                           # use 'require' or stronger in prod
   application_name: r64-db-engine           # shows up in pg_stat_activity
   connect_timeout: 10
   statement_timeout: 300                    # SET LOCAL statement_timeout, per query
@@ -19,57 +27,65 @@ row64:
   group: PostgresSource                     # subdirectory under loading_dir
 
 defaults:
-  cadence: 60s                              # default if not set per-table
+  cadence: 60s                              # applied where not set per-table
   mode: full_refresh
-  max_rows: null                            # uncapped; integer to limit per-pull
-  ascii_sanitize: true                      # set false to risk non-ASCII crashes
+  max_rows: null                            # null = uncapped; integer to cap each pull
+  ascii_sanitize: true                      # false to allow non-ASCII (risks crash)
 
 tables:
-  # Timestamp-keyed incremental — most common pattern.
+  # Timestamp-keyed incremental — the most common shape.
   - source: public.orders
     target: Orders
     mode: incremental
     incremental_key: updated_at
     cadence: 60s
 
-  # Full refresh of a dimension table.
+  # Full refresh of a small dimension table with em-dashes in text fields.
   - source: public.customers
     target: Customers
     mode: full_refresh
     cadence: 5m
 
-  # Inline SQL aggregation pulled fresh every 15 minutes.
+  # Inline SQL aggregation refreshed every 15 minutes.
   - source: |
-      SELECT id, region, SUM(amount) AS revenue
-      FROM transactions
-      WHERE created_at >= NOW() - INTERVAL '30 days'
+      SELECT
+          region,
+          plan,
+          COUNT(*)::BIGINT          AS customer_count,
+          MAX(updated_at)           AS last_seen
+      FROM public.customers
       GROUP BY 1, 2
-    target: RegionalRevenue30d
+    target: CustomersByRegion
     mode: full_refresh
     cadence: 15m
 
   # Integer-keyed incremental for an append-only event stream.
-  - source: analytics.event_log
+  - source: public.events
     target: Events
     mode: incremental
     incremental_key: event_id
     incremental_type: int
     cadence: 30s
 
-  # Per-table ascii_sanitize override.
-  - source: public.notes
-    target: Notes
+  # Arrays + interval — exercises the dialect coercion path.
+  - source: public.measurements
+    target: Measurements
     mode: full_refresh
     cadence: 5m
-    ascii_sanitize: false
+
+  # UUID primary key — serializes to string in ramdb.
+  - source: public.identifiers
+    target: Identifiers
+    mode: full_refresh
+    cadence: 5m
 
 telemetry:
   log_level: info                           # debug | info | warning | error
   log_format: json                          # json | text
   health_port: 8765                         # 0 to disable
-  metrics_port: 9100                        # 0 to disable Prometheus
+  metrics_port: 9100                        # 0 to disable Prometheus exposition
 
 runtime:
-  worker_pool_size: 4
+  worker_pool_size: 4                       # concurrent table pulls (1..64)
   state_dir: ~/.r64-db-engine
   shutdown_grace_seconds: 30
