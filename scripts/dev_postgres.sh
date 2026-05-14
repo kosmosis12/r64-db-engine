@@ -14,7 +14,7 @@
 #
 # All defaults overridable via env vars:
 #   R64_DB_DEV_NAME, R64_DB_DEV_PORT, R64_DB_DEV_PASSWORD, R64_DB_DEV_IMAGE
-set -euo pipefail
+# set -euo pipefail removed: poisons sourcing shell
 
 NAME="${R64_DB_DEV_NAME:-r64-db-engine-pg}"
 PORT="${R64_DB_DEV_PORT:-5433}"
@@ -110,7 +110,7 @@ wait_ready() {
         sleep 0.5
     done
     echo "[dev_postgres] timed out waiting for postgres" >&2
-    exit 1
+    return 1
 }
 
 case "$cmd" in
