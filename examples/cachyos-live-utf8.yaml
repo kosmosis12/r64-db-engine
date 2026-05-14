@@ -1,0 +1,50 @@
+# cachyos-live-utf8.yaml — REGRESSION TEST for non-ASCII text handling.
+#
+# This config disables the engine's defensive ASCII sanitization, exposing
+# the underlying .ramdb codec's ASCII-only limitation.
+#
+# Expected current behavior (as of 5/14/26):
+#   pull_error: 'ascii' codec can't encode character '\u2014' in position 17
+#
+# Expected behavior after fix:
+#   pull_success with em-dashes, smart quotes, accents, CJK preserved
+#   byte-clean round-trip through row64tools.ramdb.load_to_df
+#
+# Run this to verify whether non-ASCII handling has been fixed:
+#   r64-db-engine run --once --config examples/cachyos-live-utf8.yaml
+#
+# Root cause: row64tools/bytestream.py + ramdb.py have ~50 hardcoded
+# .encode('ascii') / str(..., 'ascii') call sites. Format is ASCII-only.
+
+dialect: postgres
+
+postgres:
+  host: localhost
+  port: 5433
+  database: analytics
+  user: postgres
+  password: row64dev
+  sslmode: disable
+
+row64:
+  loading_dir: /var/www/ramdb/live/RAMDB.Row64
+  group: PostgresSource
+
+defaults:
+  ascii_sanitize: false
+
+tables:
+  - source: public.customers
+    target: Customers
+    mode: full_refresh
+    cadence: 60s
+
+telemetry:
+  log_level: info
+  log_format: json
+  health_port: 8765
+
+runtime:
+  worker_pool_size: 4
+  state_dir: /tmp/r64-real-demo-state
+  shutdown_grace_seconds: 30
