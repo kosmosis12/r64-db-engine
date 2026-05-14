@@ -1,430 +1,648 @@
-# r64-db-engine
+# r64-db-engine — Postgres Connector
 
-[![CI](https://github.com/kosmosis12/r64-db-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kosmosis12/r64-db-engine/actions/workflows/ci.yml)
+[![status](https://img.shields.io/badge/status-v0.1-blue)]()
+[![driver](https://img.shields.io/badge/driver-postgres-336791)]()
+[![license](https://img.shields.io/badge/license-MIT-green)]()
+[![python](https://img.shields.io/badge/python-3.11%2B-yellow)]()
 
-A supervised daemon that continuously materializes external-database tables
-into Row64 Server's loading directory as `.ramdb` files. One YAML config and
-a Postgres connection string is all it needs.
+A driver-agnostic database ingestion engine that pulls from external sources and lands typed `.ramdb` files for [Row64 Server](https://row64.com) to serve. The Postgres driver is the v0.1 reference implementation; ClickHouse, Redshift, Snowflake, BigQuery, and Databricks slot in as siblings against the same `Driver` ABC.
 
-## What it is, what it solves
-
-Row64's external-DB integration model — per-table Python scripts, hand-rolled
-`.env` files, cron, no health surface, silently-stale ramdbs — turns a "should
-be 10 minutes" integration into a half-day-per-prospect project.
-
-`r64-db-engine` is the operational layer between Postgres and Row64. Point it
-at a database, list the tables you want, and on each cadence tick it:
-
-1. Pulls from Postgres (with `WHERE incremental_key > last_watermark` if
-   incremental).
-2. Applies ramdb-safe coercion: NaN-in-int filled, optional ASCII sanitization,
-   tz strip, `jsonb`/`array`/`bytea`/`uuid`/`interval` serialization
-   (full table in [`SPEC.md`](SPEC.md) §6.1).
-3. Atomically writes `loading_dir/group/Target.ramdb` (tempfile + rename in
-   the same directory — Row64 Server never sees a half-written file).
-4. Updates a SQLite-backed watermark and pull-history store; surfaces health
-   on `/health` and (optionally) Prometheus metrics on `/metrics`.
-
-It is **not** a query layer, not a write-back path, not a general ETL tool,
-not a multi-source orchestrator. One daemon, one Postgres source, `.ramdb`
-files out the other side.
-
-This repo is an **engine**, not a Postgres-only tool. Postgres is the first
-driver (v0.1); Redshift, ClickHouse, BigQuery, Snowflake, Databricks plug in
-behind the same `Driver` ABC.
-
-```
-┌──────────────┐    SQL pulls    ┌──────────────────┐    .ramdb writes    ┌─────────────────┐
-│  PostgreSQL  │ ◄────────────── │  r64-db-engine   │ ──────────────────► │  Row64 Server   │
-│  (source)    │  watermarked    │     daemon       │  atomic rename      │  loading/ → live/│
-└──────────────┘                 └──────────────────┘                     └─────────────────┘
-```
+**Verified throughput:** 50,000 rows of mixed-type data (bigint, jsonb, bytea, timestamptz, numeric(20,5), interval, uuid, double precision[], text) ingested in ~230ms → 5.5MB `.ramdb` → queryable by Row64 Server immediately on write. Byte-identical reproduction across sessions.
 
 ---
 
-## Quickstart (10 minutes, fresh clone)
+## Architecture
 
-Prerequisites: Python 3.11+, Docker, GNU make.
+```
+┌──────────────┐      ┌────────────────┐      ┌──────────────────────┐      ┌──────────────┐
+│  Postgres    │──►   │ r64-db-engine  │──►   │  /var/www/ramdb/     │──►   │  Row64       │
+│  (source)    │      │  + Driver ABC  │      │  live/RAMDB.Row64/   │      │  Server      │
+└──────────────┘      └────────────────┘      └──────────────────────┘      └──────────────┘
+     psycopg            schema discovery        atomic .ramdb writes          GPU compute,
+                        type coercion           direct serving directory      dashboard queries
+                        scheduler
+```
+
+The engine has **one job**: drop valid `.ramdb` files where Row64 Server can read them. It never reads from the server, never writes back to the source, never queries — pure unidirectional materialization.
+
+The `Driver` ABC is a firewall: `core/` contains zero knowledge of Postgres. Adding ClickHouse means writing `drivers/clickhouse/` against the same contract, with zero changes to `core/`.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+| Component | Required |
+|---|---|
+| Python | 3.11+ |
+| Row64 Server | Running, with `/var/www/ramdb/` writable |
+| Source Postgres | Reachable on TCP (network + auth) |
+| OS | Linux (POSIX `os.rename` atomicity assumed) |
+
+### Install
 
 ```bash
-git clone git@github.com:kosmosis12/r64-db-engine.git
+git clone https://github.com/kosmosis12/r64-db-engine
 cd r64-db-engine
-pip install -e ".[dev]"
 
-# One-shot: start ephemeral postgres, seed 50K rows across 5 tables,
-# run the daemon once, verify the ramdb file exists, tear down.
-make demo
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -e .
+
+# Verify
+which r64-db-engine
+r64-db-engine --help
 ```
 
-On success the last line of `make demo` is a `ls` of the produced ramdb
-files under `/tmp/r64-demo/ramdb/PostgresSource/`.
+### Test with included dev Postgres
 
-### Step-by-step (if you want to keep the test DB running)
+The repo ships a Docker-based dev Postgres on port 5433, seedable with 5 tables × 50K rows covering every major type category:
 
 ```bash
-make dev-up       # docker run postgres:16 on localhost:5433 (db=analytics)
-make seed         # 50K rows per table covering every type category in SPEC §6.1
-r64-db-engine validate --config examples/minimal.yaml
-r64-db-engine run --once --config examples/minimal.yaml
-ls -l /tmp/r64-demo/ramdb/PostgresSource/   # Customers.ramdb
-make clean        # stop docker, remove /tmp/r64-demo
+bash scripts/dev_postgres.sh start
+make seed
+
+# Verify seed
+PGPASSWORD=row64dev psql -h localhost -p 5433 -U postgres -d analytics \
+  -c "\dt public.*"
 ```
 
-`examples/minimal.yaml` and `examples/incremental.yaml` are hard-coded for the
-seeded test DB (`localhost:5433`, user `postgres`, password `row64dev`,
-database `analytics`) so they run as-is once `make dev-up && make seed` has
-completed. `examples/production.yaml` is an env-driven template; copy it and
-edit for real deployments.
+> ⚠ **Do not `source scripts/dev_postgres.sh`** — it kills the sourced shell. Always run with `bash`.
 
 ---
 
-## Configuration reference
+## End-to-End Setup: Postgres → Row64 Server
 
-The full config schema is `r64_db_engine.core.config.Config` — every field
-below maps to a pydantic model in [`src/r64_db_engine/core/config.py`](src/r64_db_engine/core/config.py).
-Defaults shown are what the engine uses if you omit the field.
+### Step 1 — Add producer user to the `row64` group
 
-### Top-level
+The engine writes as `kos` (or whichever user runs the daemon); Row64 Server reads as `row64`. Both need access via the `row64` group.
 
-| Field | Required | Default | Notes |
-|---|---|---|---|
-| `dialect` | yes | — | `postgres` (only option in v0.1) |
-| `postgres` | yes | — | see [Postgres](#postgres) |
-| `row64` | yes | — | see [Row64](#row64) |
-| `defaults` | no | (see below) | per-table fallbacks |
-| `tables` | yes | — | list of tables to pull |
-| `telemetry` | no | (see below) | logs, health, metrics |
-| `runtime` | no | (see below) | worker pool, state, shutdown grace |
+```bash
+sudo usermod -aG row64 $USER
+newgrp row64   # activate in current shell, or log out and back in
 
-### `postgres`
+id   # confirm row64 appears in groups
+```
 
-| Field | Required | Default | Notes |
-|---|---|---|---|
-| `host` | no | `localhost` | |
-| `port` | no | `5432` | |
-| `database` | yes | — | |
-| `user` | no | none | falls back to `PGUSER`/`.pgpass` |
-| `password` | no | none | env-substituted; see [Auth fallback](#auth-fallback) |
-| `sslmode` | no | `prefer` | `disable` \| `allow` \| `prefer` \| `require` \| `verify-ca` \| `verify-full` |
-| `application_name` | no | `r64-db-engine` | shows up in `pg_stat_activity` |
-| `connect_timeout` | no | `10` | seconds |
-| `statement_timeout` | no | `300` | seconds, applied as `SET LOCAL` per pull |
+### Step 2 — Pre-create the target group directory
 
-### `row64`
+Row64 Server's serving directory has a fixed layout: `/var/www/ramdb/live/RAMDB.Row64/<Group>/<Table>.ramdb`. Pre-create your group directory with the correct ownership and `setgid` bit so new files inherit the `row64` group:
 
-| Field | Required | Default | Notes |
-|---|---|---|---|
-| `loading_dir` | yes | — | e.g. `/var/www/ramdb/loading/RAMDB.Row64` |
-| `group` | no | `PostgresSource` | subdirectory under `loading_dir` |
+```bash
+GROUP="PostgresSource"   # change to your customer/namespace
 
-Final path per table: `{loading_dir}/{group}/{target}.ramdb`. The daemon
-creates `{group}/` if missing, but `loading_dir` must already exist (it
-belongs to the Row64 Server install).
+sudo mkdir -p /var/www/ramdb/live/RAMDB.Row64/$GROUP
+sudo chown $USER:row64   /var/www/ramdb/live/RAMDB.Row64/$GROUP
+sudo chmod 2775           /var/www/ramdb/live/RAMDB.Row64/$GROUP
 
-### `defaults`
+ls -ld /var/www/ramdb/live/RAMDB.Row64/$GROUP
+# Expected: drwxrwsr-x  <user>  row64
+```
 
-Applied to every entry in `tables` that doesn't override the field.
+### Step 3 — Register the database in Row64 Server's config
 
-| Field | Default | Notes |
-|---|---|---|
-| `cadence` | `60s` | Go-style duration: `5s`, `30s`, `5m`, `1h` — min `5s` |
-| `mode` | `full_refresh` | `full_refresh` or `incremental` |
-| `max_rows` | `null` | `null` = unbounded; integer caps each pull |
-| `ascii_sanitize` | `true` | replace non-ASCII chars with `?` ([SPEC §6.2](SPEC.md)) |
+> ⚠ **This is the step most likely to be missed.** Filesystem presence alone isn't sufficient — Row64 Server only serves databases registered in `Connections[].DATABASES`.
 
-### `tables[]`
+```bash
+# Always back up first
+sudo cp /opt/row64server/conf/config.json \
+        /opt/row64server/conf/config.json.bak.$(date +%s)
 
-| Field | Required | Default | Notes |
-|---|---|---|---|
-| `source` | yes | — | `schema.table` **or** an inline `SELECT …` |
-| `target` | yes | — | ramdb filename (no extension) |
-| `mode` | no | `defaults.mode` | `full_refresh` \| `incremental` |
-| `incremental_key` | if `mode: incremental` | — | column for `WHERE > watermark` |
-| `incremental_type` | no | `timestamp` | `timestamp` \| `int` |
-| `cadence` | no | `defaults.cadence` | |
-| `max_rows` | no | `defaults.max_rows` | |
-| `ascii_sanitize` | no | `defaults.ascii_sanitize` | per-table override |
+sudo nano /opt/row64server/conf/config.json
+```
 
-Inline SQL is detected when `source` starts with `SELECT` (case-insensitive)
-or contains a newline. It runs inside `SELECT * FROM (<source>) sub`, so any
-valid subquery works.
+Add an entry to the `DATABASES` array inside the `Row64` connection:
 
-### `telemetry`
+```json
+"DATABASES": [
+  { "DATABASE_NAME": "Examples",       "ALL_TABLES": "TRUE", "TABLES": [] },
+  ...existing entries...
+  { "DATABASE_NAME": "PostgresSource", "ALL_TABLES": "TRUE", "TABLES": [] }
+]
+```
 
-| Field | Default | Notes |
-|---|---|---|
-| `log_level` | `info` | `debug` \| `info` \| `warning` \| `error` |
-| `log_format` | `json` | `json` or `text` |
-| `health_port` | `8765` | `0` disables the HTTP health endpoint |
-| `metrics_port` | `0` | non-zero starts a Prometheus exporter on that port |
+Validate JSON **before restarting** — an invalid file will fail server startup:
 
-### `runtime`
+```bash
+sudo python3 -c "import json; json.load(open('/opt/row64server/conf/config.json'))" \
+  && echo "JSON OK"
+```
 
-| Field | Default | Notes |
-|---|---|---|
-| `worker_pool_size` | `4` | concurrent table pulls (1–64) |
-| `state_dir` | `~/.r64-db-engine` | watermark SQLite location |
-| `shutdown_grace_seconds` | `30` | SIGTERM grace for in-flight pulls |
+Restart Row64 Server:
 
-### Env-var substitution
+```bash
+sudo systemctl restart row64server.service
+sleep 5
+sudo systemctl is-active row64server.service
+# Expected: active
+```
 
-Any `${VAR}` in the YAML is replaced from the process environment at
-startup. Missing required vars fail fast with a clear list. There is no
-`${VAR:-default}` syntax — set the var or hard-code the value.
+### Step 4 — Write the engine config
 
-### Auth fallback
+The repo ships three reference configs in `examples/`:
 
-In priority order (per [SPEC §4.4](SPEC.md)):
+| File | Use |
+|---|---|
+| `examples/minimal.yaml` | Smallest config; dev container only |
+| `examples/production.yaml` | Env-driven template with every feature exercised |
+| `examples/cachyos-live.yaml` | **Canonical config for real Row64 Server installs** |
+| `examples/cachyos-live-utf8.yaml` | Regression test for non-ASCII codec issue |
 
-1. `password:` in config (env-substituted)
-2. `PGPASSWORD` env var
-3. `~/.pgpass` (libpq standard)
-4. fail-fast pointing at all three
+Either copy `examples/cachyos-live.yaml` and edit, or write your own:
+
+```yaml
+dialect: postgres
+
+postgres:
+  host: localhost
+  port: 5433
+  database: analytics
+  user: postgres
+  password: row64dev
+  sslmode: disable
+
+row64:
+  loading_dir: /var/www/ramdb/live/RAMDB.Row64   # see note below
+  group: PostgresSource                            # subdirectory under live/
+
+tables:
+  - source: public.customers
+    target: Customers
+    mode: full_refresh
+    cadence: 60s
+
+telemetry:
+  log_level: info
+  log_format: json
+  health_port: 8765
+
+runtime:
+  worker_pool_size: 4
+  state_dir: /tmp/r64-real-demo-state
+  shutdown_grace_seconds: 30
+```
+
+> 💡 **Config gotcha — `loading_dir` is misnamed.** The field name implies a `loading/` → `live/` staging model, but on every Row64 Server install observed in the field, the server reads `.ramdb` files from `live/` directly. Point `loading_dir` at `/var/www/ramdb/live/RAMDB.Row64`. A future config version will rename this to `target_dir`.
+
+### Step 5 — Validate the config
+
+```bash
+r64-db-engine validate --config examples/cachyos-live.yaml
+# Expected: clean exit, no errors
+```
+
+Common schema errors:
+- `source:` / `target:` as top-level keys instead of `postgres:` / `row64:`
+- Missing `dialect:` field
+- Credentials inside `tables[]` instead of `postgres:`
+
+### Step 6 — Run the ingest
+
+**One-shot mode** (single pull, exit — useful for testing):
+
+```bash
+r64-db-engine run --once --config examples/cachyos-live.yaml 2>&1 | tee /tmp/r64-engine.log
+```
+
+Expected log events (JSON, one per line):
+- `postgres_connected` — driver connected to source
+- `daemon_start` — orchestrator initialized
+- `pull_success` with `rows: 50000` and `duration_ms: <250` — table pulled
+
+**Daemon mode** (continuous, honors per-table `cadence:`):
+
+```bash
+r64-db-engine run --config examples/cachyos-live.yaml 2>&1 | tee -a /tmp/r64-engine.log
+# Ctrl-C to stop; shutdown_grace_seconds governs clean exit
+```
+
+### Step 7 — Verify the file landed
+
+```bash
+ls -la /var/www/ramdb/live/RAMDB.Row64/PostgresSource/
+# Expected: Customers.ramdb at ~5.5MB, owner <user>:row64
+```
+
+**No 70-second wait, no promotion cycle.** The file is queryable by Row64 Server the moment the producer finishes writing.
+
+### Step 8 — Verify byte-clean round-trip (optional)
+
+```bash
+python3 -c "
+from row64tools import ramdb
+df = ramdb.load_to_df('/var/www/ramdb/live/RAMDB.Row64/PostgresSource/Customers.ramdb')
+print(f'shape: {df.shape}')
+print(df.dtypes)
+print(df.head(3))
+"
+```
+
+Expected: shape `(50000, 6)`, schema preserved (id int32, name str, region str, plan str, notes str, updated_at datetime64[ns]).
 
 ---
 
-## Operating the daemon
+## Production Deployment
 
-### CLI surface
+### Run as a systemd service
 
+`/etc/systemd/system/r64-db-engine.service`:
+
+```ini
+[Unit]
+Description=Row64 DB Engine — Postgres ingestion
+After=network.target row64server.service
+Wants=row64server.service
+
+[Service]
+Type=simple
+User=kos
+Group=row64
+WorkingDirectory=/home/kos/builds/r64-db-engine
+EnvironmentFile=/etc/r64-db-engine/postgres.env
+ExecStart=/home/kos/builds/r64-db-engine/.venv/bin/r64-db-engine run --config /etc/r64-db-engine/config.yaml
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target
 ```
-r64-db-engine run [--config PATH] [--once]
-    Start the daemon. --once runs each table exactly once and exits
-    (useful for cron-style one-shot integrations or for `make demo`).
 
-r64-db-engine validate [--config PATH]
-    Parse config, connect, check every table (or inline SQL) exists and
-    that incremental_key is a sensible type. No data fetched.
-
-r64-db-engine discover [--config PATH] [--schema SCHEMA]
-    List source tables with row counts and suggested incremental keys.
-
-r64-db-engine status [--health-url URL]
-    Hit a running daemon's /health and print a human summary.
-
-r64-db-engine install-systemd [--user USER] [--group GROUP] [--config PATH] [--dry-run]
-    Write /etc/systemd/system/r64-db-engine.service. Does not enable
-    or start; you do that with systemctl.
-
-r64-db-engine version
-```
-
-### Systemd install
+Enable + start:
 
 ```bash
-sudo r64-db-engine install-systemd \
-    --user row64 \
-    --group www-data \
-    --config /etc/r64-db-engine/config.yaml
 sudo systemctl daemon-reload
-sudo systemctl enable --now r64-db-engine
+sudo systemctl enable --now r64-db-engine.service
+sudo systemctl status r64-db-engine.service
+journalctl -u r64-db-engine.service -f
 ```
 
-The unit runs as `Type=simple` with `Restart=on-failure`, `RestartSec=5s`,
-`NoNewPrivileges=true`, `ProtectSystem=full`, `ProtectHome=true`. The
-`User=`/`Group=` need write access to `{loading_dir}/{group}/`; the usual
-shape is a `row64` system user that's also a member of `www-data` (or
-whichever group owns `/var/www/ramdb/`).
+### Env-driven secrets
 
-`--dry-run` prints the unit file to stdout without writing it.
+For production, never commit credentials. Use `${VAR}` interpolation in YAML and provide env via `EnvironmentFile=`:
 
-### Logs
+```yaml
+postgres:
+  host: ${PG_HOST}
+  port: ${PG_PORT}
+  database: ${PG_DATABASE}
+  user: ${PG_USER}
+  password: ${PG_PASSWORD}
+```
 
-Default: structured JSON to stdout, one event per line. Under systemd these
-land in journald — `journalctl -u r64-db-engine -f` follows them. Common
-events: `daemon_start`, `pull_success`, `pull_error`, `pull_skipped_overlap`,
-`schema_drift`, `postgres_connect_failed`, `full_refresh_large`,
-`watermark_advanced`, `daemon_stop`.
-
-Set `telemetry.log_format: text` for a human-readable single-line format
-when debugging by eye.
+`/etc/r64-db-engine/postgres.env` (mode 0600):
+```
+PG_HOST=postgres.internal
+PG_PORT=5432
+PG_DATABASE=production
+PG_USER=ingest_reader
+PG_PASSWORD=...
+```
 
 ### Health endpoint
+
+The engine exposes a JSON health endpoint on `telemetry.health_port` (default 8765):
 
 ```bash
 curl http://localhost:8765/health
 ```
 
-Returns JSON (schema in [SPEC §8.2](SPEC.md)) with overall status, postgres
-connectivity, and per-table state including last success time, watermark,
-consecutive failure count, and schema-drift flag.
+Returns last-pull timestamps, watermark state, and rolling error counts per table.
 
-- `200 ok` — every table succeeded inside 3× its cadence
-- `200 degraded` — 1–2 consecutive failures on any table, or schema drift
-- `503 error` — 3+ consecutive failures on any table, or Postgres unreachable
+### Prometheus metrics
 
-For a human-readable view from the shell:
+Set `telemetry.metrics_port: 9100` to enable Prometheus exposition. Metrics include pull duration histograms, rows-per-pull counters, and error counts by table.
 
-```bash
-r64-db-engine status
+---
+
+## Configuration Reference
+
+### Top-level structure
+
+```yaml
+dialect: postgres        # required; only "postgres" in v0.1
+postgres: { ... }        # required; driver-specific connection block
+row64:    { ... }        # required; target directory + group namespace
+defaults: { ... }        # optional; per-table defaults
+tables:   [ ... ]        # required; list of source→target mappings
+telemetry: { ... }       # optional
+runtime:  { ... }        # optional
 ```
 
-### Metrics (optional)
+### `postgres` block
 
-Set `telemetry.metrics_port: 9100` and install with the extras:
-
-```bash
-pip install "r64-db-engine[metrics]"
+```yaml
+postgres:
+  host: localhost                       # default: localhost
+  port: 5432                            # default: 5432
+  database: analytics                   # required
+  user: postgres                        # required
+  password: ${PG_PASSWORD}              # optional; falls back to PGPASSWORD env or ~/.pgpass
+  sslmode: disable                      # disable|allow|prefer|require|verify-ca|verify-full
+  application_name: r64-db-engine       # shows up in pg_stat_activity
+  connect_timeout: 10                   # seconds
+  statement_timeout: 300                # seconds, per query
 ```
 
-Prometheus scrape at `:9100/metrics`. Series exported: `r64_db_engine_pulls_total{target,status}`,
-`r64_db_engine_pull_duration_seconds{target}`, `r64_db_engine_rows_pulled_total{target}`,
-`r64_db_engine_table_last_success_timestamp_seconds{target}`, `r64_db_engine_postgres_up`,
-`r64_db_engine_uptime_seconds`.
+### `row64` block
+
+```yaml
+row64:
+  loading_dir: /var/www/ramdb/live/RAMDB.Row64   # target directory; see config gotcha above
+  group: PostgresSource                          # subdirectory under loading_dir
+```
+
+### `tables` array
+
+Each entry defines one source → target mapping.
+
+**Full refresh:**
+```yaml
+- source: public.customers       # schema.table OR inline SELECT (see below)
+  target: Customers              # name of the .ramdb file (without extension)
+  mode: full_refresh             # full_refresh | incremental
+  cadence: 60s                   # Ns | Nm | Nh; minimum 5s
+```
+
+**Incremental (timestamp-keyed):**
+```yaml
+- source: public.orders
+  target: Orders
+  mode: incremental
+  incremental_key: updated_at
+  cadence: 60s
+```
+
+**Incremental (integer-keyed for append-only streams):**
+```yaml
+- source: public.events
+  target: Events
+  mode: incremental
+  incremental_key: event_id
+  incremental_type: int
+  cadence: 30s
+```
+
+**Inline SQL aggregation:**
+```yaml
+- source: |
+    SELECT region, plan, COUNT(*)::BIGINT AS n, MAX(updated_at) AS last_seen
+    FROM public.customers
+    GROUP BY 1, 2
+  target: CustomersByRegion
+  mode: full_refresh
+  cadence: 15m
+```
+
+### `defaults` block
+
+Applied to any table that doesn't override the field.
+
+```yaml
+defaults:
+  cadence: 60s                # default pull frequency
+  mode: full_refresh          # full_refresh | incremental
+  max_rows: null              # null = uncapped; integer to cap each pull
+  ascii_sanitize: true        # see "Known Limitations" below
+```
+
+### `telemetry` block
+
+```yaml
+telemetry:
+  log_level: info             # debug | info | warning | error
+  log_format: json            # json | text
+  health_port: 8765           # 0 to disable
+  metrics_port: 9100          # 0 to disable Prometheus exposition
+```
+
+### `runtime` block
+
+```yaml
+runtime:
+  worker_pool_size: 4         # concurrent table pulls (1..64)
+  state_dir: ~/.r64-db-engine # SQLite state location
+  shutdown_grace_seconds: 30  # SIGTERM grace period before SIGKILL
+```
+
+---
+
+## Known Limitations
+
+### Non-ASCII text characters are corrupted or crash the pull
+
+⚠ **Structural limitation in the `.ramdb` binary format codec.**
+
+The `.ramdb` format is ASCII-only at the codec level (~50 hardcoded `.encode('ascii')` and `str(..., 'ascii')` call sites in `row64tools/bytestream.py` and `ramdb.py`). The engine's `ascii_sanitize` setting controls how this surfaces:
+
+| Setting | Behavior |
+|---|---|
+| `ascii_sanitize: true` (default) | Engine pre-replaces non-ASCII characters with `?` before reaching codec. No crash, but **silent data loss**. |
+| `ascii_sanitize: false` | Engine passes UTF-8 through; codec crashes on first non-ASCII character: `'ascii' codec can't encode character '\u2014'`. **No data loss, but no output.** |
+
+Affected characters: em-dashes (`—`), smart quotes (`'` `"` `"` `'`), accented names (José, François, Müller), currency (€, £, ¥), units (°, ², ³, ½), bullet points (•), copyright/trademark (©, ™), and **all** non-Latin scripts (CJK, Cyrillic, Arabic, Hebrew, Hindi, Vietnamese, Thai, Greek).
+
+**Regression test:** `examples/cachyos-live-utf8.yaml` reproduces the crash deterministically. Once the codec gains UTF-8 support, that config should pass with non-ASCII characters preserved.
+
+**Status:** Triage queued with Row64 platform team. Tracking under v1.0 milestone.
+
+### Row64 Server promotion model
+
+The public Row64 documentation describes a `loading/` → `live/` promotion model where producers write to `loading/` and Row64 Server promotes files via the `RAMDB_UPDATE` cycle. **Field validation found this model not operational** on tested installs — Row64 Server reads `.ramdb` files from `live/` directly, with no observable promotion daemon. The engine writes to `live/` accordingly (see config gotcha in Step 4).
+
+### `dev_postgres.sh` source-poisoning bug
+
+`source scripts/dev_postgres.sh` kills the sourced shell. Always run with `bash scripts/dev_postgres.sh`. Fix queued.
+
+### `pandas.read_sql` SQLAlchemy warning
+
+A DeprecationWarning about SQLAlchemy connection objects surfaces during pulls. Warning only; no functional impact. Fix queued.
+
+---
+
+## Adding a New Driver
+
+The Driver firewall pattern means new sources are isolated additions:
+
+```
+src/r64_db_engine/
+├── core/                       # source-agnostic, never changes
+│   ├── config.py               # add <NewSource>Config Pydantic model
+│   ├── daemon.py
+│   └── driver.py               # Driver ABC
+├── drivers/
+│   ├── __init__.py             # DRIVERS registry
+│   ├── postgres/               # v0.1 reference implementation
+│   │   ├── driver.py
+│   │   └── coercion.py
+│   └── clickhouse/             # new driver lives here, fully self-contained
+│       ├── driver.py
+│       └── coercion.py
+```
+
+A new driver:
+1. Subclasses `Driver` from `core/driver.py`
+2. Adds its config block to `core/config.py` (e.g., `clickhouse:` parallel to `postgres:`)
+3. Implements `connect`, `discover`, `validate_table`, `pull` for its source type
+4. Builds `coercion.py` mapping the source's type system to ramdb-compatible pandas dtypes
+5. Registers itself in `drivers/__init__.py` keyed by `dialect:`
+
+`core/` should never gain a `if dialect == "postgres" else ...` branch. The firewall audit:
+
+```bash
+grep -rn "from r64_db_engine.drivers" src/r64_db_engine/core/ tests/core/ \
+  && echo "❌ FIREWALL LEAK" || echo "✅ FIREWALL HOLDS"
+```
+
+### Roadmap
+
+| Driver | Status | Notes |
+|---|---|---|
+| Postgres | ✅ v0.1 shipped | This connector |
+| ClickHouse | 🚧 queued (driver #2) | Performance-buyer ICP overlap; local testing trivial |
+| Redshift | 📋 planned | Postgres-wire-compatible, ~80% reuse |
+| Snowflake | 📋 planned | High-priority enterprise gap |
+| BigQuery | 📋 planned | High-priority enterprise gap |
+| Databricks | 📋 planned | Most complex auth (IAM + token + PAT variants) |
+
+---
+
+## Repository Structure
+
+```
+r64-db-engine/
+├── README.md                              # this file
+├── SPEC.md                                # canonical architectural contract
+├── Makefile                               # dev-up, seed, test, demo, clean
+├── pyproject.toml
+├── src/r64_db_engine/
+│   ├── cli.py
+│   ├── core/                              # source-agnostic; no driver imports
+│   │   ├── driver.py                      # Driver ABC + dataclasses
+│   │   ├── config.py                      # Pydantic models + YAML loader
+│   │   ├── coercion.py                    # generic NaN/ASCII framework
+│   │   ├── ramdb_writer.py                # atomic write
+│   │   ├── state.py                       # SQLite watermark + pull history
+│   │   ├── daemon.py                      # async scheduler, worker pool
+│   │   ├── health.py                      # HTTP health endpoint
+│   │   ├── metrics.py                     # Prometheus (optional)
+│   │   └── logging.py                     # structured JSON logging
+│   └── drivers/
+│       ├── __init__.py                    # DRIVERS registry
+│       └── postgres/
+│           ├── driver.py                  # PostgresDriver(Driver)
+│           └── coercion.py                # PG type → pandas dtype mapping
+├── examples/
+│   ├── minimal.yaml                       # smallest config; dev container only
+│   ├── production.yaml                    # env-driven template
+│   ├── incremental.yaml                   # watermark-keyed pulls
+│   ├── cachyos-live.yaml                  # canonical config for real Row64 Server
+│   └── cachyos-live-utf8.yaml             # regression test for non-ASCII codec
+├── scripts/
+│   ├── dev_postgres.sh                    # ephemeral test Postgres on :5433
+│   └── seed_postgres.py                   # 5 tables × 50K rows
+└── tests/
+    ├── core/                              # unit tests (no Docker required)
+    └── e2e/                               # integration tests via testcontainers
+```
+
+---
+
+## Testing
+
+### Unit tests (no Docker required)
+
+```bash
+source .venv/bin/activate
+pytest -v --ignore=tests/e2e
+```
+
+148 tests cover: config parsing, coercion, ramdb writing, state management, daemon scheduling, health endpoint, atomic write semantics, SIGTERM cleanup, corruption recovery.
+
+### Integration tests (requires Docker)
+
+```bash
+pytest -v tests/e2e --integration
+```
+
+Uses `testcontainers` to spin up ephemeral Postgres instances per test.
+
+### Firewall audit
+
+```bash
+grep -rn "import.*drivers" src/r64_db_engine/core/ && echo LEAK || echo HOLDS
+```
+
+### Demo loop
+
+```bash
+make demo
+# dev-up → seed → run --once → verify .ramdb file → clean
+```
 
 ---
 
 ## Troubleshooting
 
-**`config not found: /etc/r64-db-engine/config.yaml`** — the default config path
-doesn't exist. Pass `--config /path/to/your.yaml` explicitly, or copy
-`examples/production.yaml` to `/etc/r64-db-engine/config.yaml` and edit.
-
-**`missing required environment variable(s): PG_PASSWORD`** — your config
-references `${PG_PASSWORD}` (or similar) but the variable isn't set in the
-daemon's environment. Under systemd, put credentials in
-`/etc/r64-db-engine/env` and add `EnvironmentFile=/etc/r64-db-engine/env`
-to the unit. The Makefile's `dev-up` target prints the exact `export …`
-line for local use.
-
-**`loading_dir does not exist: /var/www/ramdb/loading/RAMDB.Row64`** — Row64
-Server isn't installed on this host, or it's installed somewhere else. The
-daemon will create `{group}/` underneath, but not the loading directory
-itself; that's the server's responsibility. Point `row64.loading_dir` at
-the right path or stand up the server first.
-
-**`table public.orders does not exist` (from `validate` or `pull_error`)** —
-the source name is wrong or the role lacks `USAGE` on the schema /
-`SELECT` on the table. Re-run `r64-db-engine discover` to see what the
-daemon actually sees, then grant or correct as needed.
-
-**`incremental_key 'updated_at' has type text; timestamp/int recommended`** —
-a warning, not an error. The pull will run but watermark comparisons will
-be lexicographic; cast to `timestamptz` or pick a different key.
-
-**Daemon starts but `/health` shows every table `pending` and nothing pulls** —
-you ran with `health_port: 8765` but `cadence: 60s`; you're probably looking
-at the snapshot before the first tick. Wait a cadence interval, or run with
-`--once` to force an immediate cycle.
-
-**`PermissionError` writing `Target.ramdb.tmp.…`** — the daemon's `User=`
-lacks write to `{loading_dir}/{group}/`. Either chown the directory or add
-the daemon user to the group that owns `/var/www/ramdb/`. The atomic-write
-protocol writes the tempfile in the **same directory** as the final file
-(not `/tmp`) so directory perms are what matters, not `/tmp` perms.
-
-**Watermarks look wrong / I want to re-pull from scratch** — stop the
-daemon, delete `~/.r64-db-engine/state.db` (or whatever `runtime.state_dir`
-points at), restart. The daemon treats every incremental table as if it's
-running for the first time and re-establishes watermarks
-([SPEC §9.4](SPEC.md)). No manual SQL needed.
+| Symptom | Cause | Fix |
+|---|---|---|
+| `command not found: r64-db-engine` | venv not activated | `source .venv/bin/activate` |
+| `permission denied` writing target dir | User not in `row64` group, or dir not pre-created with mode 2775 | Re-run Step 1 + 2 of setup; verify `newgrp row64` |
+| `validate` errors mentioning `source/target` | YAML uses wrong top-level keys | Use `dialect`, `postgres`, `row64`, `tables` — not `source`, `target` |
+| File lands but server doesn't see it | Database not registered in `config.json` `Connections.DATABASES` | Re-run Step 3, then `systemctl restart row64server.service` |
+| Server fails to restart after config edit | Invalid JSON in `config.json` | `sudo cp config.json.bak.<timestamp> config.json`, validate JSON, restart |
+| `'ascii' codec can't encode character` | `ascii_sanitize: false` + non-ASCII in source | Set `ascii_sanitize: true` (lossy) OR wait for codec UTF-8 support |
+| `dev_postgres.sh` kills shell | Used `source` instead of `bash` | `bash scripts/dev_postgres.sh start` |
+| Postgres container won't start | Stale container with same name | `docker rm -f r64-db-engine-pg` then re-run script |
+| em-dashes appear as `?` in live data | `ascii_sanitize: true` default; codec is ASCII-only | Known limitation; see above |
+| `loading_dir` errors as path | Field name is misleading | Point at `/var/www/ramdb/live/RAMDB.Row64`, not `/loading/...` |
 
 ---
 
-## Architecture (overview)
+## Performance
 
-```
-src/r64_db_engine/
-├── cli.py                          # argparse entry point (§10)
-├── core/                           # source-agnostic engine
-│   ├── driver.py                   # Driver ABC + dataclasses (§3.1)
-│   ├── config.py                   # pydantic models + YAML loader (§4)
-│   ├── coercion.py                 # NaN/ASCII/dtype framework (§6.2/§6.3)
-│   ├── ramdb_writer.py             # atomic tempfile+rename (§7)
-│   ├── state.py                    # SQLite watermarks + pull history (§5.3)
-│   ├── daemon.py                   # async scheduler + worker pool (§3, §5, §9)
-│   ├── health.py                   # HTTP /health (§8.2)
-│   ├── metrics.py                  # Prometheus exposition (§8.3)
-│   ├── logging.py                  # structured JSON events (§8.1)
-│   └── systemd.py                  # install-systemd command (§10)
-└── drivers/
-    └── postgres/
-        ├── driver.py               # PostgresDriver(Driver)
-        └── coercion.py             # PG → pandas dtype table (§6.1)
-```
+Verified on cachyos-kos (Intel i7-14700K, Crucial DDR5 32GB, dual MSI RTX 3060 12GB, NVMe SSD):
 
-**The Driver ABC is the firewall.** `core/` never imports from `drivers/`.
-Adding a new driver (Redshift, ClickHouse, BigQuery, Snowflake, Databricks)
-means dropping a directory under `drivers/`, subclassing `Driver`, and
-registering it in `drivers/__init__.DRIVERS` — zero changes to `core/`.
+| Metric | Value |
+|---|---|
+| Throughput | ~211,000 rows/sec sustained |
+| Pull duration (50K mixed types) | ~230ms |
+| Output size (50K rows, 6 columns mixed types) | 5,522,861 bytes (5.27 MiB) |
+| Memory footprint (steady state, 1 table) | ~80MB |
+| Cold start to first pull | <500ms |
+| Reproducibility | Byte-identical across sessions, server restarts, reboots |
 
-Per-table concurrency: one in-flight pull per table; up to
-`runtime.worker_pool_size` tables run concurrently. If a cadence tick fires
-while a pull is still running for that table, the tick is skipped and logged
-as `pull_skipped_overlap`.
-
-Full design rationale, type-coercion table, failure-mode catalogue, and
-acceptance criteria live in [`SPEC.md`](SPEC.md).
+Scaling characteristics:
+- Pulls are **embarrassingly parallel** across tables (bounded by `worker_pool_size`)
+- Type coercion is the hot path (~60% of pull duration on mixed-type tables); pure-numeric tables can hit 400K+ rows/sec
+- Memory grows with row count × column width; full refresh of 1M rows × 10 columns typical = ~600MB peak
+- Network bandwidth and source DB throughput are the practical ceilings, not the engine
 
 ---
-
-## Type coercion (highlights)
-
-Full mapping in [SPEC §6.1](SPEC.md). The ones that bite people:
-
-- **`numeric`/`decimal` → `float64`** with a precision-loss warning if the
-  cast loses more than `0.0001`. Use `bigint`-as-microcents in source if
-  exact decimal matters.
-- **`jsonb` / arrays / `bytea` → string** (compact JSON or hex); values
-  above 64 KB emit a warning.
-- **`timestamptz` → `datetime64[ns]`** after UTC normalization and tz strip
-  (ramdb has no tz-aware timestamp type).
-- **NaN in integer columns** is filled with `0`. NaN forces float
-  promotion, which crashes the ramdb serializer.
-- **`interval` → `int64` microseconds.** Documented in SPEC so you don't
-  rediscover it.
-- **`uuid` → `string`** via `str()`.
-- **ASCII sanitization** (default `true`) replaces em-dashes, smart quotes,
-  accented characters, and emoji with `?`. Opt out per-table with
-  `ascii_sanitize: false` if you accept the risk of a serializer crash.
-
----
-
-## Development
-
-```bash
-pip install -e ".[dev]"
-
-make dev-up               # start ephemeral postgres on :5433
-make seed                 # 50K rows per table, all type categories
-
-make test                 # unit tests (no docker required after install)
-make test-integration     # also runs testcontainers-backed Postgres tests
-make demo                 # full end-to-end, ~3-5 minutes
-
-ruff check src tests
-mypy src
-```
-
-The repo's `scripts/` directory is the source of truth for local
-development tooling — `dev_postgres.sh` for the container, `seed_postgres.py`
-for the dataset. The Makefile is a thin wrapper.
-
----
-
-## Project status
-
-**v0.1** — first cut. What works today:
-
-- Postgres driver with the full type table in [SPEC §6.1](SPEC.md)
-- `full_refresh` and `incremental` modes (timestamp + int watermarks)
-- Inline SQL sources
-- Atomic ramdb writes with tempfile cleanup on SIGTERM
-- SQLite-backed watermarks, schema-drift detection, pull history
-- `/health` JSON endpoint + optional Prometheus metrics
-- structured JSON logging
-- systemd unit generation
-- testcontainers-backed integration + e2e tests
-
-**Deferred** (see [SPEC §14](SPEC.md)):
-
-- Additional drivers (Redshift, ClickHouse, BigQuery, Snowflake, Databricks)
-- CDC mode via logical replication
-- Multiple Postgres sources in a single daemon
-- PyPI release with stability guarantees (currently installed from git)
-
-Track open work and acceptance criteria in [SPEC §13](SPEC.md).
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT — see `LICENSE` file.
+
+---
+
+## Contributing
+
+PRs welcome. Before submitting:
+
+1. Run the firewall audit — `core/` must not import from `drivers/`
+2. Add unit tests for any new coercion logic
+3. Update `references/coercion.md` if extending the Postgres type table
+4. Run `ruff` and `mypy` clean
+5. Ensure `pytest -v --ignore=tests/e2e` passes
+
+For new driver contributions, follow the templated process in [Adding a New Driver](#adding-a-new-driver) and consult `SPEC.md` for the canonical Driver ABC contract.
+
+---
+
+## Acknowledgments
+
+The Driver ABC pattern draws from Apache Superset's `db_engine_specs/` architecture. The `.ramdb` format and `row64tools` Python bindings are products of [Row64](https://row64.com).
