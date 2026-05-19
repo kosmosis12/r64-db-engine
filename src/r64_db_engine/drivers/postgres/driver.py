@@ -200,7 +200,9 @@ class PostgresDriver(Driver):
                     cols = await _fetch_columns(conn, schema, name)
                     match = next((c for c in cols if c.name == incr_key), None)
                     if not match:
-                        errors.append(f"incremental_key '{incr_key}' not in {schema}.{name}")
+                        errors.append(
+                            f"incremental_key '{incr_key}' not in {schema}.{name}"
+                        )
                     elif match.source_type not in {
                         "timestamp",
                         "timestamp without time zone",
@@ -239,7 +241,9 @@ class PostgresDriver(Driver):
 
         started = time.monotonic()
         async with await self._open() as conn, conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(f"SET LOCAL statement_timeout = {self._statement_timeout_ms}")
+            await cur.execute(
+                f"SET LOCAL statement_timeout = {self._statement_timeout_ms}"
+            )
             await cur.execute(sql, params)
             rows = await cur.fetchall()
             # column metadata for dtype inference
@@ -254,7 +258,9 @@ class PostgresDriver(Driver):
             ascii_sanitize=ascii_sanitize,
         )
 
-        new_wm = _compute_new_watermark(df, mode, incr_key, incr_type, previous_watermark)
+        new_wm = _compute_new_watermark(
+            df, mode, incr_key, incr_type, previous_watermark
+        )
         duration_ms = int((time.monotonic() - started) * 1000)
         return PullResult(
             dataframe=df,
@@ -344,7 +350,7 @@ async def _fetch_inline_column_types(
         await cur.execute(
             "SELECT oid, typname FROM pg_type WHERE oid = ANY(%s)", (type_oids,)
         )
-        oid_to_name = dict(await cur.fetchall())
+        oid_to_name: dict[int, str] = dict(await cur.fetchall())
 
     result: dict[str, str] = {}
     for name, oid in oids:
@@ -397,7 +403,7 @@ def _build_query(
     params: list[Any] = []
 
     if mode == "incremental" and previous_watermark is not None and incr_key:
-        sql += f' WHERE {_quote_column(incr_key)} > %s'
+        sql += f" WHERE {_quote_column(incr_key)} > %s"
         params.append(_cast_watermark(previous_watermark, incr_type))
         sql += f" ORDER BY {_quote_column(incr_key)} ASC"
 
