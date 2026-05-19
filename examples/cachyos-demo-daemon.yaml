@@ -1,0 +1,51 @@
+# cachyos-demo-daemon.yaml — LOCAL DEV ONLY — continuous daemon verification.
+#
+# ⚠ Contains hardcoded dev credentials (postgres/row64dev). NOT a production
+#   template. For env-driven production configs, see examples/production.yaml.
+#
+# Multi-table + mixed modes for live-verification of all 6 unit-tested-only gates:
+#   1. Continuous daemon mode (not --once)
+#   2. /health HTTP endpoint curl-verified
+#   3. /metrics Prometheus endpoint scrape-verified
+#   4. SIGTERM mid-write cleanup (no .tmp leak)
+#   5. state.db corruption recovery
+#   6. Multi-table parallel pulls under bounded worker pool
+#
+# Customers full_refresh at 10s; Orders incremental at 5s.
+
+dialect: postgres
+
+postgres:
+  host: localhost
+  port: 5433
+  database: analytics
+  user: postgres
+  password: row64dev
+  sslmode: disable
+
+row64:
+  loading_dir: /var/www/ramdb/live/RAMDB.Row64
+  group: PostgresSource
+
+tables:
+  - source: public.customers
+    target: Customers
+    mode: full_refresh
+    cadence: 10s
+
+  - source: public.orders
+    target: Orders
+    mode: incremental
+    incremental_key: updated_at
+    cadence: 5s
+
+telemetry:
+  log_level: info
+  log_format: json
+  health_port: 8765
+  metrics_port: 9100
+
+runtime:
+  worker_pool_size: 4
+  state_dir: /tmp/r64-demo/state
+  shutdown_grace_seconds: 30

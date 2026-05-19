@@ -1,17 +1,22 @@
-# incremental.yaml — multiple tables, two modes, mixed cadences.
+# incremental.yaml — multiple tables, mixed modes, mixed cadences.
+#
+# Hard-coded for the local dev Postgres started by scripts/dev_postgres.sh and
+# seeded by scripts/seed_postgres.py. Exercises every type category in
+# SPEC §6.1: numeric/decimal, jsonb, bytea, double precision[], interval,
+# uuid, timestamptz, text-with-em-dashes.
 
 dialect: postgres
 
 postgres:
-  host: ${PG_HOST}
-  port: 5432
+  host: localhost
+  port: 5433
   database: analytics
-  user: ${PG_USER}
-  password: ${PG_PASSWORD}
-  sslmode: prefer
+  user: postgres
+  password: row64dev
+  sslmode: disable
 
 row64:
-  loading_dir: /var/www/ramdb/loading/RAMDB.Row64
+  loading_dir: /tmp/r64-demo/ramdb
   group: PostgresSource
 
 defaults:
@@ -20,25 +25,58 @@ defaults:
   ascii_sanitize: true
 
 tables:
+  # text-with-em-dashes + timestamptz. Small dimension, refresh every 5 min.
+  - source: public.customers
+    target: Customers
+    mode: full_refresh
+    cadence: 5m
+
+  # numeric(20,5) + jsonb. Timestamp watermark on updated_at.
   - source: public.orders
     target: Orders
     mode: incremental
     incremental_key: updated_at
     cadence: 30s
 
-  - source: public.customers
-    target: Customers
-    mode: full_refresh
-    cadence: 5m
-
-  - source: analytics.event_log
+  # bigint event_id watermark + jsonb payload + bytea raw_blob.
+  - source: public.events
     target: Events
     mode: incremental
     incremental_key: event_id
     incremental_type: int
     cadence: 30s
 
+  # double precision[] + interval — both serialize through the dialect coercer.
+  - source: public.measurements
+    target: Measurements
+    mode: full_refresh
+    cadence: 5m
+
+  # uuid primary key + boolean — uuid serializes to string.
+  - source: public.identifiers
+    target: Identifiers
+    mode: full_refresh
+    cadence: 5m
+
+  # Inline SQL aggregation pulled fresh every 5 minutes.
+  - source: |
+      SELECT
+          region,
+          plan,
+          COUNT(*)::BIGINT AS customer_count
+      FROM public.customers
+      GROUP BY 1, 2
+    target: CustomersByRegion
+    mode: full_refresh
+    cadence: 5m
+
 telemetry:
   log_level: info
   log_format: json
   health_port: 8765
+  metrics_port: 0
+
+runtime:
+  worker_pool_size: 4
+  state_dir: /tmp/r64-demo/state
+  shutdown_grace_seconds: 10

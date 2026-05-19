@@ -1,0 +1,56 @@
+# cachyos-demo.yaml — LOCAL DEV ONLY — pgsql -> Row64 Server on cachyos-kos.
+#
+# ⚠ Contains hardcoded dev credentials (postgres/row64dev). NOT a production
+#   template. For env-driven production configs, see examples/production.yaml.
+#
+# Writes directly to Row64 Server's live/ subtree (no loading/ promotion step
+# on this install — see field-intel notes in the integration guide).
+#
+# Verified 5/13/26: 50K rows public.customers, 219ms pull, 5.5MB .ramdb.
+# Re-verified 5/14/26: byte-identical reproduction (5,522,861 bytes).
+#
+# KNOWN LIMITATION (5/14/26): Non-ASCII text characters (em-dashes, smart
+# quotes, accents, CJK, Cyrillic, etc.) are replaced with '?' during
+# serialization. Root cause is in row64tools/bytestream.py — the .ramdb
+# binary format is ASCII-only at the codec level (~50 hardcoded
+# .encode('ascii') / str(..., 'ascii') call sites in bytestream.py + ramdb.py).
+# Engine-side defensive sanitization in core/coercion.py:41 prevents the
+# crash but produces lossy output.
+#
+# Setting `defaults.ascii_sanitize: false` removes the sanitization but
+# crashes the pull on first non-ASCII character encountered.
+# See examples/cachyos-demo-utf8.yaml for the crash repro.
+#
+# Status: triage with Mikhail. Blocks all non-English customers; affects
+# any English customer with real-world text (em-dashes, smart quotes,
+# accented names, currency symbols, units, etc).
+
+dialect: postgres
+
+postgres:
+  host: localhost
+  port: 5433
+  database: analytics
+  user: postgres
+  password: row64dev
+  sslmode: disable
+
+row64:
+  loading_dir: /var/www/ramdb/live/RAMDB.Row64
+  group: PostgresSource
+
+tables:
+  - source: public.customers
+    target: Customers
+    mode: full_refresh
+    cadence: 60s
+
+telemetry:
+  log_level: info
+  log_format: json
+  health_port: 8765
+
+runtime:
+  worker_pool_size: 4
+  state_dir: /tmp/r64-demo/state
+  shutdown_grace_seconds: 30

@@ -1,19 +1,29 @@
-# minimal.yaml — one table, full_refresh, every 60s.
-# See SPEC §4.2 for the full schema.
+# minimal.yaml — smallest useful config: one table, full_refresh, default cadence.
+#
+# Hard-coded for the local dev Postgres started by scripts/dev_postgres.sh and
+# seeded by scripts/seed_postgres.py — runs as-is after `make dev-up && make seed`.
+# See SPEC §4.2 for the full schema; examples/production.yaml for an
+# env-driven template.
 
 dialect: postgres
 
 postgres:
   host: localhost
-  port: 5432
+  port: 5433
   database: analytics
-  user: row64_reader
-  password: ${PG_PASSWORD}
+  user: postgres
+  password: row64dev
+  sslmode: disable
 
 row64:
-  loading_dir: /var/www/ramdb/loading/RAMDB.Row64
+  loading_dir: /tmp/r64-demo/ramdb
   group: PostgresSource
 
 tables:
   - source: public.customers
     target: Customers
+    mode: full_refresh
+    cadence: 60s
+
+runtime:
+  state_dir: /tmp/r64-demo/state           # hermetic with `make clean`
