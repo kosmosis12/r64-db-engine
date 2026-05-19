@@ -80,7 +80,12 @@ def main(argv: list[str] | None = None) -> int:
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--host", default=os.environ.get("PG_HOST", "localhost"))
-    p.add_argument("--port", type=int, default=int(os.environ.get("PG_PORT", "5433")))
+    try:
+        _default_port = int(os.environ.get("PG_PORT", "5433"))
+    except ValueError:
+        print(f"warning: PG_PORT={os.environ['PG_PORT']!r} is not an integer, falling back to 5433", file=sys.stderr)
+        _default_port = 5433
+    p.add_argument("--port", type=int, default=_default_port)
     p.add_argument("--database", default=os.environ.get("PG_DATABASE", "analytics"))
     p.add_argument("--user", default=os.environ.get("PG_USER", "postgres"))
     p.add_argument(

@@ -1,4 +1,7 @@
-# cachyos-live.yaml — production pgsql -> Row64 Server config for cachyos-kos.
+# cachyos-demo.yaml — LOCAL DEV ONLY — pgsql -> Row64 Server on cachyos-kos.
+#
+# ⚠ Contains hardcoded dev credentials (postgres/row64dev). NOT a production
+#   template. For env-driven production configs, see examples/production.yaml.
 #
 # Writes directly to Row64 Server's live/ subtree (no loading/ promotion step
 # on this install — see field-intel notes in the integration guide).
@@ -16,7 +19,7 @@
 #
 # Setting `defaults.ascii_sanitize: false` removes the sanitization but
 # crashes the pull on first non-ASCII character encountered.
-# See examples/cachyos-live-utf8.yaml for the crash repro.
+# See examples/cachyos-demo-utf8.yaml for the crash repro.
 #
 # Status: triage with Mikhail. Blocks all non-English customers; affects
 # any English customer with real-world text (em-dashes, smart quotes,
@@ -49,5 +52,5 @@ telemetry:
 
 runtime:
   worker_pool_size: 4
-  state_dir: /tmp/r64-real-demo-state
+  state_dir: /tmp/r64-demo/state
   shutdown_grace_seconds: 30

@@ -1,4 +1,7 @@
-# cachyos-live-daemon.yaml — continuous daemon verification config.
+# cachyos-demo-daemon.yaml — LOCAL DEV ONLY — continuous daemon verification.
+#
+# ⚠ Contains hardcoded dev credentials (postgres/row64dev). NOT a production
+#   template. For env-driven production configs, see examples/production.yaml.
 #
 # Multi-table + mixed modes for live-verification of all 6 unit-tested-only gates:
 #   1. Continuous daemon mode (not --once)
@@ -44,5 +47,5 @@ telemetry:
 
 runtime:
   worker_pool_size: 4
-  state_dir: /tmp/r64-real-demo-state
+  state_dir: /tmp/r64-demo/state
   shutdown_grace_seconds: 30

@@ -6,18 +6,18 @@
 #
 # To run this against the local dev Postgres seeded by
 # scripts/seed_postgres.py, export:
-#     PG_HOST=localhost PG_PORT=5433 PG_USER=postgres PG_PASSWORD=row64dev
+#     PG_HOST=localhost PG_PORT=5432 PG_USER=postgres PG_PASSWORD=row64dev
 # (matches scripts/dev_postgres.sh defaults).
 
 dialect: postgres                           # only 'postgres' in v0.1
 
 postgres:
   host: ${PG_HOST}
-  port: 5433                                # set to 5432 in real deployments
+  port: 5432                                # override to 5433 for local dev
   database: analytics
   user: ${PG_USER}
   password: ${PG_PASSWORD}                  # or ~/.pgpass; see SPEC §4.4
-  sslmode: prefer                           # use 'require' or stronger in prod
+  sslmode: require                          # use 'disable' only for local dev
   application_name: r64-db-engine           # shows up in pg_stat_activity
   connect_timeout: 10
   statement_timeout: 300                    # SET LOCAL statement_timeout, per query

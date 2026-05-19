@@ -36,7 +36,11 @@ start() {
             -p "$PORT:5432" \
             "$IMAGE" >/dev/null
         echo "[dev_postgres] started $NAME on port $PORT"
-        wait_ready
+        if ! wait_ready; then
+            echo "[dev_postgres] ERROR: postgres failed to become ready — cleaning up" >&2
+            docker rm -f "$NAME" >/dev/null 2>&1 || true
+            return 1 2>/dev/null || exit 1
+        fi
     fi
 
     # Export connection details into the current shell when sourced. When
