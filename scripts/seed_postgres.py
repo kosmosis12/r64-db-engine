@@ -83,7 +83,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     try:
         _default_port = int(os.environ.get("PG_PORT", "5433"))
     except ValueError:
-        print(f"warning: PG_PORT={os.environ['PG_PORT']!r} is not an integer, falling back to 5433", file=sys.stderr)
+        print(
+            f"warning: PG_PORT={os.environ['PG_PORT']!r} is not an integer, falling back to 5433",
+            file=sys.stderr,
+        )
         _default_port = 5433
     p.add_argument("--port", type=int, default=_default_port)
     p.add_argument("--database", default=os.environ.get("PG_DATABASE", "analytics"))
@@ -98,7 +101,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def _ensure_extensions(conn: psycopg.Connection) -> None:
     with conn.cursor() as cur:
-        cur.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
+        cur.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
     conn.commit()
 
 
@@ -234,9 +237,7 @@ def _seed_events(conn: psycopg.Connection, n: int, rng: random.Random) -> None:
 
 
 def _seed_measurements(conn: psycopg.Connection, n: int, rng: random.Random) -> None:
-    print(
-        f"[seed] measurements ({n} rows) — bigint, double precision[], interval, timestamptz"
-    )
+    print(f"[seed] measurements ({n} rows) — bigint, double precision[], interval, timestamptz")
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS public.measurements")
         cur.execute(

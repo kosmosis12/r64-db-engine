@@ -68,9 +68,7 @@ class Daemon:
         self.started_at: float = 0.0
         self._shutdown = asyncio.Event()
         self._pg_connected: bool = False
-        self._semaphore: asyncio.Semaphore = asyncio.Semaphore(
-            config.runtime.worker_pool_size
-        )
+        self._semaphore: asyncio.Semaphore = asyncio.Semaphore(config.runtime.worker_pool_size)
         self.tables: dict[str, TableRuntimeState] = {}
         for t in config.tables:
             resolved = config.resolve_table(t)
@@ -115,9 +113,7 @@ class Daemon:
     async def _await_in_flight(self) -> None:
         grace = self.config.runtime.shutdown_grace_seconds
         deadline = time.monotonic() + grace
-        while time.monotonic() < deadline and any(
-            t.in_flight for t in self.tables.values()
-        ):
+        while time.monotonic() < deadline and any(t.in_flight for t in self.tables.values()):
             await asyncio.sleep(0.1)
 
     async def _connect_loop(self) -> None:
@@ -129,9 +125,7 @@ class Daemon:
                 return
             except Exception as exc:
                 self._pg_connected = False
-                r64log.event(
-                    log, "postgres_connect_failed", level=logging.ERROR, error=str(exc)
-                )
+                r64log.event(log, "postgres_connect_failed", level=logging.ERROR, error=str(exc))
                 if self._shutdown.is_set():
                     return
                 await asyncio.sleep(delay)
@@ -175,9 +169,7 @@ class Daemon:
         finally:
             rt.in_flight = False
 
-    async def _run_with_retries(
-        self, tcfg: dict[str, Any], prev_watermark: str | int | None
-    ):
+    async def _run_with_retries(self, tcfg: dict[str, Any], prev_watermark: str | int | None):
         last_exc: Exception | None = None
         for attempt in range(len(_RETRY_DELAYS) + 1):
             try:

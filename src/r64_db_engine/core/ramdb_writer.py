@@ -29,8 +29,7 @@ class RamdbWriter:
     def ensure_dirs(self) -> None:
         if not self.loading_dir.exists():
             raise FileNotFoundError(
-                f"loading_dir does not exist: {self.loading_dir} "
-                f"(check Row64 Server install path)"
+                f"loading_dir does not exist: {self.loading_dir} (check Row64 Server install path)"
             )
         self.target_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
 

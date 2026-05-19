@@ -42,8 +42,16 @@ def register_collectors(snapshot_fn: Any) -> None:
     class _DaemonCollector:
         def collect(self):  # type: ignore[no-untyped-def]
             snap = snapshot_fn()
-            up = GaugeMetricFamily("r64_db_engine_postgres_up", "Postgres reachability", value=int(snap["postgres"]["connected"]))
-            uptime = GaugeMetricFamily("r64_db_engine_uptime_seconds", "Daemon uptime in seconds", value=snap["uptime_seconds"])
+            up = GaugeMetricFamily(
+                "r64_db_engine_postgres_up",
+                "Postgres reachability",
+                value=int(snap["postgres"]["connected"]),
+            )
+            uptime = GaugeMetricFamily(
+                "r64_db_engine_uptime_seconds",
+                "Daemon uptime in seconds",
+                value=snap["uptime_seconds"],
+            )
             rows = GaugeMetricFamily(
                 "r64_db_engine_rows_pulled_total",
                 "Cumulative rows pulled per target",

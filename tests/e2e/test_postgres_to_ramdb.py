@@ -73,12 +73,8 @@ def test_e2e_full_refresh_writes_ramdb(pg, tmp_path: Path, monkeypatch: pytest.M
     async def seed():
         await daemon.driver.connect(cfg.postgres.model_dump())
         async with await daemon.driver._open() as conn, conn.cursor() as cur:
-            await cur.execute(
-                "CREATE TABLE IF NOT EXISTS t (id BIGINT, n TEXT)"
-            )
-            await cur.execute(
-                "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'café')"
-            )
+            await cur.execute("CREATE TABLE IF NOT EXISTS t (id BIGINT, n TEXT)")
+            await cur.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'café')")
             await conn.commit()
         await daemon.driver.close()
 

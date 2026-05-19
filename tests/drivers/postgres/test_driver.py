@@ -168,9 +168,7 @@ async def test_pull_incremental_first_run_then_advance(pg_container) -> None:
     assert second.new_watermark == first.new_watermark
 
     async with await driver._open() as conn, conn.cursor() as cur:
-        await cur.execute(
-            "INSERT INTO orders VALUES (99, 'new', 1.00, NOW())"
-        )
+        await cur.execute("INSERT INTO orders VALUES (99, 'new', 1.00, NOW())")
         await conn.commit()
 
     third = await driver.pull(

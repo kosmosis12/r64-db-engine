@@ -38,9 +38,7 @@ class HealthServer:
         async with self._server:
             await self._server.serve_forever()
 
-    async def _handle(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             line = await asyncio.wait_for(reader.readline(), timeout=5.0)
             if not line:
@@ -65,7 +63,9 @@ class HealthServer:
                 snap = self._snapshot()
                 body = json.dumps(snap, default=str).encode("utf-8")
                 status = 200 if snap.get("status") in ("ok", "degraded") else 503
-                await self._respond(writer, status, "OK" if status == 200 else "Service Unavailable", body)
+                await self._respond(
+                    writer, status, "OK" if status == 200 else "Service Unavailable", body
+                )
             else:
                 await self._respond(writer, 404, "Not Found", b"{}")
         except Exception as exc:

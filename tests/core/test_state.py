@@ -42,10 +42,12 @@ def test_missing_watermark_returns_none(tmp_path: Path) -> None:
 
 def test_record_pull_and_recent_history(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state.db")
-    store.record_pull("Orders", "2026-05-11T00:00:00Z", "2026-05-11T00:00:01Z",
-                      "success", 100, None)
-    store.record_pull("Orders", "2026-05-11T00:01:00Z", "2026-05-11T00:01:01Z",
-                      "error", None, "boom")
+    store.record_pull(
+        "Orders", "2026-05-11T00:00:00Z", "2026-05-11T00:00:01Z", "success", 100, None
+    )
+    store.record_pull(
+        "Orders", "2026-05-11T00:01:00Z", "2026-05-11T00:01:01Z", "error", None, "boom"
+    )
     hist = store.recent_history("Orders")
     assert len(hist) == 2
     assert hist[0]["status"] == "error"

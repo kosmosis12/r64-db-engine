@@ -21,9 +21,7 @@ class PostgresConfig(BaseModel):
     database: str
     user: str | None = None
     password: str | None = None
-    sslmode: Literal[
-        "disable", "allow", "prefer", "require", "verify-ca", "verify-full"
-    ] = "prefer"
+    sslmode: Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"] = "prefer"
     application_name: str = "r64-db-engine"
     connect_timeout: int = 10
     statement_timeout: int = 300
@@ -56,9 +54,7 @@ class TableConfig(BaseModel):
     @model_validator(mode="after")
     def _check_incremental(self) -> TableConfig:
         if self.mode == "incremental" and not self.incremental_key:
-            raise ValueError(
-                f"table '{self.target}': incremental mode requires incremental_key"
-            )
+            raise ValueError(f"table '{self.target}': incremental mode requires incremental_key")
         return self
 
 

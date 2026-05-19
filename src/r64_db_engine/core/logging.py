@@ -32,15 +32,15 @@ def configure(log_level: str = "info", log_format: str = "json") -> None:
     if log_format == "json":
         handler.setFormatter(JsonFormatter())
     else:
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level)
 
 
-def event(logger: logging.Logger, event_name: str, level: int = logging.INFO, **fields: Any) -> None:
+def event(
+    logger: logging.Logger, event_name: str, level: int = logging.INFO, **fields: Any
+) -> None:
     """Emit a structured event with arbitrary key/value fields."""
     logger.log(level, event_name, extra={"extras": fields})
 

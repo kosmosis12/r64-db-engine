@@ -79,9 +79,7 @@ class PostgresDriver(Driver):
         sslmode = config.get("sslmode", "prefer")
         connect_timeout = int(config.get("connect_timeout") or _DEFAULT_CONNECT_TIMEOUT)
         app_name = config.get("application_name") or _DEFAULT_APP_NAME
-        statement_timeout = int(
-            config.get("statement_timeout") or _DEFAULT_STATEMENT_TIMEOUT_S
-        )
+        statement_timeout = int(config.get("statement_timeout") or _DEFAULT_STATEMENT_TIMEOUT_S)
 
         parts = [
             f"host={host}",
@@ -200,9 +198,7 @@ class PostgresDriver(Driver):
                     cols = await _fetch_columns(conn, schema, name)
                     match = next((c for c in cols if c.name == incr_key), None)
                     if not match:
-                        errors.append(
-                            f"incremental_key '{incr_key}' not in {schema}.{name}"
-                        )
+                        errors.append(f"incremental_key '{incr_key}' not in {schema}.{name}")
                     elif match.source_type not in {
                         "timestamp",
                         "timestamp without time zone",
@@ -241,9 +237,7 @@ class PostgresDriver(Driver):
 
         started = time.monotonic()
         async with await self._open() as conn, conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                f"SET LOCAL statement_timeout = {self._statement_timeout_ms}"
-            )
+            await cur.execute(f"SET LOCAL statement_timeout = {self._statement_timeout_ms}")
             await cur.execute(sql, params)
             rows = await cur.fetchall()
             # column metadata for dtype inference
@@ -252,15 +246,11 @@ class PostgresDriver(Driver):
         df = _rows_to_dataframe(rows, col_types)
         df = apply_coercion(
             df,
-            column_dtypes={
-                col: pg_coercion.pandas_dtype_for(t) for col, t in col_types.items()
-            },
+            column_dtypes={col: pg_coercion.pandas_dtype_for(t) for col, t in col_types.items()},
             ascii_sanitize=ascii_sanitize,
         )
 
-        new_wm = _compute_new_watermark(
-            df, mode, incr_key, incr_type, previous_watermark
-        )
+        new_wm = _compute_new_watermark(df, mode, incr_key, incr_type, previous_watermark)
         duration_ms = int((time.monotonic() - started) * 1000)
         return PullResult(
             dataframe=df,
@@ -308,9 +298,7 @@ async def _fetch_columns(
     return cols
 
 
-async def _estimate_rowcount(
-    conn: psycopg.AsyncConnection, schema: str, name: str
-) -> int | None:
+async def _estimate_rowcount(conn: psycopg.AsyncConnection, schema: str, name: str) -> int | None:
     sql = """
         SELECT reltuples::bigint
         FROM pg_class c
@@ -347,9 +335,7 @@ async def _fetch_inline_column_types(
         type_oids = list({oid for _, oid in oids})
         if not type_oids:
             return {n: "text" for n, _ in oids}
-        await cur.execute(
-            "SELECT oid, typname FROM pg_type WHERE oid = ANY(%s)", (type_oids,)
-        )
+        await cur.execute("SELECT oid, typname FROM pg_type WHERE oid = ANY(%s)", (type_oids,))
         oid_to_name: dict[int, str] = dict(await cur.fetchall())
 
     result: dict[str, str] = {}
@@ -358,9 +344,7 @@ async def _fetch_inline_column_types(
     return result
 
 
-def _rows_to_dataframe(
-    rows: list[dict[str, Any]], col_types: dict[str, str]
-) -> pd.DataFrame:
+def _rows_to_dataframe(rows: list[dict[str, Any]], col_types: dict[str, str]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame({c: pd.Series([], dtype="object") for c in col_types})
 
@@ -372,9 +356,7 @@ def _rows_to_dataframe(
         for col, val in row.items():
             stype = col_types.get(col, "text")
             new_row[col] = (
-                pg_coercion.coerce_value(val, stype)
-                if _needs_value_prepass(stype, val)
-                else val
+                pg_coercion.coerce_value(val, stype) if _needs_value_prepass(stype, val) else val
             )
         pre.append(new_row)
     return pd.DataFrame(pre)

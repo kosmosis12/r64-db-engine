@@ -226,11 +226,7 @@ def _coerce_time(value: Any) -> str:
 def _coerce_interval(value: Any) -> int:
     """timedelta -> microseconds (int64)."""
     if isinstance(value, dt.timedelta):
-        return (
-            value.days * 86_400_000_000
-            + value.seconds * 1_000_000
-            + value.microseconds
-        )
+        return value.days * 86_400_000_000 + value.seconds * 1_000_000 + value.microseconds
     return int(value)
 
 
