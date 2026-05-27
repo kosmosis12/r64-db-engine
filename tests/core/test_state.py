@@ -24,6 +24,15 @@ def test_set_and_get_watermark_int(tmp_path: Path) -> None:
     assert wm_type == "int"
 
 
+def test_int_watermark_preserves_bounded_cursor_encoding(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.db")
+    cursor = '{"watermark":3,"tie_breaker":2}'
+    store.set_watermark("Events", cursor, "int", 1, 10)
+    value, wm_type = store.get_watermark("Events")
+    assert value == cursor
+    assert wm_type == "int"
+
+
 def test_watermark_upsert(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "state.db")
     store.set_watermark("Orders", "2026-05-11T00:00:00Z", "timestamp", 10, 100)

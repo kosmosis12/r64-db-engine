@@ -84,7 +84,7 @@ class StateStore:
             if not row:
                 return None, None
             value, wm_type = row
-            if wm_type == "int":
+            if wm_type == "int" and not value.startswith("{"):
                 return int(value), wm_type
             return value, wm_type
 
