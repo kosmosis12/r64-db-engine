@@ -16,6 +16,7 @@ import pytest
 
 from r64_db_engine.drivers.postgres.coercion import (
     PG_TYPE_TO_PANDAS,
+    NumericPrecisionLossError,
     coerce_value,
     pandas_dtype_for,
 )
@@ -131,11 +132,10 @@ def test_coerce_numeric_from_decimal() -> None:
     assert isinstance(out, float)
 
 
-def test_coerce_numeric_high_precision_warns(caplog: pytest.LogCaptureFixture) -> None:
+def test_coerce_numeric_high_precision_raises() -> None:
     huge = Decimal("12345678901234567890.123456789012345")
-    with caplog.at_level("WARNING"):
+    with pytest.raises(NumericPrecisionLossError, match="cannot round-trip exactly"):
         coerce_value(huge, "numeric(38,15)")
-    assert any("precision loss" in r.message for r in caplog.records)
 
 
 @pytest.mark.parametrize("source_type", ["text", "varchar", "char", "bpchar", "name", "citext"])
@@ -178,9 +178,9 @@ def test_coerce_time_serializes_to_iso_string() -> None:
 
 
 def test_coerce_interval_to_microseconds() -> None:
-    td = dt.timedelta(days=1, seconds=30, microseconds=500)
+    td = dt.timedelta(seconds=30, microseconds=500)
     out = coerce_value(td, "interval")
-    assert out == 86_400_000_000 + 30_000_000 + 500
+    assert out == 30_000_000 + 500
     assert isinstance(out, int)
 
 

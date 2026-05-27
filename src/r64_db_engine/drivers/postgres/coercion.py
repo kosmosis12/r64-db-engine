@@ -25,6 +25,8 @@ from typing import Any
 
 import pandas as pd
 
+from r64_db_engine.core.ramdb_writer import Row64CodecOverflowError
+
 log = logging.getLogger(__name__)
 
 
@@ -46,7 +48,8 @@ PG_TYPE_TO_PANDAS: dict[str, str] = {
     "float4": "float64",
     "double precision": "float64",
     "float8": "float64",
-    # numeric (possible precision loss -> warn in pull)
+    # numeric is represented as float64 for codec compatibility. Values that
+    # do not survive Decimal -> float64 -> decimal exactly are rejected below.
     "numeric": "float64",
     "decimal": "float64",
     # strings
@@ -100,7 +103,12 @@ PG_TYPE_TO_PANDAS: dict[str, str] = {
 }
 
 _LARGE_VALUE_WARN_BYTES = 64 * 1024
-_NUMERIC_PRECISION_LOSS_THRESHOLD = 1e-4
+_ROW64_INT_MIN = -(2**31)
+_ROW64_INT_MAX = 2**31 - 1
+
+
+class NumericPrecisionLossError(ValueError):
+    """A numeric value cannot be represented exactly as the output float64."""
 
 
 def pandas_dtype_for(source_type: str) -> str:
@@ -171,10 +179,8 @@ def _coerce_numeric(value: Any) -> float:
     if isinstance(value, Decimal):
         as_float = float(value)
         if _precision_loss(value, as_float):
-            log.warning(
-                "pg_coerce_value: precision loss converting numeric %s -> %r",
-                value,
-                as_float,
+            raise NumericPrecisionLossError(
+                f"numeric value {value} cannot round-trip exactly through float64"
             )
         return as_float
     return float(value)
@@ -182,9 +188,9 @@ def _coerce_numeric(value: Any) -> float:
 
 def _precision_loss(d: Decimal, f: float) -> bool:
     try:
-        return abs(Decimal(repr(f)) - d) > Decimal(str(_NUMERIC_PRECISION_LOSS_THRESHOLD))
+        return Decimal(str(f)) != d
     except Exception:
-        return False
+        return True
 
 
 def _coerce_str(value: Any) -> str:
@@ -226,12 +232,19 @@ def _coerce_time(value: Any) -> str:
 def _coerce_interval(value: Any) -> int:
     """timedelta -> microseconds (int64)."""
     if isinstance(value, dt.timedelta):
-        return (
+        result = (
             value.days * 86_400_000_000
             + value.seconds * 1_000_000
             + value.microseconds
         )
-    return int(value)
+    else:
+        result = int(value)
+    if result < _ROW64_INT_MIN or result > _ROW64_INT_MAX:
+        raise Row64CodecOverflowError(
+            "row64 codec cannot safely store interval conversion: "
+            f"value {result} is outside signed int32 range"
+        )
+    return result
 
 
 def _coerce_uuid(value: Any) -> str:
@@ -338,6 +351,7 @@ _DISPATCH: dict[str, Any] = {
 
 __all__ = [
     "PG_TYPE_TO_PANDAS",
+    "NumericPrecisionLossError",
     "pandas_dtype_for",
     "coerce_value",
 ]
