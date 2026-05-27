@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import signal
+import time
+from contextlib import suppress
 from pathlib import Path
 from unittest.mock import patch
 
@@ -73,6 +77,37 @@ def test_write_keyboard_interrupt_cleans_up(loading_dir: Path) -> None:
         w.write(pd.DataFrame({"x": [1]}), "Orders")
 
     assert list((loading_dir / "G").iterdir()) == []
+
+
+def test_write_sigterm_mid_write_cleans_up(loading_dir: Path) -> None:
+    ready = loading_dir / "ready"
+    w = rw.RamdbWriter(loading_dir, "G")
+
+    def block_after_partial_write(df, path):
+        Path(path).write_bytes(b"partial")
+        ready.write_text("started")
+        while True:
+            time.sleep(1)
+
+    pid = os.fork()
+    if pid == 0:
+        with patch.object(rw, "_save_ramdb", side_effect=block_after_partial_write):
+            w.write(pd.DataFrame({"x": [1]}), "Orders")
+        os._exit(0)
+
+    try:
+        deadline = time.monotonic() + 3
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists(), "child never reached the partial-write point"
+        os.kill(pid, signal.SIGTERM)
+        os.waitpid(pid, 0)
+    finally:
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+    assert not list((loading_dir / "G").glob(".Orders.ramdb.tmp.*"))
+    assert not (loading_dir / "G" / "Orders.ramdb").exists()
 
 
 def test_missing_loading_dir_raises(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ from typing import Any
 
 import pandas as pd
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 
 from r64_db_engine.core.coercion import apply_coercion
@@ -50,6 +51,8 @@ _OBJECT_RETURN_TYPES = frozenset(
         "timetz",
         "time without time zone",
         "time with time zone",
+        "numeric",
+        "decimal",
     }
 )
 
@@ -230,24 +233,37 @@ class PostgresDriver(Driver):
         max_rows = table_config.get("max_rows")
         ascii_sanitize = table_config.get("ascii_sanitize", True)
 
-        sql, params = _build_query(
-            source=source,
-            mode=mode,
-            incr_key=incr_key,
-            incr_type=incr_type,
-            previous_watermark=previous_watermark,
-            max_rows=max_rows,
-        )
-
         started = time.monotonic()
         async with await self._open() as conn, conn.cursor(row_factory=dict_row) as cur:
+            tie_breaker = None
+            if mode == "incremental" and max_rows and _is_inline_sql(source):
+                raise ValueError(
+                    "bounded incremental pulls require a table source with "
+                    "a single-column primary key"
+                )
+            if mode == "incremental" and max_rows:
+                schema, name = _split_qualified(source)
+                tie_breaker = await _fetch_single_primary_key(conn, schema, name)
+                if tie_breaker is None:
+                    raise ValueError(
+                        "bounded incremental pulls require a single-column primary key"
+                    )
+            query, params = _build_query(
+                source=source,
+                mode=mode,
+                incr_key=incr_key,
+                incr_type=incr_type,
+                previous_watermark=previous_watermark,
+                max_rows=max_rows,
+                tie_breaker=tie_breaker,
+            )
             await cur.execute(
                 f"SET LOCAL statement_timeout = {self._statement_timeout_ms}"
             )
-            await cur.execute(sql, params)
+            await cur.execute(query, params)
             rows = await cur.fetchall()
             # column metadata for dtype inference
-            col_types = await _fetch_inline_column_types(conn, source, sql)
+            col_types = await _fetch_inline_column_types(conn, source)
 
         df = _rows_to_dataframe(rows, col_types)
         df = apply_coercion(
@@ -259,7 +275,7 @@ class PostgresDriver(Driver):
         )
 
         new_wm = _compute_new_watermark(
-            df, mode, incr_key, incr_type, previous_watermark
+            df, mode, incr_key, incr_type, previous_watermark, tie_breaker
         )
         duration_ms = int((time.monotonic() - started) * 1000)
         return PullResult(
@@ -287,7 +303,17 @@ async def _fetch_columns(
     conn: psycopg.AsyncConnection, schema: str, name: str
 ) -> list[ColumnMetadata]:
     sql = """
-        SELECT column_name, data_type, is_nullable
+        SELECT column_name,
+               CASE
+                   WHEN data_type = 'ARRAY'
+                       THEN trim(leading '_' from udt_name) || '[]'
+                   WHEN data_type IN ('numeric', 'decimal')
+                       AND numeric_precision IS NOT NULL
+                       THEN data_type || '(' || numeric_precision || ',' ||
+                            numeric_scale || ')'
+                   ELSE data_type
+               END AS source_type,
+               is_nullable
         FROM information_schema.columns
         WHERE table_schema = %s AND table_name = %s
         ORDER BY ordinal_position
@@ -326,8 +352,29 @@ async def _estimate_rowcount(
         return None
 
 
+async def _fetch_single_primary_key(
+    conn: psycopg.AsyncConnection, schema: str, name: str
+) -> str | None:
+    query = """
+        SELECT a.attname
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_attribute a ON a.attrelid = c.oid
+             AND a.attnum = ANY(i.indkey)
+        WHERE i.indisprimary AND n.nspname = %s AND c.relname = %s
+        ORDER BY array_position(i.indkey, a.attnum)
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(query, (schema, name))
+        rows = await cur.fetchall()
+    if len(rows) != 1:
+        return None
+    return str(rows[0][0])
+
+
 async def _fetch_inline_column_types(
-    conn: psycopg.AsyncConnection, source: str, sql: str
+    conn: psycopg.AsyncConnection, source: str
 ) -> dict[str, str]:
     """Return {column_name: postgres_type_name} for the result set."""
     if not _is_inline_sql(source):
@@ -396,30 +443,48 @@ def _build_query(
     incr_type: str,
     previous_watermark: str | int | None,
     max_rows: int | None,
-) -> tuple[str, list[Any]]:
+    tie_breaker: str | None = None,
+) -> tuple[sql.Composed, list[Any]]:
     """Compose the SELECT for a pull, plus parameters."""
-    base = f"({source}) sub" if _is_inline_sql(source) else _quote_ident(source)
-    sql = f"SELECT * FROM {base}"
+    base = (
+        sql.SQL("({}) sub").format(sql.SQL(source))
+        if _is_inline_sql(source)
+        else _quote_ident(source)
+    )
+    query = sql.SQL("SELECT * FROM {}").format(base)
     params: list[Any] = []
 
     if mode == "incremental" and previous_watermark is not None and incr_key:
-        sql += f" WHERE {_quote_column(incr_key)} > %s"
-        params.append(_cast_watermark(previous_watermark, incr_type))
-        sql += f" ORDER BY {_quote_column(incr_key)} ASC"
+        cursor = _decode_cursor(previous_watermark, incr_type)
+        if tie_breaker is not None and cursor is not None:
+            query += sql.SQL(" WHERE ({}, {}) > (%s, %s)").format(
+                sql.Identifier(incr_key), sql.Identifier(tie_breaker)
+            )
+            params.extend((cursor[0], cursor[1]))
+        else:
+            query += sql.SQL(" WHERE {} > %s").format(sql.Identifier(incr_key))
+            params.append(_cast_watermark(previous_watermark, incr_type))
+
+    if mode == "incremental" and incr_key:
+        # Bounded pulls must be ordered by a stable unique cursor so rows tied
+        # at the watermark boundary are neither replayed nor discarded.
+        if tie_breaker is not None:
+            query += sql.SQL(" ORDER BY {}, {} ASC").format(
+                sql.Identifier(incr_key), sql.Identifier(tie_breaker)
+            )
+        elif previous_watermark is not None:
+            query += sql.SQL(" ORDER BY {} ASC").format(sql.Identifier(incr_key))
 
     if max_rows:
-        sql += f" LIMIT {int(max_rows)}"
+        query += sql.SQL(" LIMIT %s")
+        params.append(int(max_rows))
 
-    return sql, params
+    return query, params
 
 
-def _quote_ident(qualified: str) -> str:
+def _quote_ident(qualified: str) -> sql.Composed:
     parts = qualified.split(".")
-    return ".".join(f'"{p}"' for p in parts)
-
-
-def _quote_column(name: str) -> str:
-    return f'"{name}"'
+    return sql.SQL(".").join(sql.Identifier(p) for p in parts)
 
 
 def _cast_watermark(value: str | int, incr_type: str) -> Any:
@@ -428,12 +493,25 @@ def _cast_watermark(value: str | int, incr_type: str) -> Any:
     return value  # ISO8601 string; psycopg will parse
 
 
+def _decode_cursor(value: str | int, incr_type: str) -> tuple[Any, Any] | None:
+    if not isinstance(value, str) or not value.startswith("{"):
+        return None
+    try:
+        cursor = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(cursor, dict) or "watermark" not in cursor or "tie_breaker" not in cursor:
+        return None
+    return (_cast_watermark(cursor["watermark"], incr_type), cursor["tie_breaker"])
+
+
 def _compute_new_watermark(
     df: pd.DataFrame,
     mode: str,
     incr_key: str | None,
     incr_type: str,
     previous_watermark: str | int | None,
+    tie_breaker: str | None = None,
 ) -> str | int | None:
     if mode != "incremental" or not incr_key:
         return None
@@ -443,10 +521,18 @@ def _compute_new_watermark(
     if pd.isna(max_val):
         return previous_watermark
     if incr_type == "int":
-        return int(max_val)
-    if isinstance(max_val, pd.Timestamp):
-        return max_val.isoformat()
-    return str(max_val)
+        watermark: str | int = int(max_val)
+    elif isinstance(max_val, pd.Timestamp):
+        watermark = max_val.isoformat()
+    else:
+        watermark = str(max_val)
+    if tie_breaker is None:
+        return watermark
+    last = df.sort_values([incr_key, tie_breaker]).iloc[-1]
+    value = last[tie_breaker]
+    if hasattr(value, "item"):
+        value = value.item()
+    return json.dumps({"watermark": watermark, "tie_breaker": value}, separators=(",", ":"))
 
 
 def _is_inline_sql(source: str) -> bool:
@@ -462,7 +548,3 @@ def _split_qualified(source: str) -> tuple[str, str]:
 
 
 __all__ = ["PostgresDriver"]
-
-
-# Used only by tests for serialization assertions; keep imports tidy.
-_ = json

@@ -8,6 +8,7 @@ pull (both modes) plus the edge-case types from SPEC §6.1.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -15,6 +16,8 @@ import pytest
 testcontainers = pytest.importorskip("testcontainers.postgres")
 PostgresContainer = testcontainers.PostgresContainer
 
+from r64_db_engine.core.ramdb_writer import RamdbWriter, Row64CodecOverflowError
+from r64_db_engine.drivers.postgres.coercion import NumericPrecisionLossError
 from r64_db_engine.drivers.postgres.driver import PostgresDriver
 
 pytestmark = pytest.mark.integration
@@ -205,4 +208,83 @@ async def test_pull_handles_jsonb_array_bytea_numeric(pg_container) -> None:
     assert abs(float(row["money"]) - 3.14159) < 1e-6
     # ASCII sanitize the note column
     assert row["note"] == "em?dash"
+    await driver.close()
+
+
+async def test_numeric_20_5_round_trip_preserves_exact_value(
+    pg_container,
+) -> None:
+    driver = PostgresDriver()
+    await driver.connect(_driver_config(pg_container))
+    async with await driver._open() as conn, conn.cursor() as cur:
+        await cur.execute("DROP TABLE IF EXISTS numeric_exact")
+        await cur.execute("CREATE TABLE numeric_exact (amount NUMERIC(20,5) NOT NULL)")
+        await cur.execute("INSERT INTO numeric_exact VALUES (999999999999999.12345)")
+        await conn.commit()
+
+    with pytest.raises(NumericPrecisionLossError, match="cannot round-trip exactly"):
+        await driver.pull(
+            {"source": "public.numeric_exact", "mode": "full_refresh"},
+            previous_watermark=None,
+        )
+    await driver.close()
+
+
+@pytest.mark.parametrize(
+    ("source_type", "source_value"),
+    [
+        ("BIGINT", "3548933426"),
+        ("INTERVAL", "INTERVAL '3548.933426 seconds'"),
+    ],
+)
+async def test_int64_source_values_above_signed_int32_round_trip_exactly(
+    pg_container, tmp_path: Path, source_type: str, source_value: str
+) -> None:
+    driver = PostgresDriver()
+    await driver.connect(_driver_config(pg_container))
+    async with await driver._open() as conn, conn.cursor() as cur:
+        await cur.execute("DROP TABLE IF EXISTS int64_exact")
+        await cur.execute(f"CREATE TABLE int64_exact (value {source_type} NOT NULL)")
+        await cur.execute(f"INSERT INTO int64_exact VALUES ({source_value})")
+        await conn.commit()
+
+    loading_dir = tmp_path / "loading"
+    loading_dir.mkdir()
+    with pytest.raises(Row64CodecOverflowError, match="outside signed int32 range"):
+        result = await driver.pull(
+            {"source": "public.int64_exact", "mode": "full_refresh"},
+            previous_watermark=None,
+        )
+        RamdbWriter(loading_dir, "G").write(result.dataframe, "Int64")
+    await driver.close()
+
+
+async def test_incremental_limit_does_not_drop_rows_at_equal_watermark(pg_container) -> None:
+    driver = PostgresDriver()
+    await driver.connect(_driver_config(pg_container))
+    async with await driver._open() as conn, conn.cursor() as cur:
+        await cur.execute("DROP TABLE IF EXISTS watermark_ties")
+        await cur.execute(
+            "CREATE TABLE watermark_ties (id BIGINT PRIMARY KEY, updated_at TIMESTAMPTZ NOT NULL)"
+        )
+        await cur.execute(
+            """INSERT INTO watermark_ties VALUES
+               (1, '2026-05-27T00:00:00Z'),
+               (2, '2026-05-27T00:00:00Z')"""
+        )
+        await conn.commit()
+
+    cfg = {
+        "source": "public.watermark_ties",
+        "mode": "incremental",
+        "incremental_key": "updated_at",
+        "incremental_type": "timestamp",
+        "max_rows": 1,
+    }
+    first = await driver.pull(cfg, previous_watermark=None)
+    second = await driver.pull(cfg, previous_watermark=first.new_watermark)
+
+    assert first.rows_pulled == 1
+    assert second.rows_pulled == 1
+    assert set(first.dataframe["id"]).isdisjoint(set(second.dataframe["id"]))
     await driver.close()

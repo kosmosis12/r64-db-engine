@@ -10,7 +10,7 @@
 #   ./scripts/dev_postgres.sh stop     # docker rm -f
 #   ./scripts/dev_postgres.sh reset    # stop + start
 #   ./scripts/dev_postgres.sh psql     # interactive psql shell
-#   ./scripts/dev_postgres.sh env      # print export lines for sourcing
+#   ./scripts/dev_postgres.sh env      # write an env file or export when sourced
 #
 # All defaults overridable via env vars:
 #   R64_DB_DEV_NAME, R64_DB_DEV_PORT, R64_DB_DEV_PASSWORD, R64_DB_DEV_IMAGE
@@ -22,6 +22,7 @@ PASSWORD="${R64_DB_DEV_PASSWORD:-row64dev}"
 IMAGE="${R64_DB_DEV_IMAGE:-postgres:16-alpine}"
 DATABASE="analytics"
 USER_NAME="postgres"
+ENV_FILE="${R64_DB_DEV_ENV_FILE:-$HOME/.r64-db-engine/dev.env}"
 
 cmd="${1:-start}"
 
@@ -43,9 +44,6 @@ start() {
         fi
     fi
 
-    # Export connection details into the current shell when sourced. When
-    # the script is executed (not sourced) these still print so the user
-    # can copy them.
     export PG_HOST="localhost"
     export PG_PORT="$PORT"
     export PG_DATABASE="$DATABASE"
@@ -59,12 +57,13 @@ start() {
     echo "  port:     $PG_PORT"
     echo "  database: $PG_DATABASE"
     echo "  user:     $PG_USER"
-    echo "  password: $PG_PASSWORD"
+    write_env_file
+    echo "  credentials: set PGPASSWORD from $ENV_FILE"
     echo
     echo "To use the same vars in this shell, source the script:"
     echo "  source scripts/dev_postgres.sh env"
-    echo "Or copy/paste:"
-    print_env
+    echo "Or source the generated env file:"
+    echo "  source $ENV_FILE"
 }
 
 stop() {
@@ -81,18 +80,24 @@ psql_shell() {
     docker exec -it "$NAME" psql -U "$USER_NAME" -d "$DATABASE"
 }
 
-print_env() {
-    echo "  export PG_HOST=localhost"
-    echo "  export PG_PORT=$PORT"
-    echo "  export PG_DATABASE=$DATABASE"
-    echo "  export PG_USER=$USER_NAME"
-    echo "  export PG_PASSWORD=$PASSWORD"
-    echo "  export PGPASSWORD=$PASSWORD"
+write_env_file() {
+    mkdir -p "$(dirname "$ENV_FILE")"
+    chmod 700 "$(dirname "$ENV_FILE")"
+    {
+        printf 'export PG_HOST=%q\n' "localhost"
+        printf 'export PG_PORT=%q\n' "$PORT"
+        printf 'export PG_DATABASE=%q\n' "$DATABASE"
+        printf 'export PG_USER=%q\n' "$USER_NAME"
+        printf 'export PG_PASSWORD=%q\n' "$PASSWORD"
+        printf 'export PGPASSWORD=%q\n' "$PASSWORD"
+    } >"$ENV_FILE"
+    chmod 600 "$ENV_FILE"
 }
 
 env_only() {
-    # When sourced: actually export. When executed: just print.
-    if (return 0 2>/dev/null); then
+    write_env_file
+    # When sourced: actually export. When executed: name the protected file.
+    if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
         export PG_HOST="localhost"
         export PG_PORT="$PORT"
         export PG_DATABASE="$DATABASE"
@@ -100,7 +105,8 @@ env_only() {
         export PG_PASSWORD="$PASSWORD"
         export PGPASSWORD="$PASSWORD"
     else
-        print_env
+        echo "[dev_postgres] wrote credentials to $ENV_FILE (mode 0600)"
+        echo "source $ENV_FILE"
     fi
 }
 
