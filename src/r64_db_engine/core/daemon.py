@@ -132,6 +132,8 @@ class Daemon:
                 r64log.event(
                     log, "postgres_connect_failed", level=logging.ERROR, error=str(exc)
                 )
+                if _is_permanent(exc):
+                    raise
                 if self._shutdown.is_set():
                     return
                 await asyncio.sleep(delay)
@@ -167,7 +169,15 @@ class Daemon:
         try:
             async with self._semaphore:
                 result = await self._run_with_retries(tcfg, prev_value)
-            await self._handle_success(target, rt, tcfg, result, prev_schema, started_at)
+            await self._handle_success(
+                target,
+                rt,
+                tcfg,
+                result,
+                prev_schema,
+                started_at,
+                reset_incremental=prev_value is None,
+            )
         except _PermanentError as exc:
             self._handle_failure(target, rt, str(exc), started_at, permanent=True)
         except Exception as exc:
@@ -185,6 +195,14 @@ class Daemon:
             except Exception as exc:
                 if _is_permanent(exc):
                     raise _PermanentError(str(exc)) from exc
+                if _is_disconnection(exc):
+                    self._pg_connected = False
+                    r64log.event(
+                        log,
+                        "postgres_disconnected",
+                        level=logging.ERROR,
+                        error=str(exc),
+                    )
                 last_exc = exc
                 if attempt < len(_RETRY_DELAYS):
                     await asyncio.sleep(_RETRY_DELAYS[attempt])
@@ -199,11 +217,13 @@ class Daemon:
         result,
         prev_schema: list[dict[str, str]] | None,
         started_at: str,
+        *,
+        reset_incremental: bool,
     ) -> None:
         df: pd.DataFrame = result.dataframe
         mode = tcfg["mode"]
 
-        if mode == "incremental":
+        if mode == "incremental" and not reset_incremental:
             df = self._merge_incremental(df, target)
 
         self.writer.write(df, target)
@@ -291,9 +311,9 @@ class Daemon:
         if not existing_path.exists():
             return new_df
         try:
-            from row64tools import ramdb  # type: ignore[import-not-found]
+            from row64tools.ramdb import load_to_df  # type: ignore[import-not-found]
 
-            existing = ramdb.load_to_df(str(existing_path))
+            existing = load_to_df(str(existing_path))
             return pd.concat([existing, new_df], ignore_index=True)
         except Exception as exc:
             log.warning("incremental_merge_failed target=%s err=%s — using new only", target, exc)
@@ -367,6 +387,13 @@ def _is_permanent(exc: Exception) -> bool:
         return False
     # Default: psycopg.OperationalError without sqlstate is treated transient.
     return False
+
+
+def _is_disconnection(exc: Exception) -> bool:
+    sqlstate = getattr(exc, "sqlstate", None)
+    diag = getattr(exc, "diag", None)
+    code = sqlstate or (getattr(diag, "sqlstate", None) if diag else None)
+    return isinstance(code, str) and code.startswith("08")
 
 
 def _iso_now() -> str:

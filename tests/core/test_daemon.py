@@ -12,7 +12,9 @@ from typing import Any
 
 import pandas as pd
 import pytest
+from row64tools.ramdb import load_to_df
 
+from r64_db_engine.core import daemon as daemon_mod
 from r64_db_engine.core import ramdb_writer as rw
 from r64_db_engine.core.config import Config
 from r64_db_engine.core.daemon import Daemon
@@ -79,6 +81,12 @@ class StubDriver(Driver):
 
     def coerce_value(self, value, source_type):
         return value
+
+
+class SqlStateError(RuntimeError):
+    def __init__(self, message: str, sqlstate: str) -> None:
+        super().__init__(message)
+        self.sqlstate = sqlstate
 
 
 @pytest.fixture
@@ -161,6 +169,27 @@ async def test_daemon_incremental_advances_watermark(tmp_path: Path, fake_ramdb)
 
 
 @pytest.mark.asyncio
+async def test_deleted_state_repull_does_not_duplicate_incremental_output(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, mode="incremental")
+    driver = StubDriver()
+    driver.scripted["T"] = [
+        PullResult(pd.DataFrame({"id": [1, 2]}), new_watermark=2, rows_pulled=2, duration_ms=5),
+        PullResult(pd.DataFrame({"id": [1, 2]}), new_watermark=2, rows_pulled=2, duration_ms=5),
+    ]
+    state_path = tmp_path / "state" / "state.db"
+    writer = RamdbWriter(cfg.row64.loading_dir, cfg.row64.group)
+    d = Daemon(cfg, driver, StateStore(state_path), writer)
+
+    await d._pull_once("T")
+    state_path.unlink()
+    d.state = StateStore(state_path)
+    await d._pull_once("T")
+
+    loaded = load_to_df(str(writer.target_path("T")))
+    assert loaded["id"].tolist() == [1, 2]
+
+
+@pytest.mark.asyncio
 async def test_daemon_pull_error_marks_status(tmp_path: Path, fake_ramdb) -> None:
     cfg = _config(tmp_path)
     driver = StubDriver()
@@ -173,6 +202,42 @@ async def test_daemon_pull_error_marks_status(tmp_path: Path, fake_ramdb) -> Non
     snap = d.status_snapshot()
     assert snap["tables"][0]["status"] in ("degraded", "error")
     assert snap["tables"][0]["last_error"] == "simulated"
+
+
+@pytest.mark.asyncio
+async def test_daemon_marks_source_disconnected_after_connection_loss(
+    tmp_path: Path, fake_ramdb, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path)
+    driver = StubDriver()
+    driver.fail_with = SqlStateError("connection dropped", "08006")
+    state = StateStore(tmp_path / "state" / "state.db")
+    writer = RamdbWriter(cfg.row64.loading_dir, cfg.row64.group)
+    d = Daemon(cfg, driver, state, writer)
+    d._pg_connected = True
+    monkeypatch.setattr(daemon_mod, "_RETRY_DELAYS", ())
+
+    await d._pull_once("T")
+
+    assert d.status_snapshot()["postgres"]["connected"] is False
+
+
+@pytest.mark.asyncio
+async def test_daemon_startup_auth_failure_fails_fast(tmp_path: Path, fake_ramdb) -> None:
+    cfg = _config(tmp_path)
+    driver = StubDriver()
+
+    async def fail_connect(config: dict[str, Any]) -> None:
+        raise SqlStateError("bad password", "28P01")
+
+    driver.connect = fail_connect  # type: ignore[method-assign]
+    state = StateStore(tmp_path / "state" / "state.db")
+    writer = RamdbWriter(cfg.row64.loading_dir, cfg.row64.group)
+    d = Daemon(cfg, driver, state, writer)
+    d.request_shutdown()
+
+    with pytest.raises(SqlStateError):
+        await d._connect_loop()
 
 
 def test_core_does_not_import_postgres_driver() -> None:
