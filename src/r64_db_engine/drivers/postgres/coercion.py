@@ -25,6 +25,7 @@ from typing import Any
 
 import pandas as pd
 
+from r64_db_engine.conformance.coercers import NumericPrecisionLossError
 from r64_db_engine.core.ramdb_writer import Row64CodecOverflowError
 
 log = logging.getLogger(__name__)
@@ -106,9 +107,10 @@ _LARGE_VALUE_WARN_BYTES = 64 * 1024
 _ROW64_INT_MIN = -(2**31)
 _ROW64_INT_MAX = 2**31 - 1
 
-
-class NumericPrecisionLossError(ValueError):
-    """A numeric value cannot be represented exactly as the output float64."""
+# NumericPrecisionLossError moved to conformance.coercers (it is a contract-level
+# fidelity error, not pg-specific) and re-exported here so existing imports —
+# `from ...postgres.coercion import NumericPrecisionLossError` — and the
+# hand-built/regenerated proof share one error identity. See conformance/coercers.py.
 
 
 def pandas_dtype_for(source_type: str) -> str:
