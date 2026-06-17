@@ -30,40 +30,9 @@ from r64_db_engine.conformance.spec import (
 )
 from r64_db_engine.drivers.postgres import coercion as pg_coercion
 
-# Native type -> canonical coercer key (conformance.coercers.REGISTRY). Mirrors
-# the pg value-dispatch table; the generator wires the regenerated driver's
-# coerce_value through this map so the proof exercises real value coercion.
-PG_COERCER_MAP: dict[str, str] = {
-    # integers
-    "smallint": "int", "int2": "int", "integer": "int", "int": "int",
-    "int4": "int", "bigint": "int", "int8": "int", "smallserial": "int",
-    "serial": "int", "bigserial": "int", "oid": "int",
-    # floats
-    "real": "float", "float4": "float", "double precision": "float", "float8": "float",
-    # numerics
-    "numeric": "numeric", "decimal": "numeric",
-    # strings
-    "text": "str", "varchar": "str", "character varying": "str", "char": "str",
-    "character": "str", "bpchar": "str", "name": "str", "citext": "str",
-    # bools
-    "boolean": "bool", "bool": "bool",
-    # date / time
-    "date": "date",
-    "timestamp": "timestamp", "timestamp without time zone": "timestamp",
-    "timestamptz": "timestamp", "timestamp with time zone": "timestamp",
-    "time": "time", "time without time zone": "time",
-    "timetz": "time", "time with time zone": "time",
-    "interval": "interval",
-    # uuid
-    "uuid": "uuid",
-    # json / bytea
-    "json": "json", "jsonb": "json", "bytea": "bytea",
-    # network / fts / geometry / xml / ranges -> str
-    "inet": "str", "cidr": "str", "macaddr": "str", "macaddr8": "str",
-    "tsvector": "str", "tsquery": "str", "geometry": "str", "geography": "str",
-    "xml": "str", "int4range": "str", "int8range": "str", "numrange": "str",
-    "tsrange": "str", "tstzrange": "str", "daterange": "str",
-}
+# The pg type -> canonical-coercer-key map is owned by coercion.py (the single
+# wiring); the spec just re-exports it so the generator and contract can read it.
+PG_COERCER_MAP = pg_coercion.PG_COERCER_MAP
 
 
 # The codec lane: row64tools 1.0.x narrows int64 -> signed int32 on store. Any

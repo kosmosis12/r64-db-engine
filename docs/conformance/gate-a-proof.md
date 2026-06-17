@@ -86,3 +86,15 @@ scaffolded from their own specs and held to the same contract.
 
 > Scope note: this is Gate A (fidelity) only. Gate B (throughput/perf) remains a
 > separate session, gated on this one — which has now succeeded.
+
+## Post-bootstrap: coercion fork collapsed
+
+The bootstrap left one soft spot: the canonical registry (`conformance/coercers.py`)
+*mirrored* pg's hand-built value coercers rather than *being* them, so regenerated-pg
+and hand-built-pg agreed as two faithful implementations. That fork is now
+collapsed — `drivers/postgres/coercion.py` dispatches `coerce_value` **through**
+the canonical registry and retains no private value logic (only the pg type ->
+coercer-key map, `PG_COERCER_MAP`). Hand-built and regenerated pg are now one
+implementation instantiated twice. The original pg coercion tests pass unchanged
+against pg-through-registry, and the regeneration proof above still shows zero
+divergence.

@@ -1,16 +1,17 @@
 """Canonical, source-agnostic scalar coercers.
 
-These are the contract-level coercers a driver's value layer is expected to
-behave like. They operate purely on the Python objects a DB-API client yields
+These are the contract-level coercers — the single source of truth for value
+fidelity. They operate purely on the Python objects a DB-API client yields
 (`Decimal`, `datetime`, `date`, `time`, `timedelta`, `bytes`, `dict`/`list`,
-`UUID`) — nothing Postgres-specific — so any source can wire its native types
-onto them via a `coercer_map`.
+`UUID`) — nothing Postgres-specific — so any source wires its native types onto
+them via a `coercer_map`.
 
-The Postgres reference driver keeps its own hand-written value coercers
-(`drivers/postgres/coercion.py`, untouched). The self-regeneration proof
-compares a generated driver wired onto *these* canonical coercers against the
-hand-built pg coercers on pg's fixture pack: if they ever disagree, the
-abstraction has leaked and the proof fails loudly.
+The Postgres reference driver dispatches its `coerce_value` *through* this
+registry (`drivers/postgres/coercion.py` owns only the pg type -> coercer-key
+map, no value logic of its own). A driver regenerated from a spec wires through
+the very same registry, so hand-built and regenerated pg are one implementation
+instantiated twice — not two implementations kept in sync. The self-regeneration
+proof confirms they remain identical on pg's fixture pack.
 
 Two fidelity error types live at this contract level because they are not
 source-specific concerns:
