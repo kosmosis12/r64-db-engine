@@ -39,6 +39,15 @@ def regenerate(spec: SourceSpec, out_dir: str | Path, fixtures_ref: str) -> Path
 
     Returns the package directory.
     """
+    if not spec.dialect.isidentifier():
+        raise ValueError(
+            f"spec.dialect must be a valid Python identifier (it names the "
+            f"generated package and class); got {spec.dialect!r}"
+        )
+    if ":" not in fixtures_ref:
+        raise ValueError(
+            f"fixtures_ref must be in 'module:attr' form; got {fixtures_ref!r}"
+        )
     pkg_name = f"{spec.dialect}_driver"
     pkg = Path(out_dir) / pkg_name
     pkg.mkdir(parents=True, exist_ok=True)
@@ -99,11 +108,21 @@ def _coercion_module(spec: SourceSpec) -> str:
                 return None
             norm = _normalize(source_type)
             if norm.endswith("[]"):
-                return coercers.REGISTRY[ARRAY_COERCER](value)
+                fn = coercers.REGISTRY.get(ARRAY_COERCER)
+                if fn is None:
+                    raise ValueError(
+                        f"array coercer {{ARRAY_COERCER!r}} not in coercers.REGISTRY"
+                    )
+                return fn(value)
             key = COERCER_MAP.get(norm)
             if key is None:
                 return str(value)
-            return coercers.REGISTRY[key](value)
+            fn = coercers.REGISTRY.get(key)
+            if fn is None:
+                raise ValueError(
+                    f"coercer {{key!r}} (for {{source_type!r}}) not in coercers.REGISTRY"
+                )
+            return fn(value)
         '''
     )
 

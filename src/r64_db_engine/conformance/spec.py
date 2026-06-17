@@ -61,6 +61,11 @@ class FixtureCase:
     def __post_init__(self) -> None:
         if self.raises_stage not in ("coerce", "write"):
             raise ValueError(f"raises_stage must be coerce|write, got {self.raises_stage!r}")
+        if self.raises is not None and self.roundtrip:
+            raise ValueError(
+                f"Overflow case {self.name!r} cannot have roundtrip=True; "
+                "cases with raises are excluded from round-trip frames"
+            )
 
 
 @dataclass(frozen=True)

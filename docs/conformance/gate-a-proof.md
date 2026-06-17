@@ -28,7 +28,7 @@ from r64_db_engine.conformance.contract import run_gate_a
 
 ## Result — go/no-go per assertion class
 
-```
+```text
 HAND-BUILT pg                       REGENERATED pg
   TYPE_MAP  PASS  18 case(s)          TYPE_MAP  PASS  18 case(s)
   WIDTH     PASS  18 case(s)          WIDTH     PASS  18 case(s)
