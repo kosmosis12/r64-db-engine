@@ -10,11 +10,19 @@ to the GENERATED coercion in Phase 2 (the generator emits them from this spec),
 exactly the "regenerated spec" pattern proven for pg. So this module is purely
 declarative.
 
-⚠️ This spec covers only the ClickHouse types that the CURRENT spec format can
-express. The transparent type wrappers `Nullable(T)` and `LowCardinality(T)`
-are NOT expressible without a minimal format extension — see the STRAIN REPORT
-in the Gate 1 summary and the PENDING-EXTENSION block at the bottom of this file.
-Generation must wait on the Gate 1 decision about that extension.
+Transparent type wrappers `Nullable(T)` / `LowCardinality(T)` are now expressed
+via the `wrapper_types` extension to the spec format (the normalizer unwraps them
+to their inner type before lookup; see conformance/spec.py + the wrapper tests).
+
+WIDE-INTEGER FIDELITY TRADEOFF (deliberate, STRAIN 3): UInt64 / Int128 / UInt128
+/ Int256 / UInt256 exceed every numeric lane the row64 codec offers. Verified
+codec lanes (row64tools 1.0.11): integers narrow to signed int32; float64 is
+lossy beyond 2**53 for non-round values; there is NO int64, decimal, or bignum
+lane. So a wide int has two options: float64 (numerically usable on the GPU but
+LOSSY — corrupts the exact value) or string (byte-EXACT but OPAQUE to numeric
+compute — cannot be SUM'd, numerically sorted, or used in GPU math). This spec
+chooses string: fidelity over numeric utility. Operators who need numeric
+behavior over exactness can override a specific column to Float64 in source SQL.
 """
 
 from __future__ import annotations
@@ -156,6 +164,18 @@ def _fixture_pack() -> FixturePack:
                         Decimal("12345678901234567890.123456789012345"), "float64",
                         roundtrip=False, raises=NumericPrecisionLossError,
                         raises_stage="coerce"),
+            # ---- TRANSPARENT WRAPPERS (wrapper_types extension) ----
+            # Unwrap to the inner type's dtype/coercer; pervasive in real CH.
+            FixtureCase("nullable_int_ok", "Nullable(Int32)", 7, "int64",
+                        expected_coerced=7),
+            FixtureCase("lowcard_str_ok", "LowCardinality(String)", "x", "string",
+                        expected_coerced="x"),
+            # composed wrappers unwrap recursively to the innermost type
+            FixtureCase("lowcard_nullable_int", "LowCardinality(Nullable(Int64))",
+                        5, "int64", expected_coerced=5),
+            # Nullable column carrying NULL — pure None-passthrough (NULL class).
+            FixtureCase("nullable_str_none", "Nullable(String)", None, "string",
+                        roundtrip=False),
         ]
     )
 
@@ -179,6 +199,8 @@ CLICKHOUSE_SPEC = SourceSpec(
     unknown_dtype="string",
     coercer_map=CLICKHOUSE_COERCER_MAP,
     array_coercer="array",
+    # transparent wrappers unwrapped to inner type before lookup (STRAIN 1 fix)
+    wrapper_types=("nullable", "lowcardinality"),
     # hooks wired at generation time (Phase 2)
     coerce_value=None,
     pandas_dtype_for=None,
@@ -187,34 +209,6 @@ CLICKHOUSE_SPEC = SourceSpec(
         notes="ClickHouse predicate/limit pushdown deferred to Gate B",
     ),
 )
-
-
-# ===========================================================================
-# PENDING-EXTENSION block — DO NOT WIRE until Gate 1 clears the format change.
-#
-# ClickHouse's transparent type wrappers cannot be expressed by the current
-# flat type_map + paren-stripping normalizer (STRAIN 1):
-#
-#     Nullable(Int32)         -> normalizes to "nullable"  (inner Int32 LOST)
-#     Nullable(String)        -> normalizes to "nullable"  (inner String LOST)
-#     LowCardinality(String)  -> normalizes to "lowcardinality"  (inner LOST)
-#
-# Both collapse to the same key, so a flat type_map cannot route them to the
-# inner type's dtype. They require the normalizer to UNWRAP transparent wrappers
-# before lookup. Proposed minimal, source-general extension (see strain report):
-#
-#     SourceSpec gains:  wrapper_types: tuple[str, ...] = ()
-#     ClickHouse sets:   wrapper_types=("nullable", "lowcardinality")
-#     generated _normalize() strips wrapper_types recursively, e.g.
-#         Nullable(Int32) -> Int32 -> int32 -> type_map["int32"]="int64"
-#     pg declares no wrappers (wrapper_types=()), so its behavior is unchanged.
-#
-# Once that lands, ADD these fixtures (they prove the unwrap works):
-#     FixtureCase("nullable_int_ok", "Nullable(Int32)", 7, "int64", expected_coerced=7)
-#     FixtureCase("nullable_str_none", "Nullable(String)", None, "string")  # NULL class
-#     FixtureCase("lowcard_str_ok", "LowCardinality(String)", "x", "string",
-#                 expected_coerced="x")
-# ===========================================================================
 
 
 __all__ = ["CLICKHOUSE_SPEC", "CLICKHOUSE_TYPE_MAP", "CLICKHOUSE_COERCER_MAP"]
