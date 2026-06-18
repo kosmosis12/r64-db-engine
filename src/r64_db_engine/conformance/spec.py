@@ -136,6 +136,15 @@ class SourceSpec:
     # native type -> canonical coercer key (see conformance.coercers.REGISTRY).
     coercer_map: Mapping[str, str] = field(default_factory=dict)
     array_coercer: str = "array"
+    # Transparent type WRAPPERS the normalizer unwraps to their inner type before
+    # lookup (e.g. ClickHouse Nullable(T)/LowCardinality(T) -> T). General,
+    # opt-in mechanism: a source with no transparent wrappers leaves this empty.
+    # Per the design's paper-check, pg, Snowflake (VARIANT/OBJECT/ARRAY) and
+    # BigQuery (STRUCT/ARRAY) need none — their composites are opaque containers
+    # handled by type_map, and their nullability is a column mode, not a type.
+    # Unwrapping is recursive: LowCardinality(Nullable(String)) -> String.
+    # Entries must be lowercase identifiers (the normalizer lowercases first).
+    wrapper_types: tuple[str, ...] = ()
 
     # --- behavioral hooks (wired to hand-built or generated code) ----------
     coerce_value: Callable[[Any, str], Any] | None = None

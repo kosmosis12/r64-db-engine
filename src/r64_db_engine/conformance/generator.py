@@ -48,6 +48,13 @@ def regenerate(spec: SourceSpec, out_dir: str | Path, fixtures_ref: str) -> Path
         raise ValueError(
             f"fixtures_ref must be in 'module:attr' form; got {fixtures_ref!r}"
         )
+    for w in spec.wrapper_types:
+        # Wrappers are baked into generated code and matched against the
+        # lowercased type string, so each must be a lowercase identifier.
+        if not (isinstance(w, str) and w.isidentifier() and w == w.lower()):
+            raise ValueError(
+                f"wrapper_types entries must be lowercase identifiers; got {w!r}"
+            )
     pkg_name = f"{spec.dialect}_driver"
     pkg = Path(out_dir) / pkg_name
     pkg.mkdir(parents=True, exist_ok=True)
@@ -85,10 +92,22 @@ def _coercion_module(spec: SourceSpec) -> str:
         ARRAY_DTYPE = {spec.array_dtype!r}
         UNKNOWN_DTYPE = {spec.unknown_dtype!r}
         ARRAY_COERCER = {spec.array_coercer!r}
+        WRAPPER_TYPES: tuple[str, ...] = {tuple(spec.wrapper_types)!r}
 
 
         def _normalize(source_type: str) -> str:
             s = source_type.strip().lower()
+            # Unwrap transparent wrappers to their inner type, recursively, before
+            # stripping params: nullable(int32) -> int32, and composed wrappers
+            # lowcardinality(nullable(string)) -> string. No-op when WRAPPER_TYPES
+            # is empty (e.g. postgres), so non-wrapper sources are unchanged.
+            changed = True
+            while changed:
+                changed = False
+                for w in WRAPPER_TYPES:
+                    if s.startswith(w + "(") and s.endswith(")"):
+                        s = s[len(w) + 1:-1].strip()
+                        changed = True
             s = re.sub(r"\\s*\\([^)]*\\)", "", s)
             s = re.sub(r"\\s+", " ", s).strip()
             return s
