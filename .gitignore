@@ -30,3 +30,8 @@ state.db
 .r64-db-engine/
 
 .DS_Store
+
+# local prompt / build scaffolding (not part of the shipped engine)
+.prompts/
+BUILD-DRIVER-clickhouse.md
+references/
