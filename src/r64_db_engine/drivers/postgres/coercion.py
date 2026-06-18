@@ -3,29 +3,31 @@
 Two layers:
   1. `PG_TYPE_TO_PANDAS` — map a Postgres source type (lowercased, no
      length spec) to the pandas dtype we target.
-  2. `coerce_value(value, source_type)` — single-value coercion for tests.
+  2. `coerce_value(value, source_type)` — single-value coercion for tests
+     and the driver's object-column row-fixup pass.
 
-The driver applies `apply_coercion(df, column_dtypes)` from
-core.coercion AFTER psycopg has already produced Python objects; this
-module's job is to (a) tell the framework the right target dtype per
-column, and (b) handle the values psycopg returns that the framework
-can't generically deal with (UUIDs, dicts for jsonb, bytes for bytea,
-arrays, etc.) by converting them to their string representation BEFORE
-the framework's string-column rules run.
+Layer 2 owns NO value logic of its own: it normalizes the source type, then
+dispatches through `PG_COERCER_MAP` into the canonical registry in
+`conformance.coercers`. That registry is the single source of truth for value
+fidelity, shared verbatim by every generated/sibling driver, so there is one
+implementation instantiated twice — not two implementations kept in sync.
+
+This module's remaining job is the pg-specific wiring: (a) the type -> dtype
+map, and (b) the type -> canonical-coercer-key map that tells the registry how
+to treat each Postgres type (UUIDs/dicts/bytes/arrays -> their string form
+BEFORE the framework's string-column rules run).
 """
 
 from __future__ import annotations
 
-import datetime as dt
-import json
 import logging
 import re
-from decimal import Decimal
 from typing import Any
 
 import pandas as pd
 
-from r64_db_engine.core.ramdb_writer import Row64CodecOverflowError
+from r64_db_engine.conformance import coercers
+from r64_db_engine.conformance.coercers import NumericPrecisionLossError
 
 log = logging.getLogger(__name__)
 
@@ -102,13 +104,50 @@ PG_TYPE_TO_PANDAS: dict[str, str] = {
     "daterange": "string",
 }
 
-_LARGE_VALUE_WARN_BYTES = 64 * 1024
-_ROW64_INT_MIN = -(2**31)
-_ROW64_INT_MAX = 2**31 - 1
+# NumericPrecisionLossError lives in conformance.coercers (a contract-level
+# fidelity error, not pg-specific) and is re-exported here so existing imports —
+# `from ...postgres.coercion import NumericPrecisionLossError` — and the
+# hand-built/regenerated proof share one error identity. See conformance/coercers.py.
 
+# Native (normalized) Postgres type -> canonical coercer key in
+# conformance.coercers.REGISTRY. This is the pg-specific half of the contract:
+# the registry owns *how* each class of value is coerced; this map owns *which*
+# class each Postgres type belongs to. The conformance SourceSpec and the
+# scaffold generator both consume this map, so there is exactly one wiring.
+PG_COERCER_MAP: dict[str, str] = {
+    # integers
+    "smallint": "int", "int2": "int", "integer": "int", "int": "int",
+    "int4": "int", "bigint": "int", "int8": "int", "smallserial": "int",
+    "serial": "int", "bigserial": "int", "oid": "int",
+    # floats
+    "real": "float", "float4": "float", "double precision": "float", "float8": "float",
+    # numerics
+    "numeric": "numeric", "decimal": "numeric",
+    # strings
+    "text": "str", "varchar": "str", "character varying": "str", "char": "str",
+    "character": "str", "bpchar": "str", "name": "str", "citext": "str",
+    # bools
+    "boolean": "bool", "bool": "bool",
+    # date / time
+    "date": "date",
+    "timestamp": "timestamp", "timestamp without time zone": "timestamp",
+    "timestamptz": "timestamp", "timestamp with time zone": "timestamp",
+    "time": "time", "time without time zone": "time",
+    "timetz": "time", "time with time zone": "time",
+    "interval": "interval",
+    # uuid
+    "uuid": "uuid",
+    # json / bytea / array
+    "json": "json", "jsonb": "json", "bytea": "bytea", "array": "array",
+    # network / fts / geometry / xml / ranges -> str
+    "inet": "str", "cidr": "str", "macaddr": "str", "macaddr8": "str",
+    "tsvector": "str", "tsquery": "str", "geometry": "str", "geography": "str",
+    "xml": "str", "int4range": "str", "int8range": "str", "numrange": "str",
+    "tsrange": "str", "tstzrange": "str", "daterange": "str",
+}
 
-class NumericPrecisionLossError(ValueError):
-    """A numeric value cannot be represented exactly as the output float64."""
+# Native array types ([]-suffixed) route here.
+_ARRAY_COERCER = "array"
 
 
 def pandas_dtype_for(source_type: str) -> str:
@@ -146,6 +185,9 @@ def coerce_value(value: Any, source_type: str) -> Any:
     Used by tests and by the driver's row-fixup pass for object-typed
     columns (jsonb, uuid, bytea, arrays, etc.). NaN/None passes through
     so the framework's column-level rules can handle nullability.
+
+    Owns no value logic: it normalizes the type and dispatches through
+    `PG_COERCER_MAP` into the canonical `conformance.coercers` registry.
     """
     if value is None:
         return None
@@ -155,202 +197,20 @@ def coerce_value(value: Any, source_type: str) -> Any:
     norm = _normalize_type(source_type)
 
     if norm.endswith("[]"):
-        return _coerce_array(value)
+        return coercers.REGISTRY[_ARRAY_COERCER](value)
 
-    handler = _DISPATCH.get(norm)
-    if handler is None:
+    key = PG_COERCER_MAP.get(norm)
+    if key is None:
+        # Uncatalogued type — fall back to the registry's string coercer so the
+        # str() conversion is still owned by the canonical registry.
         log.debug("pg_coerce_value: no handler for %r, casting to str", source_type)
-        return str(value)
-    return handler(value)
-
-
-# ---- individual coercers ------------------------------------------------
-
-
-def _coerce_int(value: Any) -> int:
-    return int(value)
-
-
-def _coerce_float(value: Any) -> float:
-    return float(value)
-
-
-def _coerce_numeric(value: Any) -> float:
-    if isinstance(value, Decimal):
-        as_float = float(value)
-        if _precision_loss(value, as_float):
-            raise NumericPrecisionLossError(
-                f"numeric value {value} cannot round-trip exactly through float64"
-            )
-        return as_float
-    return float(value)
-
-
-def _precision_loss(d: Decimal, f: float) -> bool:
-    try:
-        return Decimal(str(f)) != d
-    except Exception:
-        return True
-
-
-def _coerce_str(value: Any) -> str:
-    return str(value)
-
-
-def _coerce_bool(value: Any) -> bool:
-    if isinstance(value, str):
-        return value.lower() in ("t", "true", "1", "y", "yes")
-    return bool(value)
-
-
-def _coerce_date(value: Any) -> dt.datetime:
-    if isinstance(value, dt.datetime):
-        return _strip_tz(value)
-    if isinstance(value, dt.date):
-        return dt.datetime(value.year, value.month, value.day)
-    return pd.to_datetime(value, utc=True).to_pydatetime().replace(tzinfo=None)
-
-
-def _coerce_timestamp(value: Any) -> dt.datetime:
-    if isinstance(value, dt.datetime):
-        return _strip_tz(value)
-    return pd.to_datetime(value, utc=True).to_pydatetime().replace(tzinfo=None)
-
-
-def _strip_tz(value: dt.datetime) -> dt.datetime:
-    if value.tzinfo is not None:
-        return value.astimezone(dt.UTC).replace(tzinfo=None)
-    return value
-
-
-def _coerce_time(value: Any) -> str:
-    if isinstance(value, dt.time):
-        return value.isoformat()
-    return str(value)
-
-
-def _coerce_interval(value: Any) -> int:
-    """timedelta -> microseconds (int64)."""
-    if isinstance(value, dt.timedelta):
-        result = (
-            value.days * 86_400_000_000
-            + value.seconds * 1_000_000
-            + value.microseconds
-        )
-    else:
-        result = int(value)
-    if result < _ROW64_INT_MIN or result > _ROW64_INT_MAX:
-        raise Row64CodecOverflowError(
-            "row64 codec cannot safely store interval conversion: "
-            f"value {result} is outside signed int32 range"
-        )
-    return result
-
-
-def _coerce_uuid(value: Any) -> str:
-    return str(value)
-
-
-def _coerce_json(value: Any) -> str:
-    if isinstance(value, str):
-        encoded = value
-    else:
-        encoded = json.dumps(value, default=str, separators=(",", ":"))
-    if len(encoded.encode("utf-8")) > _LARGE_VALUE_WARN_BYTES:
-        log.warning("pg_coerce_value: json value > %dKB", _LARGE_VALUE_WARN_BYTES // 1024)
-    return encoded
-
-
-def _coerce_bytea(value: Any) -> str:
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        as_bytes = bytes(value)
-    else:
-        as_bytes = str(value).encode("utf-8")
-    if len(as_bytes) > _LARGE_VALUE_WARN_BYTES:
-        log.warning("pg_coerce_value: bytea value > %dKB", _LARGE_VALUE_WARN_BYTES // 1024)
-    return as_bytes.hex()
-
-
-def _coerce_array(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, default=str, separators=(",", ":"))
-
-
-_DISPATCH: dict[str, Any] = {
-    # integers
-    "smallint": _coerce_int,
-    "int2": _coerce_int,
-    "integer": _coerce_int,
-    "int": _coerce_int,
-    "int4": _coerce_int,
-    "bigint": _coerce_int,
-    "int8": _coerce_int,
-    "smallserial": _coerce_int,
-    "serial": _coerce_int,
-    "bigserial": _coerce_int,
-    "oid": _coerce_int,
-    # floats
-    "real": _coerce_float,
-    "float4": _coerce_float,
-    "double precision": _coerce_float,
-    "float8": _coerce_float,
-    # numerics
-    "numeric": _coerce_numeric,
-    "decimal": _coerce_numeric,
-    # strings
-    "text": _coerce_str,
-    "varchar": _coerce_str,
-    "character varying": _coerce_str,
-    "char": _coerce_str,
-    "character": _coerce_str,
-    "bpchar": _coerce_str,
-    "name": _coerce_str,
-    "citext": _coerce_str,
-    # bools
-    "boolean": _coerce_bool,
-    "bool": _coerce_bool,
-    # date / time
-    "date": _coerce_date,
-    "timestamp": _coerce_timestamp,
-    "timestamp without time zone": _coerce_timestamp,
-    "timestamptz": _coerce_timestamp,
-    "timestamp with time zone": _coerce_timestamp,
-    "time": _coerce_time,
-    "time without time zone": _coerce_time,
-    "timetz": _coerce_time,
-    "time with time zone": _coerce_time,
-    "interval": _coerce_interval,
-    # uuid
-    "uuid": _coerce_uuid,
-    # json / bytea
-    "json": _coerce_json,
-    "jsonb": _coerce_json,
-    "bytea": _coerce_bytea,
-    "array": _coerce_array,
-    # network
-    "inet": _coerce_str,
-    "cidr": _coerce_str,
-    "macaddr": _coerce_str,
-    "macaddr8": _coerce_str,
-    # text search
-    "tsvector": _coerce_str,
-    "tsquery": _coerce_str,
-    # geometry / xml / ranges
-    "geometry": _coerce_str,
-    "geography": _coerce_str,
-    "xml": _coerce_str,
-    "int4range": _coerce_str,
-    "int8range": _coerce_str,
-    "numrange": _coerce_str,
-    "tsrange": _coerce_str,
-    "tstzrange": _coerce_str,
-    "daterange": _coerce_str,
-}
+        return coercers.to_str(value)
+    return coercers.REGISTRY[key](value)
 
 
 __all__ = [
     "PG_TYPE_TO_PANDAS",
+    "PG_COERCER_MAP",
     "NumericPrecisionLossError",
     "pandas_dtype_for",
     "coerce_value",
