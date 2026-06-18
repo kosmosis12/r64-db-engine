@@ -18,8 +18,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" --no-deps
-          pip install psycopg[binary] pandas pyyaml pydantic pytest pytest-asyncio ruff mypy testcontainers
+          pip install -e ".[dev]"
       - name: Ruff
         run: ruff check src tests
       - name: Mypy

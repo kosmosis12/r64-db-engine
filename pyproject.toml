@@ -15,7 +15,10 @@ dependencies = [
     "pandas>=2.0",
     "pyyaml>=6.0",
     "pydantic>=2.0",
-    "row64tools>=1.0.6",
+    # Exact pin: the row64tools codec is load-bearing for fidelity (int64->int32
+    # narrowing + the overflow guard). 1.0.11 is the version Gate A was proven
+    # against; pinning keeps local and CI deterministic. See docs/conformance/.
+    "row64tools==1.0.11",
 ]
 
 [project.optional-dependencies]
