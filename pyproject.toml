@@ -13,6 +13,7 @@ requires-python = ">=3.11"
 dependencies = [
     "clickhouse-connect>=0.8",
     "psycopg[binary]>=3.1",
+    "boto3==1.43.58",
     "pandas>=2.0",
     "pyyaml>=6.0",
     "pydantic>=2.0",
