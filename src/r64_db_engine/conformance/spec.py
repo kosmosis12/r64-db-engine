@@ -136,10 +136,14 @@ class SourceSpec:
     # native type -> canonical coercer key (see conformance.coercers.REGISTRY).
     coercer_map: Mapping[str, str] = field(default_factory=dict)
     array_coercer: str = "array"
+    # Native type -> canonical value-sensitive dtype resolver key (see
+    # conformance.coercers.DTYPE_RESOLVERS). Sources whose target dtype depends
+    # on the client value can opt in without making the static type map lie.
+    dtype_resolver_map: Mapping[str, str] = field(default_factory=dict)
 
     # --- behavioral hooks (wired to hand-built or generated code) ----------
     coerce_value: Callable[[Any, str], Any] | None = None
-    pandas_dtype_for: Callable[[str], str] | None = None
+    pandas_dtype_for: Callable[..., str] | None = None
 
     # --- Gate B forward-compat --------------------------------------------
     pushdown: PushdownStub = field(default_factory=PushdownStub)

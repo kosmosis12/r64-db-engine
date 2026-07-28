@@ -24,6 +24,7 @@ wraps them to produce a per-class go/no-go report for the proof + SUMMARY.
 
 from __future__ import annotations
 
+import re
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -47,7 +48,11 @@ def check_type_map(spec: SourceSpec) -> None:
     assert spec.pandas_dtype_for is not None  # for type-checkers
     # 1. Every fixture pins (native type -> dtype).
     for case in spec.fixture_pack.cases:
-        got = spec.pandas_dtype_for(case.source_type)
+        normalized = re.sub(r"\s*\([^)]*\)", "", case.source_type.strip().lower())
+        if normalized in spec.dtype_resolver_map:
+            got = spec.pandas_dtype_for(case.source_type, case.raw_value)
+        else:
+            got = spec.pandas_dtype_for(case.source_type)
         assert got == case.expected_dtype, (
             f"[{spec.dialect}] TYPE_MAP: pandas_dtype_for({case.source_type!r}) "
             f"= {got!r}, fixture {case.name!r} expects {case.expected_dtype!r}"
