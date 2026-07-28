@@ -54,7 +54,7 @@ DynamoDB → pandas → ramdb:
 | `N` | `decimal.Decimal` | int64 **or** float64 | If integral AND within int64: int64; then codec guard raises if > 2^31 boundary per existing overflow guard. If fractional: float64 with exact round-trip check — raise `NumericPrecisionLossError` on loss (consistent with PG-002 policy, honoring any config override the Postgres driver exposes) |
 | `BOOL` | bool | bool → per core bool handling (match Postgres bool mapping) |
 | `NULL` | None | NaN → core NaN fill rules |
-| `B` | bytes | str | base64-encode (match whatever the Postgres `bytea` mapping does — mirror it exactly) |
+| `B` | bytes | str | hex-encode, exactly matching the Postgres `bytea` mapping. **Erratum:** the original base64 instruction conflicted with its own cross-driver mirroring rule; the tree's established ramdb representation controls. |
 | `M` (map) | dict | str | `json.dumps` with sorted keys, Decimal-safe encoder — **JSON, never Python repr** (PG-005 lesson) |
 | `L` (list) | list | str | same JSON policy |
 | `SS`/`NS`/`BS` (sets) | set | str | JSON **array with deterministic sort order** (sets are unordered; unsorted output breaks round-trip tests). NS members go through the same N numeric policy inside the JSON |
