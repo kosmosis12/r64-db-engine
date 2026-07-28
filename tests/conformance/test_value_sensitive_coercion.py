@@ -19,6 +19,14 @@ from r64_db_engine.conformance.generator import regenerate
 from r64_db_engine.drivers.postgres.spec import POSTGRES_SPEC
 
 
+class BytesWrapper:
+    def __init__(self, value: bytes) -> None:
+        self.value = value
+
+    def __bytes__(self) -> bytes:
+        return self.value
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
@@ -56,6 +64,12 @@ def test_deterministic_set_json_sorts_scalars() -> None:
 
 def test_deterministic_set_json_encodes_binary_as_hex() -> None:
     assert coercers.to_deterministic_set_json({b"\xff", b"\x01"}) == '["01","ff"]'
+
+
+def test_bytes_protocol_is_canonical_binary_input() -> None:
+    wrapped = BytesWrapper(b"\x01\xff")
+    assert coercers.to_bytea(wrapped) == "01ff"
+    assert coercers.to_deterministic_json({"value": wrapped}) == '{"value":"01ff"}'
 
 
 def test_deterministic_set_json_rejects_ordered_collection() -> None:

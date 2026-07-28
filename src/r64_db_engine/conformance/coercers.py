@@ -162,7 +162,10 @@ def to_bytea(value: Any) -> str:
     if isinstance(value, (bytes, bytearray, memoryview)):
         as_bytes = bytes(value)
     else:
-        as_bytes = str(value).encode("utf-8")
+        try:
+            as_bytes = bytes(value)
+        except (TypeError, ValueError):
+            as_bytes = str(value).encode("utf-8")
     if len(as_bytes) > _LARGE_VALUE_WARN_BYTES:
         log.warning("coercers: bytea value > %dKB", _LARGE_VALUE_WARN_BYTES // 1024)
     return as_bytes.hex()
@@ -179,6 +182,11 @@ def _json_compatible(value: Any) -> Any:
         return to_decimal_number(value)
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value).hex()
+    if hasattr(value, "__bytes__"):
+        try:
+            return bytes(value).hex()
+        except (TypeError, ValueError):
+            pass
     if isinstance(value, dict):
         return {str(key): _json_compatible(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
