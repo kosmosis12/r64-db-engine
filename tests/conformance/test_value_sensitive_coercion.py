@@ -11,10 +11,7 @@ from pathlib import Path
 import pytest
 
 from r64_db_engine.conformance import coercers
-from r64_db_engine.conformance.coercers import (
-    NumericPrecisionLossError,
-    Row64CodecOverflowError,
-)
+from r64_db_engine.conformance.coercers import NumericPrecisionLossError
 from r64_db_engine.conformance.generator import regenerate
 from r64_db_engine.drivers.postgres.spec import POSTGRES_SPEC
 
@@ -40,9 +37,8 @@ def test_decimal_numeric_dtype(value: Decimal, expected: str) -> None:
     assert coercers.decimal_numeric_dtype(value) == expected
 
 
-def test_decimal_numeric_dtype_rejects_outside_int64() -> None:
-    with pytest.raises(Row64CodecOverflowError, match="outside signed int64"):
-        coercers.decimal_numeric_dtype(Decimal(str(2**63)))
+def test_decimal_numeric_dtype_uses_float_fallback_outside_int64() -> None:
+    assert coercers.decimal_numeric_dtype(Decimal(str(2**63))) == "float64"
 
 
 def test_decimal_number_rejects_fractional_precision_loss() -> None:

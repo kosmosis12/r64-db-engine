@@ -220,9 +220,14 @@ def to_deterministic_set_json(value: Any) -> str:
 
 
 def decimal_numeric_dtype(value: Any) -> str:
-    """Resolve a Decimal-like numeric value to its lossless target dtype."""
-    converted = to_decimal_number(value)
-    return "int64" if isinstance(converted, int) else "float64"
+    """Select int64 for in-range integral Decimal values, float64 otherwise."""
+    if not isinstance(value, Decimal):
+        value = Decimal(str(value))
+    if value.is_finite() and value == value.to_integral_value():
+        integer = int(value)
+        if _INT64_MIN <= integer <= _INT64_MAX:
+            return "int64"
+    return "float64"
 
 
 # Registry keyed by canonical coercer name. A `SourceSpec.coercer_map` points
