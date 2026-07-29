@@ -56,7 +56,7 @@ r64_db_engine = ["py.typed"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
-    "integration: requires a real Postgres (run with --integration)",
+    "integration: requires real local source services (run with --integration)",
 ]
 addopts = "-ra"
 
