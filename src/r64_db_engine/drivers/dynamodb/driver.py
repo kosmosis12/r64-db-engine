@@ -181,8 +181,10 @@ class DynamoDBDriver(Driver):
             raise ValueError("source is required")
         description = await self._call("describe_table", TableName=table_name)
         table = description["Table"]
-        key_names = list(_key_names(table))
-        key_names = [name for name in key_names if name is not None]
+        partition_key, sort_key = _key_names(table)
+        key_names = [partition_key]
+        if sort_key is not None:
+            key_names.append(sort_key)
         mode = table_config.get("mode", "full_refresh")
         incremental_mode = table_config.get("incremental_mode", "filter_scan")
         incremental_key = table_config.get("incremental_key")
