@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 
 import boto3
@@ -46,20 +47,26 @@ def main() -> int:
     )
     wide.wait_until_exists()
     started = time.monotonic()
-    with primary.batch_writer() as batch:
-        for i in range(args.rows):
-            item = {
-                "pk": f"event-{i:06d}", "bucket": "all", "event_n": i,
-                "text": "vehicle—event", "flag": i % 2 == 0, "nothing": None,
-                "binary": bytes([i % 256, (i + 1) % 256]),
-                "map": {"a": Decimal(i), "nested": {"ok": True}},
-                "list": [Decimal(i), ["nested", Decimal("3.125")]],
-                "strings": {"z", "a"}, "numbers": {Decimal("10"), Decimal("2")},
-                "binaries": {b"\xff", b"\x01"},
-            }
-            if i % 2 == 0:
-                item["sparse"] = f"present-{i}"
-            batch.put_item(Item=item)
+    del primary
+
+    def seed_range(start: int, stop: int) -> None:
+        worker_resource = boto3.resource(
+            "dynamodb", endpoint_url=args.endpoint_url, region_name="us-west-2"
+        )
+        with worker_resource.Table(PRIMARY).batch_writer() as batch:
+            for i in range(start, stop):
+                item = _primary_item(i)
+                batch.put_item(Item=item)
+
+    workers = 8
+    chunk = (args.rows + workers - 1) // workers
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [
+            executor.submit(seed_range, start, min(start + chunk, args.rows))
+            for start in range(0, args.rows, chunk)
+        ]
+        for future in futures:
+            future.result()
     with string.batch_writer() as batch:
         for i in range(8):
             batch.put_item(Item={
@@ -75,6 +82,21 @@ def main() -> int:
         batch.put_item(Item={"pk": "precision", "value": Decimal("12345678901234567890.123456789")})
     print(f"[seed_dynamodb] {args.rows} primary rows seeded in {time.monotonic() - started:.2f}s")
     return 0
+
+
+def _primary_item(i: int) -> dict:
+    item = {
+        "pk": f"event-{i:06d}", "bucket": "all", "event_n": i,
+        "text": "vehicle—event", "flag": i % 2 == 0, "nothing": None,
+        "binary": bytes([i % 256, (i + 1) % 256]),
+        "map": {"a": Decimal(i), "nested": {"ok": True}},
+        "list": [Decimal(i), ["nested", Decimal("3.125")]],
+        "strings": {"z", "a"}, "numbers": {Decimal("10"), Decimal("2")},
+        "binaries": {b"\xff", b"\x01"},
+    }
+    if i % 2 == 0:
+        item["sparse"] = f"present-{i}"
+    return item
 
 
 def _create(resource, name: str, sort_name: str, sort_type: str, index_name: str):
