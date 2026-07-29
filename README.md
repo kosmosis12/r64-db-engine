@@ -246,7 +246,7 @@ items in 4.78 seconds. The old SQLite-backed `-sharedDb` mode took 1429.86
 seconds (~35 rows/sec), because its single writer serialized the workers.
 Seeding remains setup work; connector performance is measured separately.
 
-The byte-correct 50K connector proof took 2.214134 seconds, or 22,582.193
+The byte-correct 50K connector proof took 2.242335 seconds, or 22,298.186
 rows/sec, measured end-to-end from pull start through real `row64tools` write
 and `load_to_df` verification. This number includes serialization and is not a
 producer-only Scan rate.
