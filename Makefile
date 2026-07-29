@@ -7,6 +7,7 @@
 #   make test             Run unit tests (pytest, no --integration).
 #   make test-integration Run pytest --integration (needs Docker).
 #   make demo             One-shot: dev-up -> seed -> run --once -> verify ramdb.
+#   make demo-dynamodb    Seed DynamoDB Local -> run the real 50K round-trip proof.
 #   make clean            Stop docker + remove /tmp/r64-demo artifacts.
 #
 # Demo writes to /tmp/r64-demo so it stays out of the repo. After `make demo`
@@ -19,6 +20,7 @@ PG_USER        ?= postgres
 PG_PASSWORD    ?= row64dev
 PG_DATABASE    ?= analytics
 SEED_ROWS      ?= 50000
+DDB_ENV_FILE   ?= $(HOME)/.r64-db-engine/dynamodb-dev.env
 
 DEMO_ROOT      := /tmp/r64-demo
 DEMO_LOADING   := $(DEMO_ROOT)/ramdb
@@ -26,7 +28,8 @@ DEMO_STATE     := $(DEMO_ROOT)/state
 DEMO_OUT       := $(DEMO_LOADING)/PostgresSource/Customers.ramdb
 DEMO_CONFIG    := examples/minimal.yaml
 
-.PHONY: help dev-up dev-down seed test test-integration demo clean
+.PHONY: help dev-up dev-down seed test test-integration demo clean \
+	dev-dynamodb-up dev-dynamodb-down seed-dynamodb demo-dynamodb
 
 help:
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -41,6 +44,19 @@ seed: ## Seed 50K rows per table across all type categories
 	@PG_HOST=localhost PG_PORT=$(PG_PORT) PG_USER=$(PG_USER) \
 	    PG_PASSWORD=$(PG_PASSWORD) PG_DATABASE=$(PG_DATABASE) \
 	    $(PYTHON) scripts/seed_postgres.py --rows $(SEED_ROWS)
+
+dev-dynamodb-up: ## Start ephemeral in-memory DynamoDB Local on :8010
+	@./scripts/dev_dynamodb.sh start
+
+dev-dynamodb-down: ## Stop the DynamoDB Local container
+	@./scripts/dev_dynamodb.sh stop
+
+seed-dynamodb: dev-dynamodb-up ## Seed and exact-verify the DynamoDB Local fixtures
+	@. $(DDB_ENV_FILE) && $(PYTHON) scripts/seed_dynamodb.py --rows $(SEED_ROWS)
+
+demo-dynamodb: seed-dynamodb ## Run the real 50K DynamoDB -> ramdb -> dataframe proof
+	@. $(DDB_ENV_FILE) && $(PYTHON) -m pytest --integration -s \
+	    tests/integration/test_dynamodb_local.py::test_full_refresh_50k_byte_correct_real_ramdb_roundtrip_wall_clock
 
 test: ## Run unit tests (no docker required)
 	@$(PYTHON) -m pytest

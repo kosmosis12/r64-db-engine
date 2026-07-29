@@ -145,17 +145,116 @@ r64-db-engine run --config /tmp/r64-db-engine-config.yaml
 
 The CLI on trunk does not have a separate `daemon` subcommand; continuous daemon mode is `run` without `--once`.
 
-## DynamoDB incremental semantics
+## DynamoDB driver
 
-`filter_scan` is correctness-incremental, not cost-incremental: its filter
-reduces returned rows but DynamoDB still charges read capacity for the full
-Scan. `gsi_query` supports the single-partition time-series GSI pattern, where
-a constant bucket is the GSI partition key and the incremental attribute is its
-sort key. It requires `incremental_gsi_partition_value`; multi-valued partition
-enumeration (for example one partition per fleet or dealer) is out of scope and
-never silently falls back to Scan. GSI results are eventually consistent, so
-the stored watermark advances only to the maximum value actually returned by
-Query, allowing propagation lag to self-heal on a subsequent pull.
+The DynamoDB driver performs read-only Scan or Query operations and materializes
+each configured table as a Row64 `.ramdb`. It uses the standard boto3 credential
+chain; a profile is optional, and raw access keys are not required in config.
+
+```yaml
+dialect: dynamodb
+
+dynamodb:
+  region: us-west-2
+  endpoint_url: null       # http://localhost:8010 for DynamoDB Local
+  profile: null
+  consistent_read: false
+  scan_segments: 1         # 1-32 parallel Scan segments
+  scan_page_limit: null    # optional per-request RCU pacing
+  schema_sample_items: 1000
+
+row64:
+  loading_dir: /var/lib/row64/loading
+  group: DynamoDBSource
+
+tables:
+  - source: vehicle_events
+    target: VehicleEvents
+    mode: incremental
+    incremental_key: event_ts
+    incremental_type: int
+    incremental_mode: gsi_query      # filter_scan or gsi_query
+    incremental_gsi: by_bucket_event_ts
+    incremental_gsi_partition_value: all
+
+runtime:
+  state_dir: /var/lib/r64-db-engine
+```
+
+`filter_scan` is correctness-incremental, not cost-incremental. Its filter
+reduces returned rows, but DynamoDB charges read capacity for every item read by
+the full Scan. It does not reduce consumed RCU. Use `gsi_query` when read cost
+matters and the table has the required index shape.
+
+`gsi_query` supports only a single-partition time-series GSI: a constant bucket
+is the GSI partition key and the incremental attribute is its sort key.
+`incremental_gsi_partition_value` supplies that mandatory equality value.
+Enumerating multiple partition values—for example one partition per fleet—is
+out of scope, and the driver never silently falls back to Scan.
+
+GSI reads are eventually consistent. The driver therefore advances state to
+the maximum watermark actually returned by Query, not to a separately observed
+source maximum. A record still propagating into the index remains eligible for
+a later pull. Full Scan reads are also eventually consistent unless
+`consistent_read: true` is selected; strong reads double the RCU cost.
+
+The minimum table-scoped read policy is:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["dynamodb:DescribeTable", "dynamodb:Scan", "dynamodb:Query",
+               "dynamodb:DescribeTimeToLive"],
+    "Resource": ["arn:aws:dynamodb:*:*:table/<TableName>",
+                 "arn:aws:dynamodb:*:*:table/<TableName>/index/*"]
+  }, {
+    "Effect": "Allow",
+    "Action": "dynamodb:ListTables",
+    "Resource": "*"
+  }]
+}
+```
+
+`ListTables` cannot be table-scoped. Omit its separate `Resource: "*"`
+statement when account-wide discovery is not allowed and configure tables
+explicitly.
+
+### DynamoDB Local quickstart
+
+The helper defaults to port 8010, refuses to start when another process owns
+the selected port, and writes the authoritative endpoint and local credentials
+to `~/.r64-db-engine/dynamodb-dev.env`.
+
+```bash
+make dev-dynamodb-up
+. ~/.r64-db-engine/dynamodb-dev.env
+make seed-dynamodb
+.venv/bin/python -m pytest --integration -s tests/integration/test_dynamodb_local.py
+```
+
+Or run the 50K full-refresh proof alone:
+
+```bash
+make demo-dynamodb
+```
+
+The fixtures are intentionally ephemeral and reseeded on restart. On the Gate
+4 verification host, eight workers seeded and exact-verified 50K in-memory
+items in 4.78 seconds. The old SQLite-backed `-sharedDb` mode took 1429.86
+seconds (~35 rows/sec), because its single writer serialized the workers.
+Seeding remains setup work; connector performance is measured separately.
+
+The byte-correct 50K connector proof took 2.214134 seconds, or 22,582.193
+rows/sec, measured end-to-end from pull start through real `row64tools` write
+and `load_to_df` verification. This number includes serialization and is not a
+producer-only Scan rate.
+
+DynamoDB Streams and Kinesis CDC belong in `row64stream` and are out of scope.
+Write-back, PartiQL, multi-account assume-role orchestration, and point-in-time
+export through S3 are also not implemented; the S3 bulk path is a possible
+future enhancement for very large tables.
 
 ## Production Operation
 
