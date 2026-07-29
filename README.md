@@ -145,6 +145,18 @@ r64-db-engine run --config /tmp/r64-db-engine-config.yaml
 
 The CLI on trunk does not have a separate `daemon` subcommand; continuous daemon mode is `run` without `--once`.
 
+## DynamoDB incremental semantics
+
+`filter_scan` is correctness-incremental, not cost-incremental: its filter
+reduces returned rows but DynamoDB still charges read capacity for the full
+Scan. `gsi_query` supports the single-partition time-series GSI pattern, where
+a constant bucket is the GSI partition key and the incremental attribute is its
+sort key. It requires `incremental_gsi_partition_value`; multi-valued partition
+enumeration (for example one partition per fleet or dealer) is out of scope and
+never silently falls back to Scan. GSI results are eventually consistent, so
+the stored watermark advances only to the maximum value actually returned by
+Query, allowing propagation lag to self-heal on a subsequent pull.
+
 ## Production Operation
 
 - Health: the daemon exposes `GET /health` on `telemetry.health_port` and `r64-db-engine status --health-url http://localhost:8765/health` prints the same status. Healthy or degraded states return HTTP 200; error states return HTTP 503.

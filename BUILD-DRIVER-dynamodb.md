@@ -40,7 +40,7 @@ DynamoDB is schemaless and has no SQL. These are the resolved design calls — i
 ### D3 — Incremental mode = attribute watermark, with honest semantics
 - Incremental uses a configured `incremental_key` attribute (must be `N` or `S`-ISO8601-sortable). Two sub-modes:
   - `filter_scan` (default): `Scan` + `FilterExpression: #k > :watermark`. **Document loudly in README and config comments: this reduces transferred rows, NOT consumed RCU — DynamoDB bills the full scan.** It is correctness-incremental, not cost-incremental.
-  - `gsi_query`: if config provides `incremental_gsi` (a GSI whose sort key is the incremental attribute), use `Query` against the GSI for true cost-incremental pulls. Validate the GSI exists in `validate_table`.
+  - `gsi_query`: if config provides `incremental_gsi` (a GSI whose sort key is the incremental attribute) and `incremental_gsi_partition_value`, use `Query` with equality on the GSI partition key plus a strict watermark condition on its sort key. **Erratum:** the original contract omitted DynamoDB's mandatory partition-key equality input. This mode supports only a constant/single-partition time-series GSI; enumerating multi-valued partitions is out of scope. Validate the GSI shape and required value in `validate_table`; never fall back silently to Scan.
 - Watermark comparison: strictly `>`, and apply the Postgres PG-003 lesson — prove with a test that a row exactly equal to the stored watermark is neither dropped nor duplicated across two consecutive pulls (numeric `N` comparisons are numeric; `S` comparisons are lexicographic — test both).
 - DynamoDB Streams / Kinesis CDC is **explicitly out of scope** for this driver (that is `row64stream` territory). Note it in the driver README section and move on.
 
@@ -84,6 +84,7 @@ tables:
     incremental_key: event_ts        # N (epoch) or ISO8601 S
     incremental_mode: filter_scan    # or gsi_query
     incremental_gsi: null
+    incremental_gsi_partition_value: null # required for gsi_query
 ```
 
 Auth fallback chain analog: explicit `profile` → env (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN`) → shared config/credentials files → instance/IAM role. Fail fast with a clear message on `NoCredentialsError` / `UnrecognizedClientException` / `AccessDeniedException` (PG-008 lesson: auth failures must not look like empty tables).
