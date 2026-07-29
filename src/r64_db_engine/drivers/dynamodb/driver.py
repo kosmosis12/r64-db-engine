@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import boto3
 from botocore.config import Config as BotocoreConfig
 from botocore.exceptions import ClientError, NoCredentialsError
 
-from r64_db_engine.core.driver import Driver, PullResult, TableMetadata, ValidationResult
+from r64_db_engine.core.driver import (
+    ColumnMetadata,
+    Driver,
+    PullResult,
+    TableMetadata,
+    ValidationResult,
+)
 from r64_db_engine.drivers.dynamodb import coercion
 
 log = logging.getLogger(__name__)
@@ -20,6 +27,14 @@ _AUTH_ERROR_CODES = frozenset({"UnrecognizedClientException", "AccessDeniedExcep
 
 class DynamoDBAuthError(RuntimeError):
     """DynamoDB credentials are missing or rejected."""
+
+
+@dataclass(frozen=True)
+class DynamoDBTableMetadata(TableMetadata):
+    status: str
+    billing_mode: str
+    partition_key: str
+    sort_key: str | None
 
 
 class DynamoDBDriver(Driver):
@@ -77,10 +92,80 @@ class DynamoDBDriver(Driver):
             await asyncio.to_thread(close)
 
     async def discover(self, schema_filter: str | None = None) -> list[TableMetadata]:
-        raise NotImplementedError("discover is implemented in the next Gate 2 slice")
+        names = [schema_filter] if schema_filter else await self._list_tables()
+        tables: list[TableMetadata] = []
+        for name in names:
+            description, columns = await self._describe_and_infer(name)
+            table = description["Table"]
+            partition_key, sort_key = _key_names(table)
+            billing = table.get("BillingModeSummary", {}).get(
+                "BillingMode", "PROVISIONED"
+            )
+            tables.append(
+                DynamoDBTableMetadata(
+                    schema="dynamodb",
+                    name=name,
+                    columns=columns,
+                    estimated_rows=table.get("ItemCount"),
+                    candidate_incremental_keys=[
+                        column.name
+                        for column in columns
+                        if column.source_type in {"N", "S"}
+                    ],
+                    status=table.get("TableStatus", "UNKNOWN"),
+                    billing_mode=billing,
+                    partition_key=partition_key,
+                    sort_key=sort_key,
+                )
+            )
+        return tables
 
     async def validate_table(self, table_config: dict[str, Any]) -> ValidationResult:
-        raise NotImplementedError("validate_table is implemented in the next Gate 2 slice")
+        table_name = table_config.get("source") or table_config.get("name")
+        if not table_name:
+            return ValidationResult(ok=False, errors=["source is required"])
+        try:
+            description, columns = await self._describe_and_infer(table_name)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                return ValidationResult(
+                    ok=False, errors=[f"table {table_name} does not exist"]
+                )
+            raise
+
+        table = description["Table"]
+        errors: list[str] = []
+        if table.get("TableStatus") != "ACTIVE":
+            errors.append(
+                f"table {table_name} is not ACTIVE (status={table.get('TableStatus')})"
+            )
+        incremental_key = table_config.get("incremental_key")
+        column_names = {column.name for column in columns}
+        if incremental_key and incremental_key not in column_names:
+            errors.append(f"incremental_key '{incremental_key}' not in sampled schema")
+
+        if table_config.get("incremental_mode", "filter_scan") == "gsi_query":
+            gsi_name = table_config.get("incremental_gsi")
+            partition_value = table_config.get("incremental_gsi_partition_value")
+            if not gsi_name:
+                errors.append("gsi_query requires incremental_gsi")
+            if partition_value is None:
+                errors.append("gsi_query requires incremental_gsi_partition_value")
+            gsi = next(
+                (item for item in table.get("GlobalSecondaryIndexes", [])
+                 if item.get("IndexName") == gsi_name),
+                None,
+            )
+            if gsi_name and gsi is None:
+                errors.append(f"incremental_gsi '{gsi_name}' does not exist")
+            elif gsi is not None:
+                _, gsi_sort = _key_names(gsi)
+                if gsi_sort != incremental_key:
+                    errors.append(
+                        f"incremental_gsi '{gsi_name}' sort key must be "
+                        f"incremental_key '{incremental_key}'"
+                    )
+        return ValidationResult(ok=not errors, errors=errors)
 
     async def pull(
         self, table_config: dict[str, Any], previous_watermark: str | int | None
@@ -96,5 +181,95 @@ class DynamoDBDriver(Driver):
         method = getattr(self._client, operation)
         return await asyncio.to_thread(method, **kwargs)
 
+    async def _list_tables(self) -> list[str]:
+        names: list[str] = []
+        kwargs: dict[str, Any] = {}
+        while True:
+            page = await self._call("list_tables", **kwargs)
+            names.extend(page.get("TableNames", []))
+            last = page.get("LastEvaluatedTableName")
+            if not last:
+                return names
+            kwargs = {"ExclusiveStartTableName": last}
 
-__all__ = ["DynamoDBAuthError", "DynamoDBDriver"]
+    async def _describe_and_infer(
+        self, table_name: str
+    ) -> tuple[dict[str, Any], list[ColumnMetadata]]:
+        description = await self._call("describe_table", TableName=table_name)
+        table = description["Table"]
+        partition_key, sort_key = _key_names(table)
+        key_types = {
+            item["AttributeName"]: item["AttributeType"]
+            for item in table.get("AttributeDefinitions", [])
+        }
+        observed: dict[str, set[str]] = {}
+        examples: dict[str, list[dict[str, Any]]] = {}
+        remaining = self._schema_sample_items
+        kwargs: dict[str, Any] = {
+            "TableName": table_name,
+            "Limit": remaining,
+            "ConsistentRead": self._consistent_read,
+        }
+        while remaining > 0:
+            page = await self._call("scan", **kwargs)
+            for item in page.get("Items", []):
+                for name, attribute in item.items():
+                    source_type = next(iter(attribute))
+                    observed.setdefault(name, set()).add(source_type)
+                    examples.setdefault(name, []).append(attribute)
+            remaining -= len(page.get("Items", []))
+            last = page.get("LastEvaluatedKey")
+            if not last or remaining <= 0:
+                break
+            kwargs["ExclusiveStartKey"] = last
+            kwargs["Limit"] = remaining
+
+        for name, source_type in key_types.items():
+            observed.setdefault(name, set()).add(source_type)
+        ordered = [partition_key]
+        if sort_key is not None:
+            ordered.append(sort_key)
+        ordered.extend(sorted(set(observed) - set(ordered)))
+        columns: list[ColumnMetadata] = []
+        for name in ordered:
+            types = observed[name]
+            if len(types) > 1:
+                source_type = "mixed(" + ",".join(sorted(types)) + ")"
+                dtype = "string"
+                log.warning(
+                    "schema_type_conflict table=%s attribute=%s observed_types=%s",
+                    table_name,
+                    name,
+                    sorted(types),
+                )
+            else:
+                source_type = next(iter(types))
+                values = examples.get(name, [])
+                if source_type == "N" and values:
+                    from boto3.dynamodb.types import TypeDeserializer
+
+                    deserializer = TypeDeserializer()
+                    dtypes = {
+                        coercion.pandas_dtype_for("N", deserializer.deserialize(value))
+                        for value in values
+                    }
+                    dtype = "float64" if "float64" in dtypes else "int64"
+                else:
+                    dtype = coercion.pandas_dtype_for(source_type)
+            columns.append(
+                ColumnMetadata(
+                    name=name,
+                    source_type=source_type,
+                    nullable=name not in {partition_key, sort_key},
+                    pandas_dtype=dtype,
+                )
+            )
+        return description, columns
+
+
+def _key_names(description: dict[str, Any]) -> tuple[str, str | None]:
+    keys = {item["KeyType"]: item["AttributeName"] for item in description["KeySchema"]}
+    return keys["HASH"], keys.get("RANGE")
+
+
+__all__ = ["DynamoDBAuthError", "DynamoDBDriver", "DynamoDBTableMetadata"]
