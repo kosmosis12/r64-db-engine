@@ -13,6 +13,7 @@ import boto3
 PRIMARY = "r64-ddb-primary"
 STRING = "r64-ddb-string"
 GUARDS = "r64-ddb-guards"
+WIDE = "r64-ddb-wide-numbers"
 
 
 def main() -> int:
@@ -22,7 +23,7 @@ def main() -> int:
     args = parser.parse_args()
     resource = boto3.resource("dynamodb", endpoint_url=args.endpoint_url, region_name="us-west-2")
     client = resource.meta.client
-    for name in (PRIMARY, STRING, GUARDS):
+    for name in (PRIMARY, STRING, GUARDS, WIDE):
         try:
             client.delete_table(TableName=name)
             client.get_waiter("table_not_exists").wait(TableName=name)
@@ -37,6 +38,13 @@ def main() -> int:
         BillingMode="PAY_PER_REQUEST",
     )
     guards.wait_until_exists()
+    wide = resource.create_table(
+        TableName=WIDE,
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    wide.wait_until_exists()
     started = time.monotonic()
     with primary.batch_writer() as batch:
         for i in range(args.rows):
@@ -61,6 +69,7 @@ def main() -> int:
     with guards.batch_writer() as batch:
         batch.put_item(Item={"pk": "int32-ok", "value": 2**31 - 1})
         batch.put_item(Item={"pk": "int32-over", "value": 2**31})
+    with wide.batch_writer() as batch:
         batch.put_item(Item={"pk": "int64-ok", "value": 2**63 - 1})
         batch.put_item(Item={"pk": "int64-over", "value": Decimal(str(2**63))})
         batch.put_item(Item={"pk": "precision", "value": Decimal("12345678901234567890.123456789")})
