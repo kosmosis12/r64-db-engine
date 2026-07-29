@@ -8,9 +8,12 @@ from dataclasses import dataclass
 from typing import Any
 
 import boto3
+import pandas as pd
+from boto3.dynamodb.types import TypeDeserializer
 from botocore.config import Config as BotocoreConfig
 from botocore.exceptions import ClientError, NoCredentialsError
 
+from r64_db_engine.core.coercion import apply_coercion
 from r64_db_engine.core.driver import (
     ColumnMetadata,
     Driver,
@@ -170,7 +173,64 @@ class DynamoDBDriver(Driver):
     async def pull(
         self, table_config: dict[str, Any], previous_watermark: str | int | None
     ) -> PullResult:
-        raise NotImplementedError("pull is implemented in the next Gate 2 slice")
+        import time
+
+        started = time.monotonic()
+        table_name = table_config.get("source") or table_config.get("name")
+        if not table_name:
+            raise ValueError("source is required")
+        description = await self._call("describe_table", TableName=table_name)
+        table = description["Table"]
+        key_names = list(_key_names(table))
+        key_names = [name for name in key_names if name is not None]
+        mode = table_config.get("mode", "full_refresh")
+        incremental_mode = table_config.get("incremental_mode", "filter_scan")
+        incremental_key = table_config.get("incremental_key")
+
+        if mode == "incremental" and incremental_mode == "gsi_query":
+            items = await self._query_incremental(
+                table_name, table, table_config, previous_watermark
+            )
+        else:
+            scan_kwargs: dict[str, Any] = {
+                "TableName": table_name,
+                "ConsistentRead": self._consistent_read,
+            }
+            if self._scan_page_limit is not None:
+                scan_kwargs["Limit"] = self._scan_page_limit
+            if mode == "incremental" and previous_watermark is not None:
+                if not incremental_key:
+                    raise ValueError("incremental mode requires incremental_key")
+                attr_type = _attribute_type(table, incremental_key)
+                scan_kwargs.update(
+                    {
+                        "FilterExpression": "#k > :watermark",
+                        "ExpressionAttributeNames": {"#k": incremental_key},
+                        "ExpressionAttributeValues": {
+                            ":watermark": _serialize_scalar(previous_watermark, attr_type)
+                        },
+                    }
+                )
+            items = await self._scan_all(scan_kwargs)
+
+        dataframe = _items_to_dataframe(
+            items,
+            key_names=key_names,
+            ascii_sanitize=bool(table_config.get("ascii_sanitize", True)),
+        )
+        new_watermark: str | int | None = previous_watermark
+        if mode != "incremental":
+            new_watermark = None
+        elif incremental_key and incremental_key in dataframe and not dataframe.empty:
+            new_watermark = dataframe[incremental_key].max()
+            if hasattr(new_watermark, "item"):
+                new_watermark = new_watermark.item()
+        return PullResult(
+            dataframe=dataframe,
+            new_watermark=new_watermark,
+            rows_pulled=len(dataframe),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
 
     def coerce_value(self, value: Any, source_type: str) -> Any:
         return coercion.coerce_value(value, source_type)
@@ -266,10 +326,144 @@ class DynamoDBDriver(Driver):
             )
         return description, columns
 
+    async def _scan_all(self, kwargs: dict[str, Any]) -> list[dict[str, Any]]:
+        if self._scan_segments == 1:
+            return await asyncio.to_thread(self._paginate_sync, "scan", kwargs)
+        pages = await asyncio.gather(
+            *[
+                asyncio.to_thread(
+                    self._paginate_sync,
+                    "scan",
+                    {**kwargs, "Segment": segment, "TotalSegments": self._scan_segments},
+                )
+                for segment in range(self._scan_segments)
+            ]
+        )
+        return [item for segment_items in pages for item in segment_items]
+
+    async def _query_incremental(
+        self,
+        table_name: str,
+        table: dict[str, Any],
+        table_config: dict[str, Any],
+        previous_watermark: str | int | None,
+    ) -> list[dict[str, Any]]:
+        gsi_name = table_config.get("incremental_gsi")
+        partition_value = table_config.get("incremental_gsi_partition_value")
+        incremental_key = table_config.get("incremental_key")
+        if not gsi_name or partition_value is None or not incremental_key:
+            raise ValueError(
+                "gsi_query requires incremental_gsi, incremental_key, and "
+                "incremental_gsi_partition_value"
+            )
+        gsi = next(
+            (item for item in table.get("GlobalSecondaryIndexes", [])
+             if item.get("IndexName") == gsi_name),
+            None,
+        )
+        if gsi is None:
+            raise ValueError(f"incremental_gsi '{gsi_name}' does not exist")
+        partition_key, sort_key = _key_names(gsi)
+        if sort_key != incremental_key:
+            raise ValueError(
+                f"incremental_gsi '{gsi_name}' sort key must be '{incremental_key}'"
+            )
+        values = {
+            ":partition": _serialize_scalar(
+                partition_value, _attribute_type(table, partition_key)
+            )
+        }
+        expression = "#p = :partition"
+        if previous_watermark is not None:
+            expression += " AND #k > :watermark"
+            values[":watermark"] = _serialize_scalar(
+                previous_watermark, _attribute_type(table, incremental_key)
+            )
+        kwargs: dict[str, Any] = {
+            "TableName": table_name,
+            "IndexName": gsi_name,
+            "KeyConditionExpression": expression,
+            "ExpressionAttributeNames": {"#p": partition_key, "#k": incremental_key},
+            "ExpressionAttributeValues": values,
+        }
+        if self._scan_page_limit is not None:
+            kwargs["Limit"] = self._scan_page_limit
+        return await asyncio.to_thread(self._paginate_sync, "query", kwargs)
+
+    def _paginate_sync(
+        self, operation: str, initial_kwargs: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        if self._client is None:
+            raise RuntimeError("DynamoDBDriver.connect() not called")
+        method = getattr(self._client, operation)
+        kwargs = dict(initial_kwargs)
+        items: list[dict[str, Any]] = []
+        while True:
+            page = method(**kwargs)
+            items.extend(page.get("Items", []))
+            last = page.get("LastEvaluatedKey")
+            if not last:
+                return items
+            kwargs["ExclusiveStartKey"] = last
+
 
 def _key_names(description: dict[str, Any]) -> tuple[str, str | None]:
     keys = {item["KeyType"]: item["AttributeName"] for item in description["KeySchema"]}
     return keys["HASH"], keys.get("RANGE")
+
+
+def _attribute_type(table: dict[str, Any], name: str) -> str:
+    for item in table.get("AttributeDefinitions", []):
+        if item["AttributeName"] == name:
+            return item["AttributeType"]
+    raise ValueError(f"attribute '{name}' has no declared S/N type")
+
+
+def _serialize_scalar(value: Any, source_type: str) -> dict[str, str]:
+    if source_type == "N":
+        return {"N": str(value)}
+    if source_type == "S":
+        return {"S": str(value)}
+    raise ValueError(f"incremental attributes must be S or N, got {source_type}")
+
+
+def _items_to_dataframe(
+    items: list[dict[str, Any]], *, key_names: list[str], ascii_sanitize: bool
+) -> pd.DataFrame:
+    if not items:
+        return pd.DataFrame()
+    deserializer = TypeDeserializer()
+    observed: dict[str, set[str]] = {}
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        row: dict[str, Any] = {}
+        for name, attribute in item.items():
+            source_type = next(iter(attribute))
+            observed.setdefault(name, set()).add(source_type)
+            row[name] = coercion.coerce_value(
+                deserializer.deserialize(attribute), source_type
+            )
+        rows.append(row)
+    ordered = [name for name in key_names if name in observed]
+    ordered.extend(sorted(set(observed) - set(ordered)))
+    frame = pd.DataFrame(rows).reindex(columns=ordered)
+    dtypes: dict[str, str] = {}
+    for name in ordered:
+        types = observed[name]
+        if len(types) > 1:
+            dtypes[name] = "string"
+        else:
+            source_type = next(iter(types))
+            if source_type == "N":
+                values = frame[name].dropna()
+                dtypes[name] = (
+                    "float64"
+                    if any(isinstance(value, float) for value in values)
+                    else "int64"
+                )
+            else:
+                dtypes[name] = coercion.pandas_dtype_for(source_type)
+    return apply_coercion(frame, dtypes, ascii_sanitize=ascii_sanitize)
 
 
 __all__ = ["DynamoDBAuthError", "DynamoDBDriver", "DynamoDBTableMetadata"]
