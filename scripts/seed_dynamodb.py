@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Seed DynamoDB Local with deterministic Gate 3 fixtures."""
+"""Seed DynamoDB Local with deterministic Gate 3 fixtures.
+
+Measured on the Gate 4 verification host with 50K rows and eight workers:
+`-sharedDb` (SQLite writer) took 1429.86s (~35 rows/s); `-inMemory` took
+4.78s (~10,460 rows/s). `scripts/dev_dynamodb.sh` therefore uses ephemeral
+in-memory mode: fixtures are deliberately reseeded, so persistence has no
+value and serializes the parallel writers.
+"""
 
 from __future__ import annotations
 
