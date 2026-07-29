@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from botocore.exceptions import ClientError, NoCredentialsError
 
+from r64_db_engine.core.driver import Driver
 from r64_db_engine.drivers import resolve
 from r64_db_engine.drivers.dynamodb import driver as driver_module
 from r64_db_engine.drivers.dynamodb.driver import DynamoDBAuthError, DynamoDBDriver
@@ -96,6 +97,12 @@ async def test_connect_does_not_relabel_non_auth_client_error(
 
 def test_registry_resolves_dynamodb_driver() -> None:
     assert resolve("dynamodb") is DynamoDBDriver
+
+
+def test_bare_driver_satisfies_unchanged_abc() -> None:
+    driver: Driver = DynamoDBDriver()
+    assert isinstance(driver, Driver)
+    assert not DynamoDBDriver.__abstractmethods__
 
 
 @pytest.mark.parametrize("segments", [0, 33])
