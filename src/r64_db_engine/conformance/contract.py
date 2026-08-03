@@ -13,7 +13,8 @@ Assertion classes:
              the behavioral pandas_dtype_for hook.
   WIDTH    — a value wider than the codec lane is caught (founding template:
              the int32 lane), whether at the coercer or at the writer.
-  NULL     — None passthrough + per-dtype NaN/NaT sentinel fill rules.
+  NULL     — None passthrough; nulls PRESERVED by the source-agnostic layer,
+             and collapsed to the legacy sentinels at the ramdb boundary.
   TZ       — tz-aware temporal -> UTC-naive; date/timestamp/time normalization.
   RAMDB    — write -> load_to_df -> value-equal (codec-aware).
 
@@ -33,7 +34,7 @@ import pandas as pd
 
 from r64_db_engine.conformance.spec import UNSET, FixtureCase, SourceSpec
 from r64_db_engine.core.coercion import apply_coercion
-from r64_db_engine.core.ramdb_writer import RamdbWriter
+from r64_db_engine.core.ramdb_writer import RamdbWriter, apply_ramdb_null_fill
 
 _ROW64_INT_LANE = "int"
 
@@ -111,9 +112,27 @@ def check_value_width(spec: SourceSpec) -> None:
 
 
 def check_null_sentinel(spec: SourceSpec) -> None:
+    """NULL fidelity, in two halves.
+
+    CONTRACT CHANGE (null-fidelity): this class used to assert that the
+    source-agnostic framework filled nulls with per-dtype sentinels (0, "",
+    False). That fill was a `.ramdb` FORMAT constraint enforced globally, so it
+    degraded every sink — including formats that carry nulls natively.
+
+    The rule moved rather than disappeared, and this class now pins BOTH ends of
+    the move, which is strictly stronger than what it asserted before:
+
+      1. `coerce_value(None, ...)` still passes None through.
+      2. `apply_coercion` PRESERVES nulls, in nullable dtypes.
+      3. `apply_ramdb_null_fill` still produces the exact legacy sentinels.
+
+    Any driver implementing this contract inherits the same split. Byte-level
+    proof that `.ramdb` output is unchanged lives in
+    `tests/core/test_ramdb_golden.py`.
+    """
     spec.require_hooks()
     assert spec.coerce_value is not None
-    # 1. None passes through coercion untouched (the framework fills later).
+    # 1. None passes through coercion untouched.
     for case in spec.fixture_pack.cases:
         if not case.nullable:
             continue
@@ -138,13 +157,26 @@ def check_null_sentinel(spec: SourceSpec) -> None:
     if "bool" in dtypes:
         cols["b"] = pd.Series([True, float("nan")])
         expected["b"] = ("bool", [True, False])
+    # `expected` above describes the RAMDB-BOUNDARY result; the framework's own
+    # output is checked for preservation first, below.
     if "datetime64[ns]" in dtypes:
         cols["t"] = pd.to_datetime(["2026-01-01", None])
         expected["t"] = ("datetime64[ns]", "nat_preserved")
     if not cols:
         return
     df = pd.DataFrame(cols)
-    out = apply_coercion(df, {c: expected[c][0] for c in cols}, ascii_sanitize=False)
+    coerced = apply_coercion(df, {c: expected[c][0] for c in cols}, ascii_sanitize=False)
+
+    # 2. The source-agnostic layer PRESERVES nulls for the fillable dtypes.
+    for col in ("i", "s", "b"):
+        if col in coerced:
+            assert coerced[col].isna().iloc[1], (
+                f"[{spec.dialect}] NULL: {col} null was erased by the "
+                "source-agnostic layer; null policy belongs at the sink boundary"
+            )
+
+    # 3. The ramdb boundary applies the legacy sentinels, unchanged.
+    out = apply_ramdb_null_fill(coerced)
     for col, (_dtype, want) in expected.items():
         series = out[col]
         if want == "nan_preserved":

@@ -222,45 +222,36 @@ def test_e2e_float_null_from_real_postgres_lands_as_arrow_null(pg, tmp_path: Pat
     assert table.column("d").null_count == 1
 
 
-def test_e2e_int_and_text_nulls_are_erased_upstream(pg, tmp_path: Path) -> None:
-    """CURRENT behaviour, pinned: SQL NULL becomes 0 / "" before any sink sees it.
+def test_e2e_ramdb_fill_still_applies_at_its_own_boundary(pg, tmp_path: Path) -> None:
+    """The accommodation did not disappear — it relocated.
 
-    This is NOT a sink defect and NOT introduced by the Arrow work — it is
-    `core/coercion.py`:
-
-        coerce_int_column:    series.fillna(0)     # logged at debug only
-        coerce_string_column: series.where(~isna, "")
-
-    A ramdb-era constraint: pandas int64 has no NaN and the ramdb codec has no
-    null, so the coercion layer erases the distinction for every sink. The
-    .ramdb path has the identical behaviour.
-
-    Pinned as a passing test so the lossy behaviour is visible in the suite
-    rather than implied; the companion xfail below records the behaviour that
-    would be correct for a null-capable format.
+    The same nulls that now survive into Arrow are still collapsed to 0 / "" on
+    the way into `.ramdb`, because that format cannot hold them. Asserted here
+    against the frame the driver actually produced, so the two sinks' differing
+    policies are visible side by side in one test file.
     """
+    from r64_db_engine.core.ramdb_writer import apply_ramdb_null_fill
+
     table = _seed_nulls(pg, tmp_path)
-    rows = {r["id"]: r for r in table.to_pylist()}
-    assert rows[2]["n"] == 0, "SQL NULL BIGINT is filled with 0 upstream"
-    assert rows[2]["s"] == "", "SQL NULL TEXT is filled with empty string upstream"
-    assert table.column("n").null_count == 0
-    assert table.column("s").null_count == 0
+    arrow_rows = {r["id"]: r for r in table.to_pylist()}
+    # Arrow: nulls preserved.
+    assert arrow_rows[2]["n"] is None
+    assert arrow_rows[2]["s"] is None
+
+    # ramdb: the identical data, filled at the ramdb boundary.
+    filled = apply_ramdb_null_fill(table.to_pandas())
+    ramdb_rows = {r["id"]: r for r in filled.to_dict("records")}
+    assert ramdb_rows[2]["n"] == 0
+    assert ramdb_rows[2]["s"] == ""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Null erasure in core/coercion.py: SQL NULL in BIGINT/TEXT is filled "
-        "with 0/'' before any sink runs. Harmless for .ramdb (no null "
-        "representation), lossy for Arrow (which has a null bitmap for both "
-        "types). Same shape as PG-001: a ramdb codec limitation imposed on a "
-        "format that does not share it. Fixing it means changing the "
-        "source-agnostic coercion layer, which also feeds the ramdb path — "
-        "deliberately not done under cover of the sink work."
-    ),
-)
-def test_e2e_int_and_text_nulls_should_survive_to_arrow(pg, tmp_path: Path) -> None:
-    """The behaviour a null-capable sink should have. Reproducer for the defect."""
+def test_e2e_int_and_text_nulls_survive_to_arrow(pg, tmp_path: Path) -> None:
+    """CLOSED LOOP. Was xfail(strict=True); now passes.
+
+    Null policy moved out of the source-agnostic coercion layer to the sink
+    boundary, so a null-capable format keeps its nulls. A SQL NULL in BIGINT and
+    TEXT now arrives as a true Arrow null instead of 0 / "".
+    """
     table = _seed_nulls(pg, tmp_path)
     rows = {r["id"]: r for r in table.to_pylist()}
     assert rows[2]["n"] is None

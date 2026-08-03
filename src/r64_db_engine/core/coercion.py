@@ -1,15 +1,45 @@
 """Source-agnostic dataframe coercion rules. See SPEC §6.2 and §6.3.
 
 Drivers produce a raw DataFrame with intended target dtypes per column.
-This module applies the universal ramdb-safety rules on top:
+This module applies the universal rules on top:
 
-  - NaN in integer columns -> filled with 0 (NaN forces float promotion).
-  - NaN in string columns -> filled with "".
-  - NaN in boolean columns -> filled with False.
-  - NaN/NaT in float and datetime columns -> preserved.
-  - String columns with ascii_sanitize=True -> ASCII-replaced.
+  - Nulls are PRESERVED in every column type.
+  - String columns with ascii_sanitize=True -> ASCII-replaced (non-null only).
+  - Integers use pandas' nullable `Int64`, booleans `boolean`.
 
 Pure functions; never raises on a row, logs at debug for telemetry only.
+
+# Null policy lives at the SINK boundary, not here
+
+This module used to fill NaN with 0 in integer columns and "" in string
+columns. That was a `.ramdb` FORMAT limitation — pandas' numpy `int64` cannot
+hold NA and the row64tools codec has no null representation — enforced in the
+source-agnostic layer, so it silently degraded fidelity for EVERY sink,
+including formats that represent null natively.
+
+The cost was real: a SQL `NULL` in a `BIGINT` became `0`, indistinguishable
+downstream from a legitimate zero. That is the same class of defect as PG-001
+(int64 narrowing) — one output format's constraint imposed on data destined for
+formats that do not share it.
+
+So the rule moved rather than changed: this layer now preserves nulls, and
+`core/ramdb_writer.py` applies the legacy fill explicitly at write time as a
+documented row64tools accommodation. `.ramdb` output is byte-identical to
+before — asserted against golden files in `tests/core/test_ramdb_golden.py` —
+and `ArrowIpcSink` now carries true Arrow nulls.
+
+# Why pandas nullable dtypes rather than Arrow-backed ones
+
+`Int64`/`boolean` are pandas-native, so this layer stays free of any sink's
+library — putting `import pyarrow` in the source-agnostic core would be the
+same category of leak the driver firewall exists to prevent. They also map
+cleanly both ways: `Int64` -> Arrow `int64` + null bitmap for the Arrow sink,
+and `.fillna(0).astype("int64")` reproduces the exact legacy numpy dtype for
+the ramdb sink.
+
+Plain numpy `int64` was not an option: assigning NA to it silently promotes the
+whole column to `float64`, which is its own fidelity trap (every value above
+2^53 starts rounding).
 """
 
 from __future__ import annotations
@@ -41,12 +71,16 @@ def ascii_sanitize_series(series: pd.Series) -> pd.Series:
     return series.astype(str).str.encode("ascii", errors="replace").str.decode("ascii")
 
 
-def coerce_int_column(series: pd.Series, target_dtype: str = "int64") -> pd.Series:
-    """Fill NaN with 0 then cast. Logs the fill count at debug."""
+def coerce_int_column(series: pd.Series, target_dtype: str = "Int64") -> pd.Series:
+    """Cast to a nullable integer dtype, PRESERVING nulls.
+
+    `Int64` rather than `int64`: numpy integers cannot hold NA, and assigning
+    one promotes the column to `float64` — silently lossy above 2^53. The
+    legacy fill-with-0 now lives in `core/ramdb_writer.py`, at the boundary of
+    the format that actually requires it.
+    """
     if series.isna().any():
-        n_filled = int(series.isna().sum())
-        log.debug("coerce_int: filled %d NaN(s) with 0 in column", n_filled)
-        series = series.fillna(0)
+        log.debug("coerce_int: preserved %d null(s) in column", int(series.isna().sum()))
     return series.astype(target_dtype)
 
 
@@ -56,23 +90,31 @@ def coerce_float_column(series: pd.Series, target_dtype: str = "float64") -> pd.
 
 
 def coerce_string_column(series: pd.Series, ascii_sanitize: bool = True) -> pd.Series:
-    """Fill NaN with "" and optionally ASCII-sanitize."""
-    series = series.where(~series.isna(), "")
+    """Optionally ASCII-sanitize, PRESERVING nulls.
+
+    Sanitization applies to non-null values only — a null is not a string to
+    transliterate. The legacy fill-with-"" lives in `core/ramdb_writer.py`.
+    """
+    null_mask = series.isna()
     series = series.astype(str)
-    # Replace literal "nan" strings produced by astype(str) on lingering floats.
-    series = series.where(series != "nan", "")
+    # `astype(str)` stringifies NA into a literal "nan"/"<NA>"; restore real
+    # nulls from the mask captured before the cast rather than string-matching.
     if ascii_sanitize:
         series = ascii_sanitize_series(series)
-    return series.astype("string")
+    series = series.astype("string")
+    return series.mask(null_mask, pd.NA)
 
 
 def coerce_bool_column(series: pd.Series) -> pd.Series:
-    """Fill NaN with False then cast to bool."""
+    """Cast to nullable `boolean`, PRESERVING nulls.
+
+    numpy `bool` has no NA and coerces null to False — which reads downstream
+    as a definite negative rather than "unknown". The legacy fill-with-False
+    lives in `core/ramdb_writer.py`.
+    """
     if series.isna().any():
-        n_filled = int(series.isna().sum())
-        log.debug("coerce_bool: filled %d NaN(s) with False", n_filled)
-        series = series.fillna(False)
-    return series.astype(bool)
+        log.debug("coerce_bool: preserved %d null(s)", int(series.isna().sum()))
+    return series.astype("boolean")
 
 
 def coerce_datetime_column(series: pd.Series) -> pd.Series:
@@ -106,7 +148,7 @@ def apply_coercion(
 
 def _coerce_one(series: pd.Series, target_dtype: str, ascii_sanitize: bool) -> pd.Series:
     if target_dtype in INT_DTYPES:
-        return coerce_int_column(series, target_dtype="int64")
+        return coerce_int_column(series, target_dtype="Int64")
     if target_dtype in FLOAT_DTYPES:
         return coerce_float_column(series, target_dtype="float64")
     if target_dtype in BOOL_DTYPES:

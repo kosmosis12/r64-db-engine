@@ -31,11 +31,19 @@ def test_ascii_sanitize_handles_emoji():
 # ---- NaN handling (§6.3) ---------------------------------------------
 
 
-def test_int_column_fills_nan_with_zero():
+def test_int_column_preserves_nulls():
+    """Null policy moved to the sink boundary; this layer must not erase.
+
+    The fill-with-0 that used to live here is now in
+    `core/ramdb_writer.apply_ramdb_null_fill`, applied only by the format that
+    requires it. See tests/core/test_ramdb_golden.py for the byte-identity
+    contract that makes the move safe.
+    """
     s = pd.Series([1.0, 2.0, np.nan, 4.0])
     out = coercion.coerce_int_column(s)
-    assert out.tolist() == [1, 2, 0, 4]
-    assert str(out.dtype) == "int64"
+    assert str(out.dtype) == "Int64"
+    assert out.isna().sum() == 1
+    assert out.dropna().tolist() == [1, 2, 4]
 
 
 def test_float_column_preserves_nan():
@@ -46,10 +54,11 @@ def test_float_column_preserves_nan():
     assert out.iloc[2] == 3.0
 
 
-def test_string_column_fills_nan_with_empty():
+def test_string_column_preserves_nulls():
     s = pd.Series(["a", None, "b", np.nan])
     out = coercion.coerce_string_column(s, ascii_sanitize=True)
-    assert out.tolist() == ["a", "", "b", ""]
+    assert out.isna().sum() == 2
+    assert out.dropna().tolist() == ["a", "b"]
 
 
 def test_string_column_applies_ascii_when_enabled():
@@ -64,10 +73,13 @@ def test_string_column_skips_ascii_when_disabled():
     assert out.tolist() == ["café", "plain"]
 
 
-def test_bool_column_fills_nan_with_false():
+def test_bool_column_preserves_nulls():
+    """A null boolean is "unknown", not a definite False."""
     s = pd.Series([True, False, np.nan, True])
     out = coercion.coerce_bool_column(s)
-    assert out.tolist() == [True, False, False, True]
+    assert str(out.dtype) == "boolean"
+    assert out.isna().sum() == 1
+    assert out.dropna().tolist() == [True, False, True]
 
 
 def test_datetime_column_preserves_nat():
@@ -108,9 +120,14 @@ def test_apply_coercion_dispatches_per_column():
             "ts": "datetime64[ns]",
         },
     )
-    assert out["i"].tolist() == [1, 0, 3]
-    assert out["s"].tolist() == ["caf?", "", "plain"]
-    assert out["b"].tolist() == [True, False, False]
+    assert str(out["i"].dtype) == "Int64"
+    assert out["i"].isna().sum() == 1
+    assert out["i"].dropna().tolist() == [1, 3]
+    assert out["s"].dropna().tolist() == ["caf?", "plain"]
+    assert out["s"].isna().sum() == 1
+    assert str(out["b"].dtype) == "boolean"
+    assert out["b"].dropna().tolist() == [True, False]
+    assert out["b"].isna().sum() == 1
     assert pd.isna(out["ts"].iloc[1])
 
 
