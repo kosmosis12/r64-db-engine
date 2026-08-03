@@ -22,7 +22,7 @@ from r64_db_engine.core import coercion
 from r64_db_engine.core import logging as r64log
 from r64_db_engine.core.config import Config
 from r64_db_engine.core.driver import Driver
-from r64_db_engine.core.ramdb_writer import RamdbWriter
+from r64_db_engine.core.sink import Sink, SinkError
 from r64_db_engine.core.state import StateStore
 
 log = logging.getLogger(__name__)
@@ -59,12 +59,13 @@ class Daemon:
         config: Config,
         driver: Driver,
         state: StateStore,
-        writer: RamdbWriter,
+        writer: Sink,
     ) -> None:
         self.config = config
         self.driver = driver
         self.state = state
         self.writer = writer
+        _reject_incremental_on_nonappendable_sink(config, writer)
         self.started_at: float = 0.0
         self._shutdown = asyncio.Event()
         self._pg_connected: bool = False
@@ -400,15 +401,58 @@ def _iso_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _reject_incremental_on_nonappendable_sink(config: Config, sink: Sink) -> None:
+    """Fail fast when a table asks for incremental against a non-appendable sink.
+
+    The incremental path merges by reading the sink's OWN previous output back
+    in (`Daemon._merge_incremental`) — the PG-011 read-your-own-output pattern.
+    For a format whose layout is not appendable in place, that merge cannot be
+    done correctly.
+
+    The failure is raised at construction rather than at the first pull, and it
+    is raised rather than silently downgraded to full_refresh. A silent
+    downgrade would write a partial snapshot that is indistinguishable, to the
+    consumer, from a complete one — strictly worse than refusing to start.
+    """
+    if sink.supports_incremental():
+        return
+    offenders = [
+        t.target for t in config.tables if config.resolve_table(t)["mode"] == "incremental"
+    ]
+    if offenders:
+        raise SinkError(
+            f"sink '{type(sink).sink_name()}' cannot serve incremental mode "
+            f"(its output format is not appendable in place), but these tables "
+            f"request it: {', '.join(sorted(offenders))}. Use mode: full_refresh."
+        )
+
+
 def build_daemon(config: Config) -> Daemon:
-    """Wire up daemon + driver + state + writer from a Config."""
+    """Wire up daemon + driver + state + sink from a Config."""
     from r64_db_engine.drivers import resolve
+    from r64_db_engine.sinks import default_sink_name
+    from r64_db_engine.sinks import resolve as resolve_sink
 
     driver_cls = resolve(config.dialect)
     driver = driver_cls()
     state = StateStore(Path(config.runtime.state_dir).expanduser() / "state.db")
-    writer = RamdbWriter(config.row64.loading_dir, config.row64.group)
-    return Daemon(config=config, driver=driver, state=state, writer=writer)
+
+    # Core names zero sinks: the default comes from the registry, and the
+    # options are either the sink's own opaque block or — for a config written
+    # before sinks existed — the legacy `row64:` output block.
+    if config.sink is not None:
+        sink_name = config.sink.type
+        sink_options = config.sink.options()
+    else:
+        sink_name = default_sink_name()
+        sink_options = {
+            "loading_dir": config.row64.loading_dir,
+            "group": config.row64.group,
+        }
+
+    sink = resolve_sink(sink_name)()
+    sink.open(sink_options)
+    return Daemon(config=config, driver=driver, state=state, writer=sink)
 
 
 __all__ = ["Daemon", "TableRuntimeState", "build_daemon"]

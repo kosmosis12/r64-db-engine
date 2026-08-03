@@ -25,8 +25,8 @@ from r64_db_engine.core.driver import (
     TableMetadata,
     ValidationResult,
 )
-from r64_db_engine.core.ramdb_writer import RamdbWriter
 from r64_db_engine.core.state import StateStore
+from r64_db_engine.sinks.ramdb import RamdbSink
 
 
 class StubDriver(Driver):
@@ -122,7 +122,7 @@ async def test_daemon_once_writes_ramdb(tmp_path: Path, fake_ramdb) -> None:
     cfg = _config(tmp_path)
     driver = StubDriver()
     state = StateStore(tmp_path / "state" / "state.db")
-    writer = RamdbWriter(cfg.row64.loading_dir, cfg.row64.group)
+    writer = _ramdb_sink(cfg)
     d = Daemon(cfg, driver, state, writer)
 
     await d.run(once=True)
@@ -136,7 +136,7 @@ async def test_daemon_full_refresh_status_is_ok(tmp_path: Path, fake_ramdb) -> N
     cfg = _config(tmp_path)
     driver = StubDriver()
     state = StateStore(tmp_path / "state" / "state.db")
-    writer = RamdbWriter(cfg.row64.loading_dir, cfg.row64.group)
+    writer = _ramdb_sink(cfg)
     d = Daemon(cfg, driver, state, writer)
     await d.run(once=True)
     snap = d.status_snapshot()
@@ -156,7 +156,7 @@ async def test_daemon_incremental_advances_watermark(tmp_path: Path, fake_ramdb)
         PullResult(pd.DataFrame({"id": [4, 5]}), new_watermark=5, rows_pulled=2, duration_ms=5),
     ]
     state = StateStore(tmp_path / "state" / "state.db")
-    writer = RamdbWriter(cfg.row64.loading_dir, cfg.row64.group)
+    writer = _ramdb_sink(cfg)
     d = Daemon(cfg, driver, state, writer)
 
     await d._pull_once("T")
@@ -177,7 +177,7 @@ async def test_deleted_state_repull_does_not_duplicate_incremental_output(tmp_pa
         PullResult(pd.DataFrame({"id": [1, 2]}), new_watermark=2, rows_pulled=2, duration_ms=5),
     ]
     state_path = tmp_path / "state" / "state.db"
-    writer = RamdbWriter(cfg.row64.loading_dir, cfg.row64.group)
+    writer = _ramdb_sink(cfg)
     d = Daemon(cfg, driver, StateStore(state_path), writer)
 
     await d._pull_once("T")
@@ -195,7 +195,7 @@ async def test_daemon_pull_error_marks_status(tmp_path: Path, fake_ramdb) -> Non
     driver = StubDriver()
     driver.fail_with = RuntimeError("simulated")
     state = StateStore(tmp_path / "state" / "state.db")
-    writer = RamdbWriter(cfg.row64.loading_dir, cfg.row64.group)
+    writer = _ramdb_sink(cfg)
     d = Daemon(cfg, driver, state, writer)
     d._pg_connected = True  # simulate connected
     await d._pull_once("T")
@@ -212,7 +212,7 @@ async def test_daemon_marks_source_disconnected_after_connection_loss(
     driver = StubDriver()
     driver.fail_with = SqlStateError("connection dropped", "08006")
     state = StateStore(tmp_path / "state" / "state.db")
-    writer = RamdbWriter(cfg.row64.loading_dir, cfg.row64.group)
+    writer = _ramdb_sink(cfg)
     d = Daemon(cfg, driver, state, writer)
     d._pg_connected = True
     monkeypatch.setattr(daemon_mod, "_RETRY_DELAYS", ())
@@ -232,12 +232,24 @@ async def test_daemon_startup_auth_failure_fails_fast(tmp_path: Path, fake_ramdb
 
     driver.connect = fail_connect  # type: ignore[method-assign]
     state = StateStore(tmp_path / "state" / "state.db")
-    writer = RamdbWriter(cfg.row64.loading_dir, cfg.row64.group)
+    writer = _ramdb_sink(cfg)
     d = Daemon(cfg, driver, state, writer)
     d.request_shutdown()
 
     with pytest.raises(SqlStateError):
         await d._connect_loop()
+
+
+def _ramdb_sink(cfg) -> RamdbSink:
+    """The default sink, configured exactly as `build_daemon` configures it.
+
+    These tests previously handed `Daemon` a raw `RamdbWriter`. Routing them
+    through `RamdbSink` keeps the assertions identical while additionally
+    proving the adapter is behaviour-preserving over the v0.1 writer.
+    """
+    sink = RamdbSink()
+    sink.open({"loading_dir": cfg.row64.loading_dir, "group": cfg.row64.group})
+    return sink
 
 
 def test_core_does_not_import_postgres_driver() -> None:
