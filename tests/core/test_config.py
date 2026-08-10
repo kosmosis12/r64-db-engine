@@ -70,6 +70,32 @@ tables:
     assert c.tables[0].target == "Orders"
 
 
+def test_load_clickhouse_config(tmp_path: Path):
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(
+        """
+dialect: clickhouse
+clickhouse:
+  host: ch.example.com
+  port: 8443
+  database: analytics
+  user: svc
+  password: secret
+  secure: true
+row64:
+  loading_dir: /tmp/loading
+tables:
+  - source: analytics.orders
+    target: Orders
+"""
+    )
+    c = load_config(cfg, env={})
+    assert c.dialect == "clickhouse"
+    assert c.clickhouse is not None
+    assert c.clickhouse.secure is True
+    assert c.driver_config()["host"] == "ch.example.com"
+
+
 def test_load_config_duplicate_targets_rejected(tmp_path: Path):
     cfg = tmp_path / "c.yaml"
     cfg.write_text(

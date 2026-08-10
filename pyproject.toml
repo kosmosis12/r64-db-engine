@@ -11,6 +11,7 @@ license = { text = "MIT" }
 authors = [{ name = "Kos Russell" }]
 requires-python = ">=3.11"
 dependencies = [
+    "clickhouse-connect>=0.8",
     "psycopg[binary]>=3.1",
     "pandas>=2.0",
     "pyyaml>=6.0",

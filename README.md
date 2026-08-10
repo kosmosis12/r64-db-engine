@@ -30,6 +30,39 @@ make help
 
 HTTPS clone works too:
 
+## ClickHouse Config Example
+
+```yaml
+dialect: clickhouse
+
+clickhouse:
+  host: ${CLICKHOUSE_HOST}
+  port: 8123
+  database: analytics
+  user: ${CLICKHOUSE_USER}
+  password: ${CLICKHOUSE_PASSWORD}
+  secure: true
+  connect_timeout: 10
+
+row64:
+  loading_dir: /var/www/ramdb/loading/RAMDB.Row64
+  group: ClickHouseSource
+
+defaults:
+  cadence: 60s
+  mode: full_refresh
+  ascii_sanitize: true
+
+tables:
+  - source: analytics.orders
+    target: Orders
+    mode: incremental
+    incremental_key: updated_at
+    cadence: 60s
+```
+
+## What you get
+
 ```bash
 git clone https://github.com/kosmosis12/r64-db-engine.git
 ```

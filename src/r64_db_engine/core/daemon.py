@@ -1,7 +1,9 @@
 """Async daemon: per-table scheduler + bounded worker pool. SPEC §3, §5, §9.
 
-Source-agnostic. Resolves `dialect:` -> Driver via the drivers registry
-and consumes everything else through the Driver ABC.
+Source-agnostic. `Daemon` consumes everything through the Driver ABC and never
+names a dialect; `build_daemon` resolves `dialect:` -> Driver (and `sink.type:`
+-> Sink) through the registries, imported function-locally so that no core
+module exposes a driver- or sink-derived attribute.
 """
 
 from __future__ import annotations
@@ -125,13 +127,13 @@ class Daemon:
         delay = _RECONNECT_INITIAL
         while True:
             try:
-                await self.driver.connect(self.config.postgres.model_dump())
+                await self.driver.connect(self.config.driver_config())
                 self._pg_connected = True
                 return
             except Exception as exc:
                 self._pg_connected = False
                 r64log.event(
-                    log, "postgres_connect_failed", level=logging.ERROR, error=str(exc)
+                    log, "driver_connect_failed", level=logging.ERROR, error=str(exc)
                 )
                 if _is_permanent(exc):
                     raise
@@ -347,8 +349,14 @@ class Daemon:
             "version": __version__,
             "postgres": {
                 "connected": self._pg_connected,
-                "host": self.config.postgres.host,
-                "database": self.config.postgres.database,
+                "host": self.config.postgres.host if self.config.postgres else None,
+                "database": self.config.postgres.database if self.config.postgres else None,
+            },
+            "source": {
+                "dialect": self.config.dialect,
+                "connected": self._pg_connected,
+                "host": self.config.driver_config().get("host"),
+                "database": self.config.driver_config().get("database"),
             },
             "tables": [self._table_status(t) for t in self.tables.values()],
         }
