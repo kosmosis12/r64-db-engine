@@ -390,7 +390,98 @@ value is literally 2.00 or 4.00 ms and its apparent "spreads" of 20–25% are on
 quantum of resolution, not variance. C/A ratios at 1M should be read as
 order-of-magnitude only; the 10M lane C values are large enough to be meaningful.
 
-## 9. What this does NOT show
+## 9. meshbench cannot round-trip through `.ramdb` (int64 lineage, PG-001 class)
+
+The campaign intended a Row64 `.ramdb` lane. It cannot be run on this dataset,
+and the reason is itself the result.
+
+`account_id` is generated as `2e9 + cityHash64(number,1) % 1.6e9`, so it spans
+2.0–3.6 × 10⁹. Signed int32 stops at 2,147,483,647. Measured at the source:
+
+| table | rows over int32 | of | % over | max_account_id |
+|---|---:|---:|---:|---:|
+| `perf_1m` | 907,405 | 1,000,000 | **90.74%** | **3,599,999,873** |
+| `perf_10m` | 9,078,525 | 10,000,000 | **90.79%** | **3,599,999,977** |
+
+**~91% of rows carry an `account_id` that signed int32 cannot represent**
+(`int32_max = 2,147,483,647`).
+
+The pipeline does not corrupt them. `_raise_on_codec_unsafe_int64`
+(`core/ramdb_writer.py:161`, raising at `:170`, bounds at `:44-45`) refuses the
+write with `Row64CodecOverflowError` — **a loud refusal exactly where
+row64tools alone truncates silently.** That guard is the difference between a
+conversion that fails and a conversion that succeeds while quietly returning
+`-746033870` for `3548933426`.
+
+**These are ordinary production magnitudes, not an adversarial construction.**
+A 10-digit account identifier is unremarkable — it is what account, customer and
+order IDs look like in real systems once they pass ~2.1 billion, which any
+monotonic ID generator does early in its life. The dataset was not built to break
+the codec; it was built to look like production, and it breaks the codec anyway.
+
+That is the whole justification for `ArrowIpcSink` arriving as an int64-native
+format rather than as another guard bolted onto a narrowing codec. Arrow's
+int64 is a native 64-bit type: there is no narrowing step, so the defect class is
+unrepresentable rather than merely detected. **This dataset demonstrates the class
+is live on realistic data, not historical.** Cross-reference RF-001 (int32
+truncation lineage) and PG-001, the seeded `duration = 3548933426` that returned
+as `-746033870`.
+
+### Scope of this claim — read the fence
+
+This establishes **the signed-int32 integer-codec ceiling in the row64tools codec
+path**, and nothing wider. It is specifically about how integer columns are
+encoded on that path.
+
+It does **NOT** support any broader statement that `.ramdb` cannot hold large
+data — not about file size, row count, cardinality, string length, float range,
+or total volume. None of those were tested and none are implicated. A dataset
+whose integer columns all sit inside int32 would round-trip through `.ramdb`
+without touching this finding.
+
+## 10. Lineage — the three-way decomposition
+
+These are the three distinct claims in this line of work. They are measured at
+different scopes and **must not be combined into a single multiplier.**
+
+**1. Engine compute.** The documented cross-operator figure: the op set at
+roughly 21 ms against roughly 429 s on R64 Server. Carried forward from prior
+work, not re-measured here. It is **cross-operator and was never paired** — the
+two sides were not run back to back under a shared gate — so it is an
+order-of-magnitude statement about engine class, not a controlled ratio.
+
+**2. Kernel.** 72,924×, **register-scoped**, with the 2.44 ms retirement figure
+standing. This is a kernel-level measurement and is the number most likely to be
+misquoted. Nothing in Phase E supports or extends it; Phase E is end-to-end SQL,
+which straddles 1.0 against ClickHouse and is a different scope entirely.
+
+**3. Workflow.** This was to be the R1 `.ramdb` lane. **It is replaced by the
+representability finding in §9.** The old workflow does not get a time here — not
+a slow one, not a fast one — because it cannot run on this data at all. A missing
+number for a refused conversion is the correct outcome; substituting a modified
+dataset to obtain one would have measured a different thing and reported it as
+this one.
+
+## 11. Accepted as published — known limits not remediated
+
+Three limits are accepted as-is in this document rather than fixed, each with
+follow-up filed:
+
+- **The lane A cold column measures process-cold, not cache-cold.** Each cold rep
+  starts a fresh serve, bundling DataFusion planning, catalog build, allocator and
+  gRPC setup with the empty column cache. A cache-cold-isolated lane (warm up on a
+  different column set, then time the target op) is filed as follow-up alongside
+  the meshroad stats `DoAction` item, since both concern observability of a
+  running serve.
+- **Lane C timing resolution.** `clickhouse-client --time` reports milliseconds,
+  so C/A at 1M is **order-of-magnitude only**. `clickhouse-benchmark` is filed as
+  the future instrument for sub-millisecond lane C work.
+- **UPPER measures builtin `upper` only.** meshroad's dictionary-aware
+  `meshroad_upper` was not measured, so the reported ClickHouse win on that op
+  (0.37× at 1M, 0.18× at 10M) is builtin-vs-builtin. A single-op addendum
+  comparing `meshroad_upper` is future work.
+
+## 12. What this does NOT show
 
 - **No end-to-end performance claim is made at all yet.** Phase E is pending.
 - **Any future meshroad-vs-Python ratio is an engine-vs-interpreted-workflow
@@ -414,7 +505,7 @@ order-of-magnitude only; the 10M lane C values are large enough to be meaningful
 - **Neither driver streams.** Memory ceilings scale with table size, so these
   results say nothing about tables that do not fit in RAM.
 
-## 10. Ledger — filed, not actioned in this campaign
+## 13. Ledger — filed, not actioned in this campaign
 
 1. **Vectorize `_pre_coerce_values`** — ~18 s of ~19.5 s at 1M.
 2. **Sink-level genuine-NaN→NULL conflation** (mirror image of RF-002). Trigger:
@@ -428,3 +519,11 @@ order-of-magnitude only; the 10M lane C values are large enough to be meaningful
    regression test, to bring the driver to reference grade.
 6. **`e37742a` is a defective commit** — it adds `.prompts/` a second time; its
    parent already had the line.
+7. **Cache-cold-isolated lane A** — warm up on a different column set, then time
+   the target op, so the cold column measures cache-cold rather than
+   process-cold. Pairs naturally with item 4, since both need visibility into a
+   running serve.
+8. **`clickhouse-benchmark` as the lane C instrument** — `clickhouse-client
+   --time` quantizes to milliseconds, which is too coarse below ~10 ms.
+9. **`meshroad_upper` single-op addendum** — the UPPER result here is
+   builtin-vs-builtin; meshroad's dictionary-aware path was not measured.
