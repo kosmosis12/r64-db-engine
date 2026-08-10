@@ -1,0 +1,76 @@
+{
+  "_comment": [
+    "Ground truth for the meshbench ClickHouse benchmark dataset, captured at",
+    "source. These are FIXED EXPECTATIONS, not re-measurements: the dataset is",
+    "generated with zero rand() and every column derived from",
+    "cityHash64(number, k), so it regenerates byte-identically from",
+    "bench/make-dataset.sh alone. Any e2e parity miss against these numbers is a",
+    "pipeline defect, never dataset drift.",
+    "",
+    "scaled_amount_sum is round(sum(amount)*100) as specified. Because ClickHouse",
+    "sums float64 in parallel and float addition is not associative, that form is",
+    "in principle order-sensitive, so scaled_amount_sum_exact_int computes the",
+    "same quantity with order-independent integer arithmetic",
+    "(sum(toInt64(round(amount*100)))). The two agreed exactly and were stable",
+    "across 3 consecutive reps on both tables at capture time; the integer form is",
+    "the authority if they ever diverge."
+  ],
+  "source": {
+    "dialect": "clickhouse",
+    "container": "meshroad-ch",
+    "server_version": "26.5.1.882",
+    "endpoint": "127.0.0.1:8123 (loopback only, plaintext, user=default, no password)",
+    "database": "meshbench",
+    "generator": "bench/make-dataset.sh",
+    "engine": "MergeTree ORDER BY row_id",
+    "captured_utc": "2026-08-10"
+  },
+  "schema": {
+    "row_id": "Int64",
+    "account_id": "Int64",
+    "user_id": "Int64",
+    "region": "String",
+    "city": "String",
+    "category": "String",
+    "segment": "String",
+    "product_name": "String",
+    "status": "LowCardinality(String)",
+    "amount": "Float64",
+    "quantity": "Int64",
+    "price": "Float64",
+    "score": "Nullable(Float64)",
+    "event_time": "DateTime64(6)"
+  },
+  "tables": {
+    "perf_1m": {
+      "count": 1000000,
+      "uniq_status": 6,
+      "uniq_region": 8,
+      "uniq_product_name": 50000,
+      "count_status_active": 166627,
+      "count_region_west": 124935,
+      "sum_quantity": 250480021,
+      "max_account_id": 3599999873,
+      "scaled_amount_sum": 11994337292,
+      "scaled_amount_sum_exact_int": 11994337292,
+      "count_score_null": 20039,
+      "pct_score_null": 2.0039
+    },
+    "perf_10m": {
+      "count": 10000000,
+      "uniq_status": 6,
+      "uniq_region": 8,
+      "uniq_product_name": 50000,
+      "count_status_active": 1664757,
+      "count_region_west": 1250987,
+      "sum_quantity": 2504770295,
+      "max_account_id": 3599999977,
+      "scaled_amount_sum": 120020064468,
+      "scaled_amount_sum_exact_int": 120020064468,
+      "count_score_null": 200407,
+      "pct_score_null": 2.0041
+    }
+  },
+  "status_values": ["active", "closed", "inactive", "pending", "suspended", "trial"],
+  "region_values": ["Central", "East", "North", "Northeast", "Pacific", "South", "Southwest", "West"]
+}
