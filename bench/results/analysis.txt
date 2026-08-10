@@ -1,0 +1,126 @@
+
+====================================================================================================
+SCALE 1M   n=10   quiet baseline loadavg=0.1
+loadavg across 120 gate points: min=0.10 median=5.78 max=6.19
+
+op                         lane                min(ms)  median(ms)   spread
+----------------------------------------------------------------------------------------------------
+SUM(amount)                A cold                 2.20        2.64    20.0% <<
+SUM(amount)                A warm                 1.20        1.34    11.4%
+SUM(amount)                B1 load+compute      115.48      124.67     8.0%
+SUM(amount)                B2 compute-only        1.05        1.14     9.1%
+SUM(amount)                ClickHouse             2.00        2.00     0.0%
+
+GROUPSUM(region,amount)    A cold                 7.34        8.09    10.1%
+GROUPSUM(region,amount)    A warm                 3.49        3.86    10.7%
+GROUPSUM(region,amount)    B1 load+compute      137.15      142.71     4.1%
+GROUPSUM(region,amount)    B2 compute-only       18.90       19.78     4.6%
+GROUPSUM(region,amount)    ClickHouse             4.00        4.00     0.0%
+
+FILTER status=active       A cold                 2.49        3.43    37.8% <<
+FILTER status=active       A warm                 1.38        1.58    14.2%
+FILTER status=active       B1 load+compute      115.06      120.28     4.5%
+FILTER status=active       B2 compute-only        0.53        0.59    10.6%
+FILTER status=active       ClickHouse             2.00        2.00     0.0%
+
+DISTINCT product_name      A cold                13.52       14.25     5.4%
+DISTINCT product_name      A warm                10.33       10.66     3.2%
+DISTINCT product_name      B1 load+compute      130.45      141.51     8.5%
+DISTINCT product_name      B2 compute-only       15.15       16.67    10.0%
+DISTINCT product_name      ClickHouse            20.00       22.00    10.0%
+
+MAX(account_id)            A cold                 2.25        2.75    22.4% <<
+MAX(account_id)            A warm                 1.25        1.42    14.0%
+MAX(account_id)            B1 load+compute      117.59      121.26     3.1%
+MAX(account_id)            B2 compute-only        1.45        1.59    10.1%
+MAX(account_id)            ClickHouse             2.00        2.00     0.0%
+
+UPPER(status) group        A cold                 8.50        9.01     6.0%
+UPPER(status) group        A warm                 5.09        5.41     6.3%
+UPPER(status) group        B1 load+compute      212.36      225.41     6.1%
+UPPER(status) group        B2 compute-only       82.25       92.06    11.9%
+UPPER(status) group        ClickHouse             2.00        2.00     0.0%
+
+----------------------------------------------------------------------------------------------------
+RATIOS (median of paired samples; A warm is the reference)
+op                               B1/A       B2/A        C/A
+SUM(amount)                     93.1x      0.85x      1.49x
+GROUPSUM(region,amount)         36.9x      5.12x      1.04x
+FILTER status=active            76.1x      0.37x      1.26x
+DISTINCT product_name           13.3x      1.56x      2.06x
+MAX(account_id)                 85.1x      1.12x      1.40x
+UPPER(status) group             41.6x     17.01x      0.37x
+----------------------------------------------------------------------------------------------------
+ASYMMETRY GATE — SUM/MAX must be ~flat cold->warm in lane A.
+A large cold->warm delta on these ops cannot be a decode-cache win:
+they decode almost nothing. It would have to be attributed elsewhere.
+  SUM(amount)            cold=    2.64ms warm=    1.34ms  cold/warm= 1.97x  NOT FLAT — must attribute, not claim
+  MAX(account_id)        cold=    2.75ms warm=    1.42ms  cold/warm= 1.93x  NOT FLAT — must attribute, not claim
+----------------------------------------------------------------------------------------------------
+SPREAD TRIGGER: 3 lane/op combinations exceed 20%
+  SUM(amount)                A cold             20.0%
+  FILTER status=active       A cold             37.8%
+  MAX(account_id)            A cold             22.4%
+
+====================================================================================================
+SCALE 10M   n=10   quiet baseline loadavg=0.48
+loadavg across 120 gate points: min=0.48 median=1.98 max=2.90
+
+op                         lane                min(ms)  median(ms)   spread
+----------------------------------------------------------------------------------------------------
+SUM(amount)                A cold                 4.02        4.29     6.6%
+SUM(amount)                A warm                 2.43        2.75    12.9%
+SUM(amount)                B1 load+compute      291.16      306.68     5.3%
+SUM(amount)                B2 compute-only        8.78        9.44     7.6%
+SUM(amount)                ClickHouse             5.00        5.00     0.0%
+
+GROUPSUM(region,amount)    A cold                30.11       34.03    13.0%
+GROUPSUM(region,amount)    A warm                12.25       12.79     4.4%
+GROUPSUM(region,amount)    B1 load+compute      471.34      497.85     5.6%
+GROUPSUM(region,amount)    B2 compute-only      198.99      212.82     6.9%
+GROUPSUM(region,amount)    ClickHouse            28.00       29.00     3.6%
+
+FILTER status=active       A cold                 8.14        8.72     7.2%
+FILTER status=active       A warm                 2.28        2.45     7.6%
+FILTER status=active       B1 load+compute      291.30      310.44     6.6%
+FILTER status=active       B2 compute-only        3.16        4.13    30.7% <<
+FILTER status=active       ClickHouse             3.00        3.00     0.0%
+
+DISTINCT product_name      A cold                52.75       57.69     9.4%
+DISTINCT product_name      A warm                44.60       45.74     2.5%
+DISTINCT product_name      B1 load+compute      447.92      462.35     3.2%
+DISTINCT product_name      B2 compute-only      125.97      146.76    16.5%
+DISTINCT product_name      ClickHouse            55.00       66.00    20.0% <<
+
+MAX(account_id)            A cold                 3.90        4.33    10.9%
+MAX(account_id)            A warm                 2.80        2.89     3.2%
+MAX(account_id)            B1 load+compute      322.84      334.49     3.6%
+MAX(account_id)            B2 compute-only       31.51       32.33     2.6%
+MAX(account_id)            ClickHouse             5.00        5.50    10.0%
+
+UPPER(status) group        A cold                33.84       36.11     6.7%
+UPPER(status) group        A warm                25.35       27.88    10.0%
+UPPER(status) group        B1 load+compute     1184.23     1239.88     4.7%
+UPPER(status) group        B2 compute-only      981.51     1000.89     2.0%
+UPPER(status) group        ClickHouse             4.00        5.00    25.0% <<
+
+----------------------------------------------------------------------------------------------------
+RATIOS (median of paired samples; A warm is the reference)
+op                               B1/A       B2/A        C/A
+SUM(amount)                    111.6x      3.44x      1.82x
+GROUPSUM(region,amount)         38.9x     16.64x      2.27x
+FILTER status=active           126.7x      1.69x      1.22x
+DISTINCT product_name           10.1x      3.21x      1.44x
+MAX(account_id)                115.6x     11.18x      1.90x
+UPPER(status) group             44.5x     35.90x      0.18x
+----------------------------------------------------------------------------------------------------
+ASYMMETRY GATE — SUM/MAX must be ~flat cold->warm in lane A.
+A large cold->warm delta on these ops cannot be a decode-cache win:
+they decode almost nothing. It would have to be attributed elsewhere.
+  SUM(amount)            cold=    4.29ms warm=    2.75ms  cold/warm= 1.56x  NOT FLAT — must attribute, not claim
+  MAX(account_id)        cold=    4.33ms warm=    2.89ms  cold/warm= 1.50x  FLAT (gate holds)
+----------------------------------------------------------------------------------------------------
+SPREAD TRIGGER: 3 lane/op combinations exceed 20%
+  FILTER status=active       B2 compute-only    30.7%
+  DISTINCT product_name      ClickHouse         20.0%
+  UPPER(status) group        ClickHouse         25.0%
