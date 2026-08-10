@@ -88,6 +88,7 @@ class ArrowIpcSink(Sink):
         self.output_dir: Path | None = None
         self.group: str = ""
         self._dictionary_columns: dict[str, list[str]] = {}
+        self._timestamp_unit: str | None = None
 
     @classmethod
     def sink_name(cls) -> str:
@@ -111,6 +112,24 @@ class ArrowIpcSink(Sink):
 
         self.output_dir = Path(output_dir).expanduser()
         self.group = str(config.get("group", "") or "")
+
+        # Opt-in, never a blanket default. pandas carries datetime64[ns], so
+        # from_pandas yields timestamp[ns] while the meshroad reference artifact
+        # (perf_1m.arrow) carries timestamp[us]; a ClickHouse DateTime64(6)
+        # source is microsecond data that only became nanoseconds by passing
+        # through pandas. Casting it back is exact.
+        #
+        # It stays opt-in because a blanket ns->us cast would silently TRUNCATE
+        # a source that genuinely has nanosecond resolution. The cast below is
+        # additionally a SAFE cast, so even when configured, precision loss
+        # raises instead of quietly rounding.
+        unit = config.get("timestamp_unit")
+        if unit is not None:
+            if unit not in ("s", "ms", "us", "ns"):
+                raise SinkError(
+                    f"arrow_ipc 'timestamp_unit' must be one of s/ms/us/ns, got {unit!r}"
+                )
+            self._timestamp_unit = str(unit)
 
         raw = config.get("dictionary_columns") or {}
         if not isinstance(raw, dict):
@@ -157,7 +176,9 @@ class ArrowIpcSink(Sink):
             previous_sigterm = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, terminate)
         try:
-            table = _to_arrow_table(df, self._dictionary_columns.get(target, []))
+            table = _to_arrow_table(
+                df, self._dictionary_columns.get(target, []), self._timestamp_unit
+            )
             _write_feather_v2(table, tmp)
             _fsync_path(tmp)
             os.rename(tmp, final)
@@ -194,10 +215,17 @@ class ArrowIpcSink(Sink):
         return False
 
 
-def _to_arrow_table(df: pd.DataFrame, dictionary_columns: list[str]) -> Any:
+def _to_arrow_table(
+    df: pd.DataFrame,
+    dictionary_columns: list[str],
+    timestamp_unit: str | None = None,
+) -> Any:
     import pyarrow as pa
 
     table = pa.Table.from_pandas(df, preserve_index=False)
+
+    if timestamp_unit is not None:
+        table = _cast_timestamps(table, timestamp_unit)
 
     # Dictionary-encode the configured columns. Explicit config, never
     # cardinality auto-detection: an auto threshold makes the OUTPUT SCHEMA
@@ -223,6 +251,32 @@ def _to_arrow_table(df: pd.DataFrame, dictionary_columns: list[str]) -> Any:
         table = table.set_column(
             idx, pa.field(name, target_type), table.column(idx).cast(target_type)
         )
+    return table
+
+
+def _cast_timestamps(table: Any, unit: str) -> Any:
+    """Normalize every timestamp column to `unit`, refusing to lose precision.
+
+    The cast is SAFE (pyarrow's default), so a source carrying finer resolution
+    than `unit` raises `ArrowInvalid` rather than silently truncating. A
+    benchmark artifact that quietly dropped sub-microsecond detail would still
+    compare equal on every aggregate we check, which is exactly the kind of loss
+    that survives a green test run.
+    """
+    import pyarrow as pa
+
+    for idx, field in enumerate(table.schema):
+        if not pa.types.is_timestamp(field.type) or field.type.unit == unit:
+            continue
+        target = pa.timestamp(unit, tz=field.type.tz)
+        try:
+            cast = table.column(idx).cast(target)
+        except pa.ArrowInvalid as exc:
+            raise SinkError(
+                f"timestamp_unit='{unit}' would lose precision on column "
+                f"'{field.name}' (source {field.type}): {exc}"
+            ) from exc
+        table = table.set_column(idx, pa.field(field.name, target), cast)
     return table
 
 

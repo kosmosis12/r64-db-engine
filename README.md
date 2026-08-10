@@ -37,7 +37,11 @@ dialect: clickhouse
 
 clickhouse:
   host: ${CLICKHOUSE_HOST}
-  port: 8123
+  # `port` and `secure` must agree: 8443 is the HTTPS interface, 8123 is the
+  # PLAINTEXT one. `secure: true` with 8123 (as this example used to read) sends
+  # a TLS handshake to a cleartext listener and fails at connect time. For a
+  # local/loopback ClickHouse use `port: 8123` with `secure: false`.
+  port: 8443
   database: analytics
   user: ${CLICKHOUSE_USER}
   password: ${CLICKHOUSE_PASSWORD}

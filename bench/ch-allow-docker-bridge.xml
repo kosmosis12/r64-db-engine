@@ -1,0 +1,63 @@
+<!--
+  Allow the `default` user to connect from the Docker bridge GATEWAY ADDRESS
+  ONLY (172.17.0.1/32).
+
+  The stock clickhouse-server image ships
+  /etc/clickhouse-server/users.d/default-user.xml, which restricts `default` to
+  ::1 and 127.0.0.1 ("available only locally"). That check is applied to the
+  source address AS THE SERVER SEES IT, and a host process reaching the
+  container through `-p 127.0.0.1:8123:8123` is NAT'd, so it arrives from the
+  bridge gateway rather than loopback and is refused.
+
+  Confirmed from the server log rather than assumed:
+
+    Access(user directories): from: 172.17.0.1, user: default:
+    Authentication failed: Code: 195. DB::Exception:
+    Connections from 172.17.0.1 are not allowed. (IP_ADDRESS_NOT_ALLOWED)
+
+  Note that the client is told something different: code 194,
+  "Authentication failed: password is incorrect, or there is no user with such
+  name" (REQUIRED_PASSWORD). ClickHouse masks IP_ADDRESS_NOT_ALLOWED on the way
+  out so as not to leak whether a user exists or which networks are permitted.
+  The message therefore points squarely at credentials when the actual cause is
+  the source address — worth knowing before chasing a password that was never
+  wrong.
+
+  WHY /32 AND NOT THE SUBNET: 172.17.0.0/16 (or /12) would grant passwordless
+  `default` access to EVERY container on the default bridge — ray-worker and
+  any other stack that happens to be up — not just the host. Host-NAT'd traffic
+  arrives from the gateway address specifically, and 172.17.0.1 is the only
+  172.x address appearing anywhere in the server log, so a /32 is exact rather
+  than merely tighter. A container would have to impersonate the gateway to
+  benefit from this grant.
+
+  This file only widens the allowed SOURCE RANGE. It sets no password and
+  grants no new privileges. Exposure is unchanged in practice because the host
+  port binding is already loopback-only (127.0.0.1:8123 / 127.0.0.1:9000), so
+  the container is unreachable from off the machine regardless.
+
+  Named zz-* so it merges AFTER default-user.xml (users.d is applied in lexical
+  order). Requires an explicit reload — ClickHouse did not pick up the change
+  on its own:
+
+    docker cp bench/ch-allow-docker-bridge.xml \
+      meshroad-ch:/etc/clickhouse-server/users.d/zz-allow-docker-bridge.xml
+    docker exec meshroad-ch clickhouse-client —query "SYSTEM RELOAD CONFIG"
+
+  NOTE: this lives in the container filesystem, not in the meshroad-ch-data
+  volume, so it must be re-applied if the container is recreated. If the bridge
+  gateway ever differs (a non-default network, or a recreated bridge), re-read
+  it from `docker inspect meshroad-ch —format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}'`
+  rather than widening this range.
+-->
+<clickhouse>
+  <users>
+    <default>
+      <networks>
+        <ip>::1</ip>
+        <ip>127.0.0.1</ip>
+        <ip>172.17.0.1/32</ip>
+      </networks>
+    </default>
+  </users>
+</clickhouse>
