@@ -1,0 +1,202 @@
+{
+  "baseline": {
+    "foreign_cpu_pct_of_one_core": 26.8,
+    "foreign_cpu_pct_of_machine": 0.96,
+    "mem_available_gb": 20.86,
+    "top_offenders": [
+      [
+        "beam.smp",
+        5.4
+      ],
+      [
+        "ray::IDLE",
+        4.2
+      ],
+      [
+        "kwin_wayland",
+        3.9
+      ],
+      [
+        "electron",
+        3.8
+      ],
+      [
+        "python3.12",
+        2.5
+      ]
+    ],
+    "load1": 1.9150390625,
+    "pass": true
+  },
+  "gated": true,
+  "results": [
+    {
+      "cell": "N13U",
+      "scale": "10m",
+      "n": 5,
+      "lane": "arrow",
+      "rows": 10000000,
+      "artifact_mb": 1199.7,
+      "wall_min": 1.187,
+      "wall_median": 1.2115,
+      "wall_spread_pct": 3.6,
+      "pull_min": 0.0071,
+      "pull_median": 0.0155,
+      "sink_min": 1.1536,
+      "sink_median": 1.1737,
+      "peak_rss_mb_max": 648.5,
+      "peak_rss_mb_median": 640.1,
+      "reps": [
+        {
+          "cell": "N13U",
+          "scale": "10m",
+          "lane": "arrow",
+          "rows": 10000000,
+          "columns": 13,
+          "wall_s": 1.187,
+          "pull_s": 0.0155,
+          "sink_write_s": 1.1536,
+          "peak_rss_mb": 648.5,
+          "artifact_mb": 1199.7,
+          "parent_observed_peak_mb": 648.5
+        },
+        {
+          "cell": "N13U",
+          "scale": "10m",
+          "lane": "arrow",
+          "rows": 10000000,
+          "columns": 13,
+          "wall_s": 1.1896,
+          "pull_s": 0.0071,
+          "sink_write_s": 1.1642,
+          "peak_rss_mb": 647.8,
+          "artifact_mb": 1199.7,
+          "parent_observed_peak_mb": 648.5
+        },
+        {
+          "cell": "N13U",
+          "scale": "10m",
+          "lane": "arrow",
+          "rows": 10000000,
+          "columns": 13,
+          "wall_s": 1.2143,
+          "pull_s": 0.0185,
+          "sink_write_s": 1.1737,
+          "peak_rss_mb": 639.3,
+          "artifact_mb": 1199.7,
+          "parent_observed_peak_mb": 648.5
+        },
+        {
+          "cell": "N13U",
+          "scale": "10m",
+          "lane": "arrow",
+          "rows": 10000000,
+          "columns": 13,
+          "wall_s": 1.2115,
+          "pull_s": 0.0155,
+          "sink_write_s": 1.1781,
+          "peak_rss_mb": 640.1,
+          "artifact_mb": 1199.7,
+          "parent_observed_peak_mb": 648.5
+        },
+        {
+          "cell": "N13U",
+          "scale": "10m",
+          "lane": "arrow",
+          "rows": 10000000,
+          "columns": 13,
+          "wall_s": 1.2295,
+          "pull_s": 0.0101,
+          "sink_write_s": 1.1961,
+          "peak_rss_mb": 637.4,
+          "artifact_mb": 1199.7,
+          "parent_observed_peak_mb": 648.5
+        }
+      ]
+    },
+    {
+      "cell": "NU",
+      "scale": "10m",
+      "n": 5,
+      "lane": "arrow",
+      "rows": 10000000,
+      "artifact_mb": 1237.8,
+      "wall_min": 1.8469,
+      "wall_median": 1.8845,
+      "wall_spread_pct": 4.2,
+      "pull_min": 0.0058,
+      "pull_median": 0.0124,
+      "sink_min": 1.8088,
+      "sink_median": 1.8548,
+      "peak_rss_mb_max": 3301.6,
+      "peak_rss_mb_median": 3299.4,
+      "reps": [
+        {
+          "cell": "NU",
+          "scale": "10m",
+          "lane": "arrow",
+          "rows": 10000000,
+          "columns": 14,
+          "wall_s": 1.8988,
+          "pull_s": 0.0058,
+          "sink_write_s": 1.8705,
+          "peak_rss_mb": 3289.1,
+          "artifact_mb": 1237.8,
+          "parent_observed_peak_mb": 3289.1
+        },
+        {
+          "cell": "NU",
+          "scale": "10m",
+          "lane": "arrow",
+          "rows": 10000000,
+          "columns": 14,
+          "wall_s": 1.8845,
+          "pull_s": 0.0124,
+          "sink_write_s": 1.8548,
+          "peak_rss_mb": 3288.9,
+          "artifact_mb": 1237.8,
+          "parent_observed_peak_mb": 3289.1
+        },
+        {
+          "cell": "NU",
+          "scale": "10m",
+          "lane": "arrow",
+          "rows": 10000000,
+          "columns": 14,
+          "wall_s": 1.8469,
+          "pull_s": 0.0187,
+          "sink_write_s": 1.8088,
+          "peak_rss_mb": 3300.8,
+          "artifact_mb": 1237.8,
+          "parent_observed_peak_mb": 3300.8
+        },
+        {
+          "cell": "NU",
+          "scale": "10m",
+          "lane": "arrow",
+          "rows": 10000000,
+          "columns": 14,
+          "wall_s": 1.8715,
+          "pull_s": 0.0177,
+          "sink_write_s": 1.8362,
+          "peak_rss_mb": 3299.4,
+          "artifact_mb": 1237.8,
+          "parent_observed_peak_mb": 3300.8
+        },
+        {
+          "cell": "NU",
+          "scale": "10m",
+          "lane": "arrow",
+          "rows": 10000000,
+          "columns": 14,
+          "wall_s": 1.9253,
+          "pull_s": 0.0106,
+          "sink_write_s": 1.8951,
+          "peak_rss_mb": 3301.6,
+          "artifact_mb": 1237.8,
+          "parent_observed_peak_mb": 3301.6
+        }
+      ]
+    }
+  ]
+}

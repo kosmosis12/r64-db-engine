@@ -2,9 +2,9 @@
 
 **Campaign:** CC Phase 2 · **Date:** 2026-08-14 · **Machine:** cachyPC
 **Branch:** `feat/arrow-lane` off `main` @ `7820d18`
-**Status at this point:** **Phases A and B complete. No performance work done,
-no performance claim made** — that is Phase C, which has not started. Phase D
-(serve + roster) has not started.
+**Status at this point:** **Phases A, B and C complete.** Phase D (serve +
+roster) has not started. Performance claims are Phase C's and are fenced there:
+local DuckDB only, this machine, this dataset.
 
 ---
 
@@ -239,6 +239,61 @@ to it. The artifact would have been eight hours wrong and fully green.
 the ClickHouse source bounds. The e2e config pins `settings: {TimeZone: UTC}`
 on the connection for the same reason.
 
+### BENCH DOCTRINE (ratified 2026-08-14, from the Phase C series)
+
+Two measurement rules, both earned by aborting real runs, both now permanent.
+
+**1. Persist-or-pass gating.** The foreign-contention gate runs before EVERY
+invocation, never once at the top — a series that measured half its reps under
+a browser and half without would report the difference as a lane effect. But a
+single failed sample must NOT abort: on failure the gate WAITS and re-samples
+(15s x 8), and stops the run only if the contaminant persists.
+
+The distinction is the point. A transient does not overlap a whole rep; sustained
+load does. The first Phase C attempt was killed at 58% completion by
+`kscreenlocker_greet` spiking to 52.9% of one core as the machine idle-locked —
+gone seconds later, but it discarded 30 minutes of gate-valid work. The same gate
+correctly killed an earlier attempt for a browser at **821% of one core**, which
+is what it exists for.
+
+The bar is **50% of one core** (~1.8% of a 28-core machine). Zero is unreachable
+on a live desktop session: with the browser closed the floor is a steady 30-35%
+(`kwin_wayland`, `beam.smp`, `ray::IDLE`, `r64-mcp`). A bar set at that floor
+trips at random; a bar an order of magnitude below the real contaminants (821%,
+592%) still catches every one of them. **The bar is not the sensitivity of the
+instrument — it is the line between "desktop idle" and "something else is
+running".** `ps` is excluded from the sample: it is the measuring instrument and
+appears in its own output with a huge lifetime-average `pcpu`.
+
+(Note `ps -eo pcpu` reports LIFETIME AVERAGE, not instantaneous. That is a fair
+proxy for the long-lived desktop floor and wrong for anything just started.)
+
+**2. Idle inhibition for the duration.** Long series run under
+`systemd-inhibit --what=idle:sleep`, so the session cannot idle-lock mid-run.
+Non-destructive and scoped to the command's lifetime — it lapses when the run
+ends, and changes no persistent setting.
+
+**3. Discard and rerun, never splice.** When a series aborts, its partial
+results are DISCARDED and the whole series is rerun contiguously, so every cell
+shares one baseline. Stitching two partial runs would put cells measured minutes
+and one environment apart into the same table, and the resulting ratio would be
+defended on the reader's trust rather than on the method.
+
+### TRANSFER DOCTRINE (ratified 2026-08-14, generalized from B-2)
+
+> **Any cross-engine dataset transfer requires a min/max BOUNDARY ASSERTION on
+> at least one timezone- or order-sensitive column. Aggregate parity is blind
+> to uniform shifts.**
+
+Counts, sums, null counts and cardinalities are all invariant under a uniform
+translation of a column: shift every timestamp by eight hours and every one of
+them still matches. A boundary assertion is the cheapest check that is NOT
+invariant under that shift, which is exactly why it is the one that must be
+present. `bench/load-duckdb.py::EVENT_TIME_BOUNDS` is the reference
+implementation; it belongs in every future transfer, not just this one.
+
+This applies to Phase 3's ADBC and Iceberg transfers by construction.
+
 ## B-3 — cross-lane schema divergence: `string` vs `large_string`
 
 Extends the ratified checksum doctrine with a second lane-dependent property.
@@ -293,8 +348,12 @@ ORDER BY in a subquery where SQL does not oblige the engine to preserve it —
 the ordering would hold by luck and stop holding without warning. Pinned by
 `test_inline_sql_is_passed_through_verbatim_to_preserve_ordering`.
 
-Filed for a future decision: widening `TableConfig` is the same call PG-010
-was, and deserves the same deliberation rather than being slipped in here.
+**Filed as PG-010/T (the table axis).** Widening `TableConfig` is the same call
+PG-010 was and deserves the same deliberation rather than being slipped in
+here. **Deferred by ratification to the Phase 3 brief**, where ADBC forces the
+question: a driver-specific per-table option is unavoidable there, so the
+decision gets made once, deliberately, with a driver that requires it rather
+than one that can route around it.
 
 ## B-6 — `batch_size: 0` was silently swallowed
 
@@ -352,7 +411,7 @@ the null counts (`20,039` / `200,407`), plus `event_time` bounds and a
 |---|---|---|
 | B-d1 | Added a `duckdb.arrow: bool` config knob (default true) toggling `supports_arrow()` | Phase C's **P' cell** requires the same driver against the same source through the DataFrame lane. Without this it would need monkeypatching, which is not a configuration and could not be reproduced from a config file. |
 | B-d2 | **Started the `meshroad-ch` container**, which was `Exited (255)` for 41 hours | The brief requires exporting from the live CH container, and its restore block specifies meshroad-ch is left UP. Started explicitly by name, not by pattern. `:8802`/`:8803` untouched. |
-| B-d3 | No conformance `spec.py` for duckdb | The Phase 2 brief does not require one; the conformance generator is a Gate-A-of-Phase-1 artifact. Not in scope, called out so it is not assumed present. |
+| B-d3 | No conformance `spec.py` for duckdb | The Phase 2 brief does not require one; the conformance generator is a Gate-A-of-Phase-1 artifact. Not in scope, called out so it is not assumed present. **Filed as a ledger item: duckdb-conformance-spec parity** — postgres and clickhouse each carry a `SourceSpec`, duckdb does not, so the conformance contract does not cover it. |
 
 ## Planes of record
 
@@ -363,3 +422,184 @@ the null counts (`20,039` / `200,407`), plus `event_time` bounds and a
 | `meshroad-ch` | Exited (255), 41h | **Up** (per restore block) | ⚠️ B-d2 |
 | `:8902` dev serve | not started | not started (Phase D) | — |
 | meshroad `src/` / `gui/` | untouched | untouched | ✅ |
+
+---
+
+# Phase C — the probe: coercion bypass + RSS bound (Gate C)
+
+**Kill condition NOT triggered.** The coercion share collapses from **99.7% of
+wall to structurally zero**, because on the Arrow lane there is no coercion step
+to time. Numbers below, fences attached.
+
+## Method
+
+n=10 per cell (n=5 for the decomposition cells), min and median reported, every
+spread inside the 20% threshold so no cell needed its n raised. **Every rep runs
+in a fresh subprocess**: `ru_maxrss` is a high-water mark that never resets, so a
+second rep in the same process reports the first rep's peak.
+
+Quiet baseline taken at series start; the foreign-contention gate ran before
+**all 60 reps** of the main series and **waited zero times** — the environment
+stayed clean throughout. Governor `performance` (28 cores), four timers
+`inactive`, agent-hud + browser down, run under `systemd-inhibit`.
+
+**Two earlier attempts were discarded, not spliced** (bench doctrine 3): the
+first aborted on a browser at 821% of one core, the second at 58% completion on
+the screen locker at 52.9%. Both were correct gate behaviour.
+
+### Cells
+
+| cell | source | lane | sink |
+|---|---|---|---|
+| **P** | ClickHouse | `query_df` -> coercion | batch |
+| **P'** | DuckDB | `.df()` -> coercion | batch |
+| **N** | DuckDB | Arrow `RecordBatchReader` | streaming |
+| **N13 / N13U / NU / P'13U** | DuckDB | decomposition variants: `13` = no dictionary column, `U` = no `ORDER BY` | |
+
+**N vs P' is the bypass attribution** (same engine, both lanes). **N vs P is the
+workflow number** (different engine AND lane). Both published, labelled —
+publishing only the second would credit the lane for DuckDB's contribution.
+
+## 1. Wall clock (min of n, seconds)
+
+| scale | N | P' | P | **N vs P'** (bypass) | **N vs P** (workflow) |
+|---|---|---|---|---|---|
+| 1M | **0.247** | 2.069 | 17.174 | **8.4x** | **69.6x** |
+| 10M | **2.188** | 20.276 | 171.458 | **9.3x** | **78.4x** |
+
+Like-for-like, 13 columns without the dictionary column and without the sort:
+
+| scale | N13U | P'13U | ratio |
+|---|---|---|---|
+| 1M | **0.137** | 1.718 | **12.6x** |
+| 10M | **1.187** | 16.867 | **14.2x** |
+
+P@1M at 17.17s corroborates the ClickHouse campaign's recorded 18.26s; P@10M at
+171.5s against its 198.9s. Both a little faster under this quiesce, same order —
+these are a **corroboration of a prior record**, not a new performance claim.
+
+## 2. Decomposition — where the wall goes
+
+| cell | scale | query+transform | sink write | % of wall in query+transform |
+|---|---|---|---|---|
+| P | 10M | 170.942s | 0.472s | **99.7%** |
+| P' | 10M | 19.766s | 0.466s | **97.5%** |
+| **N** | 10M | **0.144s** | 2.023s | **6.6%** |
+| P | 1M | 17.108s | 0.051s | 99.6% |
+| P' | 1M | 1.987s | 0.052s | 96.0% |
+| **N** | 1M | **0.022s** | 0.201s | 9.0% |
+
+**The asymmetry is real and is named, not hidden.** For N, `pull` measures only
+query submission and reader handoff — DuckDB's scan is lazy and executes as the
+sink drains the reader, so it lands in `sink write`. N's 2.023s at 10M is
+therefore scan + re-chunk + write combined, and P's 0.472s is write alone.
+
+**The coercion cell for N is structurally zero.** Not "small" — absent. There is
+no `apply_coercion` call on this lane, and nothing nonzero to name. That is the
+bypass, and it is what the 99.7% -> 6.6% shift measures.
+
+## 3. Peak RSS — the bound, decomposed
+
+At 10M. `RSS/artifact` uses each lane's own artifact, which differ in size
+because of B-3 string width (N 1237.8MB vs P 1428.6MB), so **absolute MB is the
+comparable number across lanes, not the ratio.**
+
+| cell | cols | dict | ORDER BY | peak RSS | artifact | ratio |
+|---|---|---|---|---|---|---|
+| **N13U** | 13 | no | no | **648.5 MB** | 1199.7 MB | **0.54x** |
+| N13 | 13 | no | yes | 2122.7 MB | 1199.7 MB | 1.77x |
+| NU | 14 | yes | no | 3301.6 MB | 1237.8 MB | 2.67x |
+| **N** (headline) | 14 | yes | yes | **4927.0 MB** | 1237.8 MB | 3.98x |
+| P'13U | 13 | no | no | 6917.6 MB | 1390.4 MB | 4.98x |
+| **P** | 14 | yes | yes | **7226.9 MB** | 1428.6 MB | 5.06x |
+| P' | 14 | yes | yes | 9383.0 MB | 1428.6 MB | 6.57x |
+
+P@10M at 5.06x (7226.9MB) corroborates the campaign's recorded **4.7x /
+6,709MiB** within ~3%.
+
+### Decomposition over the streaming baseline (10M)
+
+| contribution | delta peak RSS |
+|---|---|
+| baseline: streaming, no dict, no sort (N13U) | **648.5 MB** |
+| **+ `ORDER BY row_id`** | **+1,474.2 MB** |
+| **+ dictionary collect** | **+2,653.1 MB** |
+| + both (headline N) | +4,278.5 MB (sum of parts +4,127.3) |
+
+**Two separate things break the streaming bound, and the dictionary is the
+larger one.** The dict-collect is A-2's known cost. The sort is a NEW finding:
+
+### C-1 — determinism and the memory bound are in direct tension
+
+`ORDER BY row_id` is what makes the artifact byte-reproducible (Phase B proof 6).
+It is also a **full materialization inside DuckDB**: you cannot sort a stream.
+It costs **+1,474.2 MB at 10M — 2.3x the entire streaming baseline.**
+
+So the two properties this campaign values most, byte-reproducibility and a
+bounded memory profile, cannot currently both hold on the same pull. This is a
+structural finding, not a defect, and it is not resolvable by tuning. Filed.
+
+### Is the lane "batch-bounded"? No — and the honest statement is better anyway
+
+The brief's hypothesis was that N's peak would be batch-bounded rather than 4.7x.
+Measured, on the cleanest cell (N13U), peak RSS is **not flat**: 300.5 MB at 1M
+and 648.5 MB at 10M. A two-point fit gives
+
+```
+RSS ~= 262 MB + 0.32 x artifact_MB        (2 points only — a slope, not a law)
+```
+
+So a residual term still scales with the data. **"Batch-bounded" overstates it
+and is not claimed.** What IS true, and is stronger than a ratio:
+
+> At 10M the Arrow lane's peak RSS (648.5 MB) is **0.54x the artifact it
+> produces** — the pipeline never holds its own output — against 4.98x for the
+> same 13 columns through pandas. **10.7x lower peak memory for the same rows.**
+
+### The headline cell is the weaker number, and that is the point
+
+On the **14-column artifact that actually ships**, N peaks at 4,927.0 MB against
+P's 7,226.9 MB — only **1.47x lower**. The dictionary column eats most of the
+benefit by forcing the collect path. Reporting the 10.7x without this would be
+selecting the cell that flatters the lane.
+
+**Both numbers are the result:** 1.47x on today's real artifact, 10.7x on the
+same data with the dictionary column projected out. Closing the gap means
+option (a) from A-2 — delta-dictionary writer support — not tuning.
+
+## 4. Honest losses
+
+- **N's artifact is 13% smaller than P's** (1237.8 vs 1428.6 MB at 10M) purely
+  from B-3 string width. Not a compression win; a different offset width.
+- **N spends 92% of its wall in the sink** because the scan is lazy. A reader of
+  the decomposition table who expects "sink write" to mean "write" will
+  misread it without the note above.
+- **The 1M N cell has the widest spread in the series** (12.2%), because at
+  0.247s the fixed process cost is a large fraction of the measurement.
+- **P'@10M peaks HIGHER than P@10M** (9,383 vs 7,227 MB) despite being the
+  faster lane: `.df()` materializes an Arrow result and then converts it,
+  holding both representations at once. The pandas lane is not uniformly cheaper
+  on memory just because the engine is faster.
+
+## 5. Deviations (disclosed)
+
+| # | Deviation | Why |
+|---|---|---|
+| C-d1 | Gate bar set to **50% of one core**, then persist-or-pass retry added | The measured desktop floor is a steady 30-35%; a bar on the floor trips at random. Both now ratified bench doctrine. |
+| C-d2 | Added `N13`/`N13U`/`NU`/`P'13U` decomposition cells beyond the brief's three | The 14-column headline could not otherwise separate the dictionary cost from the sort cost from the lane, and "batch-bounded" could be neither stated nor refuted. 13-col cell pre-ratified; the `U` variants are mine, and are what found C-1. |
+| C-d3 | **`bench/phase-c-probe.py` was edited mid-series**, and it spawns each rep as a fresh child that re-reads the file | Careless sequencing. The `cell == "P"` branch, the timing instrumentation and the `ru_maxrss` capture were all untouched, and `peak_kb` is read into a variable before the added column-count call runs. P@10M reps 8-9 (174.869s, 172.109s) fall inside the range of reps 0-7 (171.458-176.008s), so the edit had no measurable effect. Recorded rather than quietly relied on. |
+| C-d4 | Projection expressed as inline SQL | `TableConfig` is `extra="forbid"` — **PG-010/T's third witness**, after the top-level dialect block and the per-table `order_by`. |
+
+## Gate C — status
+
+| Condition | |
+|---|---|
+| Decomposition tables in `bench/FINDINGS-arrow-lane.md` | ✅ |
+| Coercion-share collapse stated with measured numbers | ✅ 99.7% -> 6.6%; structurally zero on the lane |
+| RSS bound stated with measured multiple and fences | ✅ 0.54x artifact / 10.7x lower like-for-like; **1.47x on the shipping 14-col artifact** |
+| Honest losses recorded | ✅ §4, plus C-1 and the "not batch-bounded" correction |
+| Kill condition | **NOT triggered** — the bypass collapses the coercion share |
+
+**Raw data:** `bench/results/phase-c.json` (n=10, 60 reps),
+`phase-c-n13.json`, `phase-c-unordered.json`, `phase-c-unordered-1m.json`,
+`phase-c-p13u.json`.

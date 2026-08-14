@@ -1,0 +1,202 @@
+{
+  "baseline": {
+    "foreign_cpu_pct_of_one_core": 26.8,
+    "foreign_cpu_pct_of_machine": 0.96,
+    "mem_available_gb": 20.74,
+    "top_offenders": [
+      [
+        "beam.smp",
+        5.4
+      ],
+      [
+        "ray::IDLE",
+        4.2
+      ],
+      [
+        "kwin_wayland",
+        3.9
+      ],
+      [
+        "electron",
+        3.8
+      ],
+      [
+        "python3.12",
+        2.5
+      ]
+    ],
+    "load1": 1.4736328125,
+    "pass": true
+  },
+  "gated": true,
+  "results": [
+    {
+      "cell": "N13U",
+      "scale": "1m",
+      "n": 5,
+      "lane": "arrow",
+      "rows": 1000000,
+      "artifact_mb": 120.0,
+      "wall_min": 0.1366,
+      "wall_median": 0.1402,
+      "wall_spread_pct": 15.1,
+      "pull_min": 0.0037,
+      "pull_median": 0.0052,
+      "sink_min": 0.1172,
+      "sink_median": 0.1185,
+      "peak_rss_mb_max": 300.5,
+      "peak_rss_mb_median": 293.5,
+      "reps": [
+        {
+          "cell": "N13U",
+          "scale": "1m",
+          "lane": "arrow",
+          "rows": 1000000,
+          "columns": 13,
+          "wall_s": 0.1389,
+          "pull_s": 0.0043,
+          "sink_write_s": 0.1185,
+          "peak_rss_mb": 293.5,
+          "artifact_mb": 120.0,
+          "parent_observed_peak_mb": 293.5
+        },
+        {
+          "cell": "N13U",
+          "scale": "1m",
+          "lane": "arrow",
+          "rows": 1000000,
+          "columns": 13,
+          "wall_s": 0.1531,
+          "pull_s": 0.0052,
+          "sink_write_s": 0.1287,
+          "peak_rss_mb": 291.0,
+          "artifact_mb": 120.0,
+          "parent_observed_peak_mb": 293.5
+        },
+        {
+          "cell": "N13U",
+          "scale": "1m",
+          "lane": "arrow",
+          "rows": 1000000,
+          "columns": 13,
+          "wall_s": 0.1366,
+          "pull_s": 0.0037,
+          "sink_write_s": 0.1172,
+          "peak_rss_mb": 300.5,
+          "artifact_mb": 120.0,
+          "parent_observed_peak_mb": 300.5
+        },
+        {
+          "cell": "N13U",
+          "scale": "1m",
+          "lane": "arrow",
+          "rows": 1000000,
+          "columns": 13,
+          "wall_s": 0.1572,
+          "pull_s": 0.0067,
+          "sink_write_s": 0.1293,
+          "peak_rss_mb": 290.0,
+          "artifact_mb": 120.0,
+          "parent_observed_peak_mb": 300.5
+        },
+        {
+          "cell": "N13U",
+          "scale": "1m",
+          "lane": "arrow",
+          "rows": 1000000,
+          "columns": 13,
+          "wall_s": 0.1402,
+          "pull_s": 0.0063,
+          "sink_write_s": 0.1178,
+          "peak_rss_mb": 295.4,
+          "artifact_mb": 120.0,
+          "parent_observed_peak_mb": 300.5
+        }
+      ]
+    },
+    {
+      "cell": "NU",
+      "scale": "1m",
+      "n": 5,
+      "lane": "arrow",
+      "rows": 1000000,
+      "artifact_mb": 123.8,
+      "wall_min": 0.2048,
+      "wall_median": 0.2105,
+      "wall_spread_pct": 6.2,
+      "pull_min": 0.0051,
+      "pull_median": 0.0064,
+      "sink_min": 0.1774,
+      "sink_median": 0.1798,
+      "peak_rss_mb_max": 576.0,
+      "peak_rss_mb_median": 573.3,
+      "reps": [
+        {
+          "cell": "NU",
+          "scale": "1m",
+          "lane": "arrow",
+          "rows": 1000000,
+          "columns": 14,
+          "wall_s": 0.2157,
+          "pull_s": 0.0066,
+          "sink_write_s": 0.1857,
+          "peak_rss_mb": 557.6,
+          "artifact_mb": 123.8,
+          "parent_observed_peak_mb": 557.6
+        },
+        {
+          "cell": "NU",
+          "scale": "1m",
+          "lane": "arrow",
+          "rows": 1000000,
+          "columns": 14,
+          "wall_s": 0.2174,
+          "pull_s": 0.0053,
+          "sink_write_s": 0.1916,
+          "peak_rss_mb": 576.0,
+          "artifact_mb": 123.8,
+          "parent_observed_peak_mb": 576.0
+        },
+        {
+          "cell": "NU",
+          "scale": "1m",
+          "lane": "arrow",
+          "rows": 1000000,
+          "columns": 14,
+          "wall_s": 0.2052,
+          "pull_s": 0.0064,
+          "sink_write_s": 0.1774,
+          "peak_rss_mb": 575.2,
+          "artifact_mb": 123.8,
+          "parent_observed_peak_mb": 576.0
+        },
+        {
+          "cell": "NU",
+          "scale": "1m",
+          "lane": "arrow",
+          "rows": 1000000,
+          "columns": 14,
+          "wall_s": 0.2105,
+          "pull_s": 0.0074,
+          "sink_write_s": 0.1798,
+          "peak_rss_mb": 542.7,
+          "artifact_mb": 123.8,
+          "parent_observed_peak_mb": 576.0
+        },
+        {
+          "cell": "NU",
+          "scale": "1m",
+          "lane": "arrow",
+          "rows": 1000000,
+          "columns": 14,
+          "wall_s": 0.2048,
+          "pull_s": 0.0051,
+          "sink_write_s": 0.1798,
+          "peak_rss_mb": 573.3,
+          "artifact_mb": 123.8,
+          "parent_observed_peak_mb": 576.0
+        }
+      ]
+    }
+  ]
+}

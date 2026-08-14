@@ -1,0 +1,202 @@
+{
+  "baseline": {
+    "foreign_cpu_pct_of_one_core": 26.8,
+    "foreign_cpu_pct_of_machine": 0.96,
+    "mem_available_gb": 20.85,
+    "top_offenders": [
+      [
+        "beam.smp",
+        5.4
+      ],
+      [
+        "ray::IDLE",
+        4.2
+      ],
+      [
+        "kwin_wayland",
+        3.9
+      ],
+      [
+        "electron",
+        3.8
+      ],
+      [
+        "python3.12",
+        2.5
+      ]
+    ],
+    "load1": 1.3720703125,
+    "pass": true
+  },
+  "gated": true,
+  "results": [
+    {
+      "cell": "P'13U",
+      "scale": "1m",
+      "n": 5,
+      "lane": "dataframe",
+      "rows": 1000000,
+      "artifact_mb": 139.1,
+      "wall_min": 1.7182,
+      "wall_median": 1.7619,
+      "wall_spread_pct": 5.2,
+      "pull_min": 1.6538,
+      "pull_median": 1.698,
+      "sink_min": 0.0404,
+      "sink_median": 0.0429,
+      "peak_rss_mb_max": 952.8,
+      "peak_rss_mb_median": 925.0,
+      "reps": [
+        {
+          "cell": "P'13U",
+          "scale": "1m",
+          "lane": "dataframe",
+          "rows": 1000000,
+          "columns": 13,
+          "wall_s": 1.7182,
+          "pull_s": 1.6538,
+          "sink_write_s": 0.0429,
+          "peak_rss_mb": 925.0,
+          "artifact_mb": 139.1,
+          "parent_observed_peak_mb": 925.0
+        },
+        {
+          "cell": "P'13U",
+          "scale": "1m",
+          "lane": "dataframe",
+          "rows": 1000000,
+          "columns": 13,
+          "wall_s": 1.7405,
+          "pull_s": 1.6772,
+          "sink_write_s": 0.0404,
+          "peak_rss_mb": 952.8,
+          "artifact_mb": 139.1,
+          "parent_observed_peak_mb": 952.8
+        },
+        {
+          "cell": "P'13U",
+          "scale": "1m",
+          "lane": "dataframe",
+          "rows": 1000000,
+          "columns": 13,
+          "wall_s": 1.7773,
+          "pull_s": 1.7145,
+          "sink_write_s": 0.0434,
+          "peak_rss_mb": 938.2,
+          "artifact_mb": 139.1,
+          "parent_observed_peak_mb": 952.8
+        },
+        {
+          "cell": "P'13U",
+          "scale": "1m",
+          "lane": "dataframe",
+          "rows": 1000000,
+          "columns": 13,
+          "wall_s": 1.7619,
+          "pull_s": 1.698,
+          "sink_write_s": 0.0445,
+          "peak_rss_mb": 920.9,
+          "artifact_mb": 139.1,
+          "parent_observed_peak_mb": 952.8
+        },
+        {
+          "cell": "P'13U",
+          "scale": "1m",
+          "lane": "dataframe",
+          "rows": 1000000,
+          "columns": 13,
+          "wall_s": 1.8082,
+          "pull_s": 1.741,
+          "sink_write_s": 0.0425,
+          "peak_rss_mb": 914.1,
+          "artifact_mb": 139.1,
+          "parent_observed_peak_mb": 952.8
+        }
+      ]
+    },
+    {
+      "cell": "P'13U",
+      "scale": "10m",
+      "n": 5,
+      "lane": "dataframe",
+      "rows": 10000000,
+      "artifact_mb": 1390.4,
+      "wall_min": 16.8671,
+      "wall_median": 17.063,
+      "wall_spread_pct": 1.4,
+      "pull_min": 16.4874,
+      "pull_median": 16.6643,
+      "sink_min": 0.3591,
+      "sink_median": 0.3751,
+      "peak_rss_mb_max": 6917.6,
+      "peak_rss_mb_median": 6911.9,
+      "reps": [
+        {
+          "cell": "P'13U",
+          "scale": "10m",
+          "lane": "dataframe",
+          "rows": 10000000,
+          "columns": 13,
+          "wall_s": 16.923,
+          "pull_s": 16.5094,
+          "sink_write_s": 0.387,
+          "peak_rss_mb": 6911.9,
+          "artifact_mb": 1390.4,
+          "parent_observed_peak_mb": 6911.9
+        },
+        {
+          "cell": "P'13U",
+          "scale": "10m",
+          "lane": "dataframe",
+          "rows": 10000000,
+          "columns": 13,
+          "wall_s": 17.0896,
+          "pull_s": 16.7074,
+          "sink_write_s": 0.3591,
+          "peak_rss_mb": 6911.7,
+          "artifact_mb": 1390.4,
+          "parent_observed_peak_mb": 6911.9
+        },
+        {
+          "cell": "P'13U",
+          "scale": "10m",
+          "lane": "dataframe",
+          "rows": 10000000,
+          "columns": 13,
+          "wall_s": 17.063,
+          "pull_s": 16.6643,
+          "sink_write_s": 0.3751,
+          "peak_rss_mb": 6910.0,
+          "artifact_mb": 1390.4,
+          "parent_observed_peak_mb": 6911.9
+        },
+        {
+          "cell": "P'13U",
+          "scale": "10m",
+          "lane": "dataframe",
+          "rows": 10000000,
+          "columns": 13,
+          "wall_s": 17.1103,
+          "pull_s": 16.6819,
+          "sink_write_s": 0.406,
+          "peak_rss_mb": 6913.2,
+          "artifact_mb": 1390.4,
+          "parent_observed_peak_mb": 6913.2
+        },
+        {
+          "cell": "P'13U",
+          "scale": "10m",
+          "lane": "dataframe",
+          "rows": 10000000,
+          "columns": 13,
+          "wall_s": 16.8671,
+          "pull_s": 16.4874,
+          "sink_write_s": 0.36,
+          "peak_rss_mb": 6917.6,
+          "artifact_mb": 1390.4,
+          "parent_observed_peak_mb": 6917.6
+        }
+      ]
+    }
+  ]
+}
