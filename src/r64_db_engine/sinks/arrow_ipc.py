@@ -28,11 +28,26 @@ assertion would start failing, and it would fail as a *performance* symptom
 long after the config change that caused it. A knob whose only reachable effect
 is to silently break the consumer is not a feature.
 
-`feather.write_feather(..., version=2)` is used rather than `pa.ipc.new_file()`
-for the same reason `tools/gen_arrow.py` uses it in the meshroad repo: its
-default chunksize produces multi-block files (65536 rows per block), which is
-the granularity the consumer's per-block column cache is keyed on. A single
-one-block file would collapse that granularity.
+# Block granularity is load-bearing
+
+The file is written as multi-block Arrow IPC at `_BLOCK_ROWS` (65536) rows per
+record batch, because that is the granularity the consumer's per-block column
+cache is keyed on. A single one-block file would collapse that granularity and
+turn the warm-pass `columns_decoded = 0` result into a whole-file decode.
+
+This used to be spelled `feather.write_feather(..., version=2)`, which produced
+those blocks via its *default* chunksize rather than by saying so (matching
+`tools/gen_arrow.py` in the meshroad repo). That default was never ours to rely
+on, and `write_feather` is deprecated as of pyarrow 24.0.0 (D-4), so the
+chunking is now explicit: same format, same blocks, stated rather than
+inherited. Feather v2 *is* the Arrow IPC file format, so this is a change of
+API, not of container.
+
+The migration was proven byte-for-byte, not assumed: `pa.ipc.new_file()` with
+`max_chunksize=_BLOCK_ROWS` reproduces `write_feather`'s exact bytes across a
+200k-row multi-block table, an exactly-65536-row boundary table, and the empty,
+null-bearing, dictionary-encoded and timestamp cases. Pinned by
+`test_block_granularity_is_preserved_across_the_64k_boundary`.
 
 # Null and NaN: a deliberate divergence from the ramdb path
 
@@ -79,6 +94,12 @@ import pandas as pd
 from r64_db_engine.core.sink import Sink, SinkError
 
 log = logging.getLogger(__name__)
+
+# Rows per Arrow IPC record batch (== per block). This is the consumer's
+# per-block column-cache granularity, not a tuning knob: see the module
+# docstring. It matches the `write_feather` default this sink used to inherit,
+# so artifacts written before and after the D-4 migration are byte-identical.
+_BLOCK_ROWS = 65536
 
 
 class ArrowIpcSink(Sink):
@@ -179,7 +200,7 @@ class ArrowIpcSink(Sink):
             table = _to_arrow_table(
                 df, self._dictionary_columns.get(target, []), self._timestamp_unit
             )
-            _write_feather_v2(table, tmp)
+            _write_ipc_file(table, tmp)
             _fsync_path(tmp)
             os.rename(tmp, final)
             _fsync_dir(self.target_dir)
@@ -280,16 +301,25 @@ def _cast_timestamps(table: Any, unit: str) -> Any:
     return table
 
 
-def _write_feather_v2(table: Any, path: Path) -> None:
-    """Persist as uncompressed Feather v2 (== Arrow IPC file format).
+def _write_ipc_file(table: Any, path: Path) -> None:
+    """Persist as an uncompressed multi-block Arrow IPC file (== Feather v2).
+
+    No compression is passed, and none is accepted — see the module docstring
+    for why a compression knob would only ever break the consumer.
+
+    `max_chunksize=_BLOCK_ROWS` is what keeps the file multi-block. An empty
+    table yields no batches at all, which is a valid IPC file carrying just the
+    schema, and is what `write_feather` produced for that case too.
 
     Imported lazily so unit tests can monkeypatch without requiring pyarrow at
     collection time — the same discipline `core/ramdb_writer._save_ramdb` uses
     for row64tools.
     """
-    from pyarrow import feather
+    import pyarrow as pa
 
-    feather.write_feather(table, str(path), compression="uncompressed", version=2)
+    with pa.ipc.new_file(str(path), table.schema) as writer:
+        for batch in table.to_batches(max_chunksize=_BLOCK_ROWS):
+            writer.write_batch(batch)
 
 
 def _fsync_path(path: Path) -> None:

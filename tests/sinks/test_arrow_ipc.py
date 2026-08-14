@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 pa = pytest.importorskip("pyarrow")
-feather = pytest.importorskip("pyarrow.feather")
+ipc = pytest.importorskip("pyarrow.ipc")
 
 from r64_db_engine.core.sink import SinkError  # noqa: E402
 from r64_db_engine.sinks.arrow_ipc import ArrowIpcSink  # noqa: E402
@@ -21,6 +21,10 @@ from r64_db_engine.sinks.arrow_ipc import ArrowIpcSink  # noqa: E402
 # is spelled out here rather than generated.
 PG001_VALUE = 3548933426
 PG001_CORRUPTION = -746033870
+
+
+def _read(path: Path):
+    return ipc.open_file(pa.memory_map(str(path))).read_all()
 
 
 def _sink(tmp_path: Path, **opts) -> ArrowIpcSink:
@@ -49,7 +53,7 @@ def test_pg001_int64_round_trips_exactly(tmp_path: Path) -> None:
 
     path = sink.write(df, "Int64Exact")
 
-    table = feather.read_table(path)
+    table = _read(path)
     assert table.schema.field("duration").type == pa.int64()
     value = table.column("duration")[0].as_py()
     assert value == PG001_VALUE
@@ -71,7 +75,7 @@ def test_pg001_int64_boundary_values_round_trip(tmp_path: Path) -> None:
 
     path = sink.write(df, "Bounds")
 
-    assert feather.read_table(path).column("v").to_pylist() == values
+    assert _read(path).column("v").to_pylist() == values
 
 
 def test_sink_carries_no_integer_range_guard(tmp_path: Path) -> None:
@@ -100,7 +104,7 @@ def test_type_sweep_lands_with_correct_arrow_types(tmp_path: Path) -> None:
         }
     )
 
-    table = feather.read_table(sink.write(df, "Sweep"))
+    table = _read(sink.write(df, "Sweep"))
     schema = table.schema
 
     assert schema.field("big").type == pa.int64()
@@ -128,7 +132,7 @@ def test_nulls_and_nan_survive(tmp_path: Path) -> None:
         }
     )
 
-    table = feather.read_table(sink.write(df, "Nulls"))
+    table = _read(sink.write(df, "Nulls"))
 
     assert table.column("i").to_pylist() == [1, None, 3]
     assert table.column("s").to_pylist() == ["a", None, "c"]
@@ -148,7 +152,7 @@ def test_nulls_and_nan_survive(tmp_path: Path) -> None:
 def test_empty_dataframe_writes_readable_file(tmp_path: Path) -> None:
     sink = _sink(tmp_path)
     df = pd.DataFrame({"a": pd.Series([], dtype="int64")})
-    table = feather.read_table(sink.write(df, "Empty"))
+    table = _read(sink.write(df, "Empty"))
     assert table.num_rows == 0
     assert table.schema.field("a").type == pa.int64()
 
@@ -167,7 +171,7 @@ def test_dictionary_columns_land_as_dictionary_on_disk(tmp_path: Path) -> None:
         }
     )
 
-    table = feather.read_table(sink.write(df, "Dict"))
+    table = _read(sink.write(df, "Dict"))
 
     status_type = table.schema.field("status").type
     assert pa.types.is_dictionary(status_type)
@@ -278,7 +282,7 @@ def test_reader_holding_old_file_sees_consistent_data_across_swap(tmp_path: Path
     finally:
         os.close(held)
 
-    assert feather.read_table(sink.target_path("Swap")).column("v").to_pylist() == [9, 9, 9, 9]
+    assert _read(sink.target_path("Swap")).column("v").to_pylist() == [9, 9, 9, 9]
 
 
 def test_cleanup_orphan_tempfiles_removes_only_tempfiles(tmp_path: Path) -> None:
@@ -302,8 +306,46 @@ def test_written_file_is_uncompressed_and_mmap_readable(tmp_path: Path) -> None:
     assert path.stat().st_size > 700_000
 
     with pa.memory_map(str(path), "rb") as source:
-        table = feather.read_table(source)
+        table = ipc.open_file(source).read_all()
         assert table.column("v").to_pylist()[:3] == [0, 1, 2]
+
+
+def test_block_granularity_is_preserved_across_the_64k_boundary(tmp_path: Path) -> None:
+    """D-4: the IPC writer must still emit one block per 65536 rows.
+
+    This is the property the feather->ipc migration could most easily have
+    broken, and it would have broken SILENTLY: a one-block file reads back
+    identical row-for-row, so every other assertion in this module would still
+    pass. It only surfaces downstream, as the consumer's per-block column cache
+    losing its granularity and the warm pass decoding the whole file.
+    """
+    sink = _sink(tmp_path)
+
+    def blocks(rows: int) -> int:
+        path = sink.write(
+            pd.DataFrame({"v": pd.Series(range(rows), dtype="int64")}), f"B{rows}"
+        )
+        return ipc.open_file(pa.memory_map(str(path))).num_record_batches
+
+    assert blocks(1) == 1
+    assert blocks(65_536) == 1  # exactly one block, not two
+    assert blocks(65_537) == 2  # one row past the boundary splits
+    assert blocks(200_000) == 4  # 65536 * 3 + 3392
+
+
+def test_empty_table_writes_a_zero_block_file(tmp_path: Path) -> None:
+    """An empty DataFrame yields a schema-only IPC file with no batches.
+
+    Pinned because `to_batches()` on an empty table returns nothing at all, so
+    this is the one shape where the writer's loop body never executes.
+    """
+    sink = _sink(tmp_path)
+    path = sink.write(pd.DataFrame({"v": pd.Series([], dtype="int64")}), "NoRows")
+
+    reader = ipc.open_file(pa.memory_map(str(path)))
+    assert reader.num_record_batches == 0
+    assert reader.read_all().num_rows == 0
+    assert reader.schema.field("v").type == pa.int64()
 
 
 # --------------------------------------------------------------------------
@@ -325,7 +367,7 @@ def test_timestamp_unit_us_matches_the_meshroad_reference_artifact(tmp_path: Pat
         {"event_time": pd.to_datetime(["2026-01-01 00:00:00.123456", "2026-06-30 23:59:59.999999"])}
     )
 
-    table = feather.read_table(sink.write(df, "Ts"))
+    table = _read(sink.write(df, "Ts"))
 
     assert table.schema.field("event_time").type == pa.timestamp("us")
     assert [str(v) for v in table.column("event_time").to_pylist()] == [
@@ -343,7 +385,7 @@ def test_timestamp_unit_default_leaves_resolution_untouched(tmp_path: Path) -> N
     sink = _sink(tmp_path)
     df = pd.DataFrame({"event_time": pd.to_datetime(["2026-01-01 00:00:00.123456789"])})
 
-    table = feather.read_table(sink.write(df, "TsDefault"))
+    table = _read(sink.write(df, "TsDefault"))
 
     assert table.schema.field("event_time").type == pa.timestamp("ns")
 
