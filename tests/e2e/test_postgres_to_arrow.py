@@ -20,7 +20,7 @@ import pytest
 testcontainers = pytest.importorskip("testcontainers.postgres")
 PostgresContainer = testcontainers.PostgresContainer
 pa = pytest.importorskip("pyarrow")
-feather = pytest.importorskip("pyarrow.feather")
+ipc = pytest.importorskip("pyarrow.ipc")
 
 from r64_db_engine.core.config import Config  # noqa: E402
 from r64_db_engine.core.daemon import build_daemon  # noqa: E402
@@ -30,6 +30,10 @@ pytestmark = pytest.mark.integration
 
 PG001_VALUE = 3548933426
 PG001_CORRUPTION = -746033870
+
+
+def _read(path: Path):
+    return ipc.open_file(pa.memory_map(str(path))).read_all()
 
 
 @pytest.fixture(scope="module")
@@ -117,7 +121,7 @@ def test_e2e_pg001_int64_survives_postgres_to_arrow(pg, tmp_path: Path) -> None:
     out = Path(cfg.sink.options()["output_dir"]) / "PG" / "PG001.arrow"
     assert out.exists()
 
-    table = feather.read_table(out)
+    table = _read(out)
     assert table.schema.field("duration").type == pa.int64()
     values = table.column("duration").to_pylist()
 
@@ -168,7 +172,7 @@ def test_e2e_type_sweep_from_real_postgres(pg, tmp_path: Path) -> None:
     asyncio.run(daemon.run(once=True))
 
     out = Path(cfg.sink.options()["output_dir"]) / "PG" / "Sweep.arrow"
-    table = feather.read_table(out)
+    table = _read(out)
     schema = table.schema
 
     assert schema.field("big").type == pa.int64()
@@ -202,7 +206,7 @@ def _seed_nulls(pg, tmp_path: Path):
         ],
     )
     asyncio.run(daemon.run(once=True))
-    return feather.read_table(
+    return _read(
         Path(cfg.sink.options()["output_dir"]) / "PG" / "Nulls.arrow"
     )
 
@@ -286,7 +290,7 @@ def test_e2e_dictionary_column_lands_encoded(pg, tmp_path: Path) -> None:
 
     asyncio.run(daemon.run(once=True))
 
-    table = feather.read_table(
+    table = _read(
         Path(cfg.sink.options()["output_dir"]) / "PG" / "Dict.arrow"
     )
     status_type = table.schema.field("status").type
@@ -323,14 +327,14 @@ def test_e2e_second_pull_atomically_replaces_the_file(pg, tmp_path: Path) -> Non
     asyncio.run(daemon.run(once=True))
     out = Path(cfg.sink.options()["output_dir"]) / "PG" / "Swap.arrow"
     first_inode = out.stat().st_ino
-    assert feather.read_table(out).column("v").to_pylist() == [PG001_VALUE]
+    assert _read(out).column("v").to_pylist() == [PG001_VALUE]
 
     _seed(daemon, cfg, [f"UPDATE swap_src SET v = {PG001_VALUE + 1} WHERE id = 1"])
     daemon2 = build_daemon(cfg)
     asyncio.run(daemon2.run(once=True))
 
     assert out.stat().st_ino != first_inode, "republish must be a rename, not a rewrite"
-    assert feather.read_table(out).column("v").to_pylist() == [PG001_VALUE + 1]
+    assert _read(out).column("v").to_pylist() == [PG001_VALUE + 1]
     # No tempfiles survive a successful publish.
     assert [p.name for p in out.parent.iterdir() if ".arrow.tmp." in p.name] == []
 
