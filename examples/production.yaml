@@ -9,7 +9,7 @@
 #     PG_HOST=localhost PG_PORT=5432 PG_USER=postgres PG_PASSWORD=row64dev
 # (matches scripts/dev_postgres.sh defaults).
 
-dialect: postgres                           # only 'postgres' in v0.1
+dialect: postgres                           # any name in the driver registry
 
 postgres:
   host: ${PG_HOST}

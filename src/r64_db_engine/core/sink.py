@@ -13,13 +13,19 @@ opaque `dict[str, Any]` and is interpreted by the sink itself — the same
 indirection `Driver.connect(config: dict[str, Any])` uses, and for the same
 reason.
 
-This matters more than it looks. PG-010 records that `core/` already bakes the
-first *dialect* into core validation (`PostgresConfig`, `Literal["postgres"]`,
-Postgres-specific health and metrics). That leak is deliberately deferred, not
-endorsed. Introducing `Literal["ramdb", "arrow_ipc"]` here would clone the same
-mistake onto a second axis and double the surface a future refactor has to
-unwind. So the sink registry resolves a free-form `str` at runtime and core
-stays ignorant of what sinks exist.
+This matters more than it looks. PG-010 recorded that `core/` baked the dialect
+enumeration into core validation (`Literal["postgres", "clickhouse"]`, plus
+`PostgresConfig` and Postgres-specific health and metrics). Introducing
+`Literal["ramdb", "arrow_ipc"]` here would have cloned the same mistake onto a
+second axis, so the sink registry resolves a free-form `str` at runtime and
+core stays ignorant of what sinks exist.
+
+The dialect axis has since been brought into line: `Config.dialect` is a
+free-form `str` resolved against the driver registry, and an unrecognized
+dialect's config block is passed through opaquely. What remains of PG-010 is
+narrower — core still carries typed `PostgresConfig`/`ClickHouseConfig` models
+and Postgres-specific health and metrics — but adding a driver no longer
+requires editing core validation.
 
 # What a sink owes its consumer
 

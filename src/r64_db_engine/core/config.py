@@ -94,10 +94,9 @@ class SinkConfig(BaseModel):
     """Output-sink selection. Core names ZERO sinks — see `core/sink.py`.
 
     `type` is a free-form string resolved against the sink registry at daemon
-    startup, NOT a `Literal[...]`. That is deliberate and load-bearing: PG-010
-    records that core already bakes the first *dialect* into core validation,
-    and enumerating sink names here would clone the same leak onto a second
-    axis. Adding a sink must require zero edits to this file.
+    startup, NOT a `Literal[...]`. That is deliberate and load-bearing: it is
+    the same shape `dialect` and `profile` use, for the same reason. Adding a
+    sink must require zero edits to this file.
 
     Sink-specific options are accepted as extra keys and passed through
     opaquely, exactly as `Driver.connect()` receives an opaque config dict.
@@ -112,10 +111,65 @@ class SinkConfig(BaseModel):
         return {k: v for k, v in self.model_dump().items() if k != "type"}
 
 
-class Config(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+# Dialects for which core still carries a typed config model. This is NOT the
+# set of supported dialects and nothing may treat it as one — a dialect absent
+# from here configures fine, as an opaque block validated by its own driver.
+# It exists only so that `_source_block` can tell a legacy typed field from an
+# arbitrary top-level key, and it shrinks as those models move driver-side.
+_TYPED_BLOCKS = frozenset({"postgres", "clickhouse"})
 
-    dialect: Literal["postgres", "clickhouse"] = "postgres"
+
+def _registered_dialects() -> frozenset[str]:
+    """Dialect names the driver registry currently knows.
+
+    Imported lazily, from inside validation, so `core/` never imports a
+    concrete driver at module scope — the same discipline `_apply_profile`
+    uses for the profile registry. `core.config` therefore stays importable on
+    its own, but *validating* a config does pull in every registered driver's
+    third-party dependencies (psycopg, clickhouse_connect, boto3 after Gate C).
+    That coupling is the cost of validating dialect names against the registry
+    instead of against a constant, and it is deliberate: a constant here would
+    be PG-010 again.
+    """
+    from r64_db_engine.drivers import DRIVERS
+
+    return frozenset(DRIVERS)
+
+
+class Config(BaseModel):
+    """Top-level config.
+
+    `dialect` is a free-form string resolved against the driver registry, NOT a
+    `Literal[...]`. That is PG-010: core used to enumerate the dialects it knew,
+    so DynamoDB — a driver that is complete and locally proven — could not be
+    named in a config file at all, and its own integration tests had to smuggle
+    it through as `dialect: postgres` with `database: "unused-config-vessel"`.
+    A driver that cannot be configured is not really shipped.
+
+    The dialect's config block is whatever top-level key matches the dialect
+    name. Core keeps typed models for `postgres:` and `clickhouse:` because they
+    already existed and carry real validation (`sslmode`, ports, timeouts), but
+    a dialect core has never heard of gets its block passed through opaquely,
+    exactly as `SinkConfig` passes sink options and as `Driver.connect()`
+    already expects. The driver validates its own keys — the DynamoDB driver,
+    for instance, refuses `scan_segments` outside 1..32 itself.
+
+    `extra="allow"` is therefore load-bearing rather than lax: unknown keys are
+    still refused by `_reject_unknown_top_level_keys` below, which keeps the
+    typo protection `extra="forbid"` gave. The permitted set is exactly
+    `{declared fields} u {registered dialects}` — checked against the driver
+    registry, not against any list kept in this file.
+
+    Note for downstream consumers: "r64-db-engine's Config forbids extra
+    top-level keys" remains TRUE IN EFFECT, but it is now enforced by that
+    validator rather than by pydantic's `extra="forbid"`. Foreign top-level
+    state (e.g. GUI or cockpit bookkeeping) is still refused, because it is not
+    a registered dialect name.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    dialect: str = "postgres"
     postgres: PostgresConfig | None = None
     clickhouse: ClickHouseConfig | None = None
     # Optional named deployment shape applied over the selected dialect's
@@ -135,12 +189,67 @@ class Config(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
     @model_validator(mode="after")
-    def _check_driver_config(self) -> Config:
-        if self.dialect == "postgres" and self.postgres is None:
-            raise ValueError("postgres config is required when dialect is 'postgres'")
-        if self.dialect == "clickhouse" and self.clickhouse is None:
-            raise ValueError("clickhouse config is required when dialect is 'clickhouse'")
+    def _reject_unknown_top_level_keys(self) -> Config:
+        """Restore `extra="forbid"`'s typo protection against the registry.
+
+        The permitted top-level keys are exactly:
+
+            {declared config fields} u {registered dialect names}
+
+        Pydantic enforces the first half natively; this enforces the second.
+        Without it, `extra="allow"` would silently swallow a misspelled
+        `telemtry:` block and run with the default telemetry config.
+
+        The registry — not a constant in this file — is what says which dialect
+        names are real, so registering a driver is still the only step a new
+        dialect needs. An unregistered dialect is refused HERE, at config time,
+        rather than later at driver resolution: PG-011 doctrine is to refuse
+        loudly and early, and a config naming a driver that does not exist is
+        wrong the moment it is written.
+        """
+        registered = _registered_dialects()
+        listing = ", ".join(sorted(registered)) or "(none)"
+
+        if self.dialect not in registered:
+            raise ValueError(
+                f"unknown dialect '{self.dialect}' (registered: {listing})"
+            )
+
+        unknown = set(self.model_extra or {}) - registered
+        if unknown:
+            raise ValueError(
+                f"unknown top-level config key(s): {', '.join(sorted(unknown))}. "
+                f"Permitted keys are the declared config fields plus a block "
+                f"named after a registered dialect (registered: {listing})."
+            )
         return self
+
+    @model_validator(mode="after")
+    def _check_driver_config(self) -> Config:
+        if self._source_block() is None:
+            raise ValueError(
+                f"{self.dialect} config is required when dialect is '{self.dialect}'"
+            )
+        return self
+
+    def _source_block(self) -> dict[str, Any] | None:
+        """The raw config block for the selected dialect, or None if absent.
+
+        Checks the typed fields first so `postgres:`/`clickhouse:` keep their
+        validation and defaults, then falls through to the opaque extra block.
+        """
+        if self.dialect in _TYPED_BLOCKS:
+            typed = getattr(self, self.dialect, None)
+            return None if typed is None else dict(typed.model_dump())
+        block = (self.model_extra or {}).get(self.dialect)
+        if block is None:
+            return None
+        if not isinstance(block, dict):
+            raise ValueError(
+                f"'{self.dialect}:' must be a mapping of connection options, "
+                f"got {type(block).__name__}"
+            )
+        return dict(block)
 
     @field_validator("tables")
     @classmethod
@@ -180,15 +289,10 @@ class Config(BaseModel):
         that the refusal fires on the same path the daemon actually takes to
         build a connection, and so `core/` never imports a concrete profile.
         """
-        if self.dialect == "postgres":
-            if self.postgres is None:
-                raise ValueError("postgres config is required")
-            return self._apply_profile(self.postgres.model_dump())
-        if self.dialect == "clickhouse":
-            if self.clickhouse is None:
-                raise ValueError("clickhouse config is required")
-            return self._apply_profile(self.clickhouse.model_dump())
-        raise ValueError(f"unknown dialect: {self.dialect}")
+        block = self._source_block()
+        if block is None:
+            raise ValueError(f"{self.dialect} config is required")
+        return self._apply_profile(block)
 
     def _apply_profile(self, block: dict[str, Any]) -> dict[str, Any]:
         if self.profile is None:
