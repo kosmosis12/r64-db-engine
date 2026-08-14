@@ -68,6 +68,14 @@ def ascii_sanitize_series(series: pd.Series) -> pd.Series:
     """
     if series.empty:
         return series
+    if series.isna().all():
+        # An all-null column has nothing to transliterate, and no inferable
+        # string storage to transliterate it in: pandas 3 leaves `.astype(str)`
+        # float-backed for an all-NaN float column, and the `.str` accessor
+        # rejects a floating array outright. Returning the nullable string dtype
+        # early keeps the null-preserving contract intact for a column whose
+        # values are, by definition, all null.
+        return series.astype("string")
     return series.astype(str).str.encode("ascii", errors="replace").str.decode("ascii")
 
 

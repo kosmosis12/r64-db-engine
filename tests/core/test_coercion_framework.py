@@ -28,6 +28,35 @@ def test_ascii_sanitize_handles_emoji():
     assert out.tolist() == ["fire ?", "ok"]
 
 
+def test_ascii_sanitize_handles_all_null_float_column():
+    """An entirely-absent source column must survive sanitization as NULL.
+
+    A sparse source (a DynamoDB item carrying none of an attribute across a
+    whole page; a Postgres column that is NULL for every pulled row) lands here
+    as an all-NaN float64 column, because there is no value to infer string
+    storage from. Under pandas 3, `.astype(str)` leaves such a column
+    float-backed and the `.str` accessor raises `AttributeError`. Sanitizing
+    must be a no-op here, not a crash — and must not invent a "nan" string.
+    """
+    s = pd.Series([np.nan, np.nan], dtype="float64")
+    out = coercion.ascii_sanitize_series(s)
+    assert out.isna().all()
+    assert out.tolist() == [pd.NA, pd.NA]
+
+
+def test_string_coercion_of_all_null_column_preserves_null():
+    """The discriminator must still work when the whole column is NULL.
+
+    count(*) vs count(col) is the standing proof that NULL survived the pull;
+    it is worthless if an all-NULL column crashes or fills with a sentinel.
+    """
+    s = pd.Series([np.nan, np.nan], dtype="float64")
+    out = coercion.coerce_string_column(s)
+    assert out.dtype == "string"
+    assert len(out) == 2
+    assert out.notna().sum() == 0
+
+
 # ---- NaN handling (§6.3) ---------------------------------------------
 
 
