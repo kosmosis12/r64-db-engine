@@ -25,6 +25,7 @@ from r64_db_engine.core.daemon import Daemon
 from r64_db_engine.core.ramdb_writer import RamdbWriter, Row64CodecOverflowError
 from r64_db_engine.core.state import StateStore
 from r64_db_engine.drivers.dynamodb.driver import DynamoDBDriver
+from r64_db_engine.sinks.ramdb import RamdbSink
 
 pytestmark = pytest.mark.integration
 PRIMARY = "r64-ddb-primary"
@@ -102,10 +103,19 @@ def _daemon_config(
 
 def _real_daemon(
     config: Config, driver: DynamoDBDriver
-) -> tuple[Daemon, StateStore, RamdbWriter]:
+) -> tuple[Daemon, StateStore, RamdbSink]:
+    """Build a daemon over the real ramdb output path.
+
+    Post sink-split the daemon takes a `Sink`, not a bare `RamdbWriter` --
+    it calls `sink.supports_incremental()` to decide whether an incremental
+    config is legal against this output format. `RamdbSink` is the audited
+    adapter over the same `RamdbWriter`, so the bytes written here are
+    unchanged; only the interface the daemon sees is.
+    """
     state = StateStore(Path(config.runtime.state_dir) / "state.db")
-    writer = RamdbWriter(config.row64.loading_dir, config.row64.group)
-    return Daemon(config, driver, state, writer), state, writer
+    sink = RamdbSink()
+    sink.open({"loading_dir": config.row64.loading_dir, "group": config.row64.group})
+    return Daemon(config, driver, state, sink), state, sink
 
 
 def _expected_primary_frame(rows: int = 50_000) -> pd.DataFrame:
@@ -363,7 +373,16 @@ async def test_sparse_nan_fill_json_sets_and_binary_are_deterministic(
     second = await driver.pull(config, 49_997)
     first.dataframe.sort_values("event_n", inplace=True, ignore_index=True)
     second.dataframe.sort_values("event_n", inplace=True, ignore_index=True)
-    assert first.dataframe["sparse"].tolist() == ["present-49998", ""]
+    # Item 49_999 carries no `sparse` attribute at all. In the pulled frame that
+    # is a true NULL, not "": the empty-string fill now happens only at the ramdb
+    # format boundary (`core/ramdb_writer.apply_ramdb_null_fill`), which is why
+    # the 50K round-trip proof above still sees "" after loading the artifact
+    # back. Asserting "" here would re-assert the fidelity loss the null contract
+    # removed -- a missing attribute and an attribute set to "" must stay distinct.
+    sparse = first.dataframe["sparse"]
+    assert sparse.iloc[0] == "present-49998"
+    assert sparse.isna().tolist() == [False, True]
+    assert len(sparse) == 2 and sparse.notna().sum() == 1
     for column in ("map", "list", "strings", "numbers", "binaries"):
         assert first.dataframe[column].tolist() == second.dataframe[column].tolist()
         assert [value.encode() for value in first.dataframe[column]] == [
