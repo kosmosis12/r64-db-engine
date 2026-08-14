@@ -33,6 +33,9 @@ _DEFAULT_PORT = 5432
 _DEFAULT_CONNECT_TIMEOUT = 10
 _DEFAULT_STATEMENT_TIMEOUT_S = 300
 _DEFAULT_APP_NAME = "r64-db-engine"
+# psycopg's own default. Kept identical so that threading this value through
+# `_open()` changes nothing for a config that does not set it.
+_DEFAULT_PREPARE_THRESHOLD = 5
 
 # Object types that come back from psycopg as Python objects (not str/int/...)
 # and need per-value coercion before the framework's string-column rules run.
@@ -64,6 +67,7 @@ class PostgresDriver(Driver):
         self._statement_timeout_ms: int = _DEFAULT_STATEMENT_TIMEOUT_S * 1000
         self._database: str | None = None
         self._host: str | None = None
+        self._prepare_threshold: int | None = _DEFAULT_PREPARE_THRESHOLD
 
     # ---- ABC required ------------------------------------------------
 
@@ -85,6 +89,12 @@ class PostgresDriver(Driver):
         statement_timeout = int(
             config.get("statement_timeout") or _DEFAULT_STATEMENT_TIMEOUT_S
         )
+        # `None` is meaningful here (never prepare) and must survive, so this
+        # reads the key rather than using `or`, which would fold None into the
+        # default and silently re-enable preparing behind a pooler.
+        prepare_threshold = config.get("prepare_threshold", _DEFAULT_PREPARE_THRESHOLD)
+        if "prepare_threshold" in config and prepare_threshold is None:
+            log.info("postgres_prepared_statements_disabled host=%s", host)
 
         parts = [
             f"host={host}",
@@ -103,6 +113,7 @@ class PostgresDriver(Driver):
         self._statement_timeout_ms = statement_timeout * 1000
         self._database = database
         self._host = host
+        self._prepare_threshold = prepare_threshold
 
         # Validate by opening + closing a connection now (fail-fast).
         async with await self._open() as conn, conn.cursor() as cur:
@@ -293,7 +304,15 @@ class PostgresDriver(Driver):
     async def _open(self) -> psycopg.AsyncConnection:
         if not self._conninfo:
             raise RuntimeError("PostgresDriver.connect() not called")
-        return await psycopg.AsyncConnection.connect(self._conninfo, autocommit=False)
+        # `prepare_threshold` is a psycopg-level kwarg, not a libpq connection
+        # option — it cannot be smuggled through the conninfo string, which is
+        # why it is threaded separately. `None` disables automatic prepared
+        # statements, which is mandatory behind a connection pooler.
+        return await psycopg.AsyncConnection.connect(
+            self._conninfo,
+            autocommit=False,
+            prepare_threshold=self._prepare_threshold,
+        )
 
 
 # ---- module-level helpers ------------------------------------------
