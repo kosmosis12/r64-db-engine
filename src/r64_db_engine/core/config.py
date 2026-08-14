@@ -27,6 +27,11 @@ class PostgresConfig(BaseModel):
     application_name: str = "r64-db-engine"
     connect_timeout: int = 10
     statement_timeout: int = 300
+    # psycopg's automatic-prepared-statement threshold. `None` disables
+    # preparing entirely, which is required whenever a connection pooler sits
+    # in the path. Default 5 is psycopg's own default, so an untouched config
+    # behaves exactly as it did before this knob existed.
+    prepare_threshold: int | None = 5
 
 
 class ClickHouseConfig(BaseModel):
@@ -113,6 +118,13 @@ class Config(BaseModel):
     dialect: Literal["postgres", "clickhouse"] = "postgres"
     postgres: PostgresConfig | None = None
     clickhouse: ClickHouseConfig | None = None
+    # Optional named deployment shape applied over the selected dialect's
+    # config. A free-form string resolved against the profile registry at
+    # config time, NOT a `Literal[...]` — same reasoning as `SinkConfig.type`
+    # below: enumerating profile names here would clone the PG-010 leak onto a
+    # third axis. Absent means "no profile", so every existing config is
+    # untouched.
+    profile: str | None = None
     row64: Row64Config
     # Optional: absent means "the registry's default sink, configured from the
     # legacy `row64:` block", so every pre-sink config keeps working untouched.
@@ -161,16 +173,35 @@ class Config(BaseModel):
         }
 
     def driver_config(self) -> dict[str, Any]:
-        """Return the config block for the selected dialect."""
+        """Return the config block for the selected dialect.
+
+        A `profile:`, if set, gets the last word: it validates the block and may
+        refuse it outright. Applied here rather than in a field validator so
+        that the refusal fires on the same path the daemon actually takes to
+        build a connection, and so `core/` never imports a concrete profile.
+        """
         if self.dialect == "postgres":
             if self.postgres is None:
                 raise ValueError("postgres config is required")
-            return self.postgres.model_dump()
+            return self._apply_profile(self.postgres.model_dump())
         if self.dialect == "clickhouse":
             if self.clickhouse is None:
                 raise ValueError("clickhouse config is required")
-            return self.clickhouse.model_dump()
+            return self._apply_profile(self.clickhouse.model_dump())
         raise ValueError(f"unknown dialect: {self.dialect}")
+
+    def _apply_profile(self, block: dict[str, Any]) -> dict[str, Any]:
+        if self.profile is None:
+            return block
+        from r64_db_engine.profiles import resolve as resolve_profile
+
+        profile = resolve_profile(self.profile)
+        if profile.dialect() != self.dialect:
+            raise ValueError(
+                f"profile '{self.profile}' applies to dialect "
+                f"'{profile.dialect()}', not '{self.dialect}'"
+            )
+        return profile.apply(block)
 
 
 def parse_cadence(s: str) -> int:
