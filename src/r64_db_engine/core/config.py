@@ -75,12 +75,37 @@ class RuntimeConfig(BaseModel):
     shutdown_grace_seconds: int = Field(default=30, ge=1)
 
 
+class SinkConfig(BaseModel):
+    """Output-sink selection. Core names ZERO sinks — see `core/sink.py`.
+
+    `type` is a free-form string resolved against the sink registry at daemon
+    startup, NOT a `Literal[...]`. That is deliberate and load-bearing: PG-010
+    records that core already bakes the first *dialect* into core validation,
+    and enumerating sink names here would clone the same leak onto a second
+    axis. Adding a sink must require zero edits to this file.
+
+    Sink-specific options are accepted as extra keys and passed through
+    opaquely, exactly as `Driver.connect()` receives an opaque config dict.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+
+    def options(self) -> dict[str, Any]:
+        """Sink-specific keys only, with the selector removed."""
+        return {k: v for k, v in self.model_dump().items() if k != "type"}
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dialect: Literal["postgres"] = "postgres"
     postgres: PostgresConfig
     row64: Row64Config
+    # Optional: absent means "the registry's default sink, configured from the
+    # legacy `row64:` block", so every pre-sink config keeps working untouched.
+    sink: SinkConfig | None = None
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     tables: list[TableConfig]
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
@@ -164,6 +189,7 @@ __all__ = [
     "Config",
     "PostgresConfig",
     "Row64Config",
+    "SinkConfig",
     "DefaultsConfig",
     "TableConfig",
     "TelemetryConfig",

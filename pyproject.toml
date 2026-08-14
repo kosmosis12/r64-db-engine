@@ -19,6 +19,13 @@ dependencies = [
     # narrowing + the overflow guard). 1.0.11 is the version Gate A was proven
     # against; pinning keeps local and CI deterministic. See docs/conformance/.
     "row64tools==1.0.11",
+    # Exact pin, same discipline as row64tools above and for a sharper reason:
+    # 25.0.0 is the version meshroad's artifact generator (tools/gen_arrow.py)
+    # is pinned to, and the Arrow IPC sink must produce files the consumer has
+    # already been proven against — same writer, same Feather v2 defaults, same
+    # 65536-row block chunking that meshroad's per-block column cache is keyed
+    # on. Floating this pin would silently change block layout.
+    "pyarrow==25.0.0",
 ]
 
 [project.optional-dependencies]

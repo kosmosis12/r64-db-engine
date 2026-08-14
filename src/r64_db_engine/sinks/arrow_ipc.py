@@ -1,0 +1,265 @@
+"""Arrow IPC (Feather v2) sink — mmap-ready output for meshroad.
+
+Writes each target as an uncompressed Arrow IPC file that a consumer can
+`mmap` and query in place, with no decode and no copy.
+
+# Why this sink exists: the int64 lineage
+
+`row64tools`' ramdb codec narrows int64 to signed int32. Before the guard in
+`core/ramdb_writer.py` landed, that narrowing was SILENT: a seeded
+`duration = 3548933426` loaded back as `-746033870` (PG-001). The guard turned
+silent corruption into a loud `Row64CodecOverflowError`, which is strictly
+better and still means the value cannot be stored at all.
+
+Arrow's int64 is a native 64-bit type. There is no narrowing step to guard,
+because there is no narrowing. `3548933426` is written and read as
+`3548933426`. This is not a fix applied on top of a lossy codec — it is a
+format in which that class of defect is unrepresentable, which is why the sink
+carries NO integer-range guard: adding one would imply a risk that does not
+exist here.
+
+# Uncompressed is load-bearing
+
+`compression="uncompressed"` is not a default that a config key may override —
+this sink exposes no compression option at all, deliberately. A compressed IPC
+body must be decompressed into fresh heap buffers before it can be read, which
+destroys the consumer's zero-copy mmap path: meshroad's `copied_columns = 0`
+assertion would start failing, and it would fail as a *performance* symptom
+long after the config change that caused it. A knob whose only reachable effect
+is to silently break the consumer is not a feature.
+
+`feather.write_feather(..., version=2)` is used rather than `pa.ipc.new_file()`
+for the same reason `tools/gen_arrow.py` uses it in the meshroad repo: its
+default chunksize produces multi-block files (65536 rows per block), which is
+the granularity the consumer's per-block column cache is keyed on. A single
+one-block file would collapse that granularity.
+
+# Null and NaN: a deliberate divergence from the ramdb path
+
+SPEC §6 says float NaN is *preserved* — true of ramdb, and NOT true here.
+`pa.Table.from_pandas` maps float64 NaN onto Arrow's null bitmap, so a NaN goes
+in and a null comes out (`null_count` rises; `to_pylist()` yields `None`).
+
+That is kept on purpose. By the time a DataFrame reaches any sink, pandas has
+already conflated SQL `NULL` and SQL `'NaN'::float8` into the same float64 NaN
+— the information is lost upstream of us and neither choice can recover it. The
+question is only which way to resolve the ambiguity, and null is the safer
+resolution: Arrow aggregates SKIP nulls, matching SQL semantics for the
+overwhelmingly more common case (an actual NULL), whereas writing NaN would set
+`null_count = 0` and poison every downstream `sum()`/`mean()` with NaN. Passing
+`from_pandas=False` would preserve literal NaN and cause exactly that.
+
+So: genuine NaNs are indistinguishable from NULLs here and land as null. Do not
+"fix" this without first fixing the conflation in the driver's coercion layer,
+where the distinction still exists.
+
+# Atomicity
+
+Write to `<target>.arrow.tmp.<uuid>` in the destination directory, fsync the
+file, `rename(2)` onto the final path, then fsync the directory. The rename is
+atomic on POSIX within a filesystem, so a concurrent reader sees either the
+whole previous file or the whole new one. The directory fsync is what makes the
+rename itself durable across power loss — `core/ramdb_writer.py` omits that
+step; it is added here rather than retrofitted there, to keep audited code
+untouched.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import signal
+import threading
+import uuid
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from r64_db_engine.core.sink import Sink, SinkError
+
+log = logging.getLogger(__name__)
+
+
+class ArrowIpcSink(Sink):
+    """Atomic per-target Arrow IPC (Feather v2) writer."""
+
+    def __init__(self) -> None:
+        self.output_dir: Path | None = None
+        self.group: str = ""
+        self._dictionary_columns: dict[str, list[str]] = {}
+
+    @classmethod
+    def sink_name(cls) -> str:
+        return "arrow_ipc"
+
+    def open(self, config: dict[str, Any]) -> None:
+        output_dir = config.get("output_dir")
+        if not output_dir:
+            raise SinkError("arrow_ipc sink requires 'output_dir'")
+
+        # Refuse the knob rather than accept-and-ignore it: a config that asks
+        # for compression is a config written against a different set of
+        # expectations, and silently producing an uncompressed file would leave
+        # the operator believing something false about the output.
+        if "compression" in config:
+            raise SinkError(
+                "arrow_ipc sink does not support 'compression': compressed IPC "
+                "buffers must be decompressed before reading, which defeats the "
+                "consumer's zero-copy mmap path. Remove the key."
+            )
+
+        self.output_dir = Path(output_dir).expanduser()
+        self.group = str(config.get("group", "") or "")
+
+        raw = config.get("dictionary_columns") or {}
+        if not isinstance(raw, dict):
+            raise SinkError(
+                "arrow_ipc 'dictionary_columns' must be a mapping of "
+                "target name -> list of column names"
+            )
+        for target, columns in raw.items():
+            if not isinstance(columns, list) or not all(isinstance(c, str) for c in columns):
+                raise SinkError(
+                    f"arrow_ipc 'dictionary_columns[{target}]' must be a list of column names"
+                )
+            self._dictionary_columns[str(target)] = list(columns)
+
+    @property
+    def target_dir(self) -> Path:
+        if self.output_dir is None:
+            raise SinkError("arrow_ipc sink used before open()")
+        return self.output_dir / self.group if self.group else self.output_dir
+
+    def ensure_ready(self) -> None:
+        if self.output_dir is None:
+            raise SinkError("arrow_ipc sink used before open()")
+        if not self.output_dir.exists():
+            raise FileNotFoundError(f"output_dir does not exist: {self.output_dir}")
+        self.target_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+
+    def target_path(self, target: str) -> Path:
+        return self.target_dir / f"{target}.arrow"
+
+    def write(self, df: pd.DataFrame, target: str) -> Path:
+        self.ensure_ready()
+        final = self.target_path(target)
+        tmp = self.target_dir / f".{target}.arrow.tmp.{uuid.uuid4().hex}"
+
+        previous_sigterm = None
+        manages_sigterm = threading.current_thread() is threading.main_thread()
+
+        def terminate(signum: int, frame: object) -> None:
+            _safe_unlink(tmp)
+            os._exit(128 + signum)
+
+        if manages_sigterm:
+            previous_sigterm = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGTERM, terminate)
+        try:
+            table = _to_arrow_table(df, self._dictionary_columns.get(target, []))
+            _write_feather_v2(table, tmp)
+            _fsync_path(tmp)
+            os.rename(tmp, final)
+            _fsync_dir(self.target_dir)
+            log.debug("arrow_write_ok target=%s path=%s rows=%d", target, final, len(df))
+            return final
+        finally:
+            _safe_unlink(tmp)
+            if manages_sigterm and previous_sigterm is not None:
+                signal.signal(signal.SIGTERM, previous_sigterm)
+
+    def cleanup_orphan_tempfiles(self) -> int:
+        if self.output_dir is None or not self.target_dir.exists():
+            return 0
+        n = 0
+        for path in self.target_dir.iterdir():
+            name = path.name
+            if name.startswith(".") and ".arrow.tmp." in name:
+                _safe_unlink(path)
+                n += 1
+        if n:
+            log.warning("arrow_ipc: removed %d orphan tempfile(s) in %s", n, self.target_dir)
+        return n
+
+    def supports_incremental(self) -> bool:
+        """False — and structurally, not just as a current limitation.
+
+        An Arrow IPC file ends with a footer carrying the block table, so
+        appending in place is not merely unsupported by the writer, it is wrong
+        for the format. The daemon's incremental path would otherwise read this
+        sink's own previous output back in to merge — the PG-011 pattern. See
+        `Sink.supports_incremental`.
+        """
+        return False
+
+
+def _to_arrow_table(df: pd.DataFrame, dictionary_columns: list[str]) -> Any:
+    import pyarrow as pa
+
+    table = pa.Table.from_pandas(df, preserve_index=False)
+
+    # Dictionary-encode the configured columns. Explicit config, never
+    # cardinality auto-detection: an auto threshold makes the OUTPUT SCHEMA
+    # DATA-DEPENDENT, so a column could encode on one pull and land as plain
+    # utf8 on the next when its distinct count drifts across the threshold.
+    # A consumer that registered the first schema then breaks on the second.
+    for name in dictionary_columns:
+        if name not in table.column_names:
+            raise SinkError(
+                f"dictionary_columns names '{name}', which is not in the pulled "
+                f"columns: {sorted(table.column_names)}"
+            )
+        idx = table.schema.get_field_index(name)
+        field = table.schema.field(idx)
+        if not pa.types.is_string(field.type) and not pa.types.is_large_string(field.type):
+            raise SinkError(
+                f"dictionary_columns names '{name}' of type {field.type}; "
+                f"only string columns can be dictionary-encoded"
+            )
+        # dictionary(int32, utf8): int32 keys land 8-byte aligned inside the IPC
+        # body, which is what lets the consumer point at them instead of copying.
+        target_type = pa.dictionary(pa.int32(), pa.utf8())
+        table = table.set_column(
+            idx, pa.field(name, target_type), table.column(idx).cast(target_type)
+        )
+    return table
+
+
+def _write_feather_v2(table: Any, path: Path) -> None:
+    """Persist as uncompressed Feather v2 (== Arrow IPC file format).
+
+    Imported lazily so unit tests can monkeypatch without requiring pyarrow at
+    collection time — the same discipline `core/ramdb_writer._save_ramdb` uses
+    for row64tools.
+    """
+    from pyarrow import feather
+
+    feather.write_feather(table, str(path), compression="uncompressed", version=2)
+
+
+def _fsync_path(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_dir(path: Path) -> None:
+    """fsync the directory so the rename itself is durable, not just the data."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("arrow_ipc: failed to unlink %s: %s", path, exc)
+
+
+__all__ = ["ArrowIpcSink"]

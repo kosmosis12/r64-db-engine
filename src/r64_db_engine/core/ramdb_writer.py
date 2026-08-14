@@ -4,6 +4,27 @@ Writes to a tempfile in the destination directory, then `os.rename` to
 the final path (POSIX-atomic). Cleans up tempfiles on exception or
 SIGTERM mid-write. Never leaves partial `.ramdb` files visible to the
 Row64 Server.
+
+# Null policy: the row64tools accommodation lives HERE
+
+`.ramdb` has no null representation. Integers must therefore arrive as numpy
+`int64` with nulls already resolved, strings as plain `str`, booleans as
+numpy `bool`.
+
+That fill used to happen in `core/coercion.py`, in the SOURCE-AGNOSTIC layer,
+where it silently degraded fidelity for every sink — including formats that
+carry nulls natively. It now happens at this boundary, applied explicitly by
+`apply_ramdb_null_fill` on the way into `save_from_df`, because it is a
+property of THIS format and nothing else.
+
+The resulting bytes are unchanged: `tests/core/test_ramdb_golden.py` asserts
+byte-identity against `.ramdb` files captured before the move.
+
+The fill is lossy and always was: a SQL `NULL` in a BIGINT becomes `0`,
+indistinguishable downstream from a legitimate zero. That loss is now visible
+at the point where the format forces it, rather than applied globally and
+discovered later. It is recorded as a Bucket-A question for Row64 alongside the
+int32 narrowing.
 """
 
 from __future__ import annotations
@@ -22,6 +43,11 @@ log = logging.getLogger(__name__)
 
 _ROW64_INT_MIN = -(2**31)
 _ROW64_INT_MAX = 2**31 - 1
+
+# What each dtype family collapses a null to, for a format that cannot hold one.
+_NULL_FILL_INT = 0
+_NULL_FILL_STR = ""
+_NULL_FILL_BOOL = False
 
 
 class Row64CodecOverflowError(ValueError):
@@ -50,6 +76,7 @@ class RamdbWriter:
     def write(self, df: pd.DataFrame, target: str) -> Path:
         """Write the DataFrame atomically. Returns the final path."""
         self.ensure_dirs()
+        df = apply_ramdb_null_fill(df)
         _raise_on_codec_unsafe_int64(df)
         final = self.target_path(target)
         tmp = self.target_dir / f".{target}.ramdb.tmp.{uuid.uuid4().hex}"
@@ -88,6 +115,38 @@ class RamdbWriter:
         return n
 
 
+def apply_ramdb_null_fill(df: pd.DataFrame) -> pd.DataFrame:
+    """Resolve nulls the way the `.ramdb` format requires, and say so out loud.
+
+    Integer -> 0, string -> "", boolean -> False, and the nullable pandas dtypes
+    are collapsed back to their numpy equivalents so `save_from_df` sees exactly
+    what it saw before this policy moved out of `core/coercion.py`.
+
+    Float NaN and datetime NaT are left alone: ramdb represents both.
+
+    Returns a new frame; the caller's DataFrame is never mutated.
+    """
+    out = df.copy()
+    for column in out.columns:
+        series = out[column]
+        dtype = str(series.dtype)
+        n_null = int(series.isna().sum())
+
+        if is_integer_dtype(series.dtype):
+            if n_null:
+                log.debug("ramdb_null_fill: %d null(s) -> 0 in %r", n_null, column)
+            out[column] = series.fillna(_NULL_FILL_INT).astype("int64")
+        elif dtype in ("boolean", "bool"):
+            if n_null:
+                log.debug("ramdb_null_fill: %d null(s) -> False in %r", n_null, column)
+            out[column] = series.fillna(_NULL_FILL_BOOL).astype(bool)
+        elif dtype in ("string", "object"):
+            if n_null:
+                log.debug("ramdb_null_fill: %d null(s) -> '' in %r", n_null, column)
+            out[column] = series.fillna(_NULL_FILL_STR).astype(dtype)
+    return out
+
+
 def _save_ramdb(df: pd.DataFrame, path: Path) -> None:
     """Persist the DataFrame to the path using row64tools.
 
@@ -121,4 +180,4 @@ def _safe_unlink(path: Path) -> None:
         log.warning("ramdb_writer: failed to unlink %s: %s", path, exc)
 
 
-__all__ = ["RamdbWriter", "Row64CodecOverflowError"]
+__all__ = ["RamdbWriter", "Row64CodecOverflowError", "apply_ramdb_null_fill"]
