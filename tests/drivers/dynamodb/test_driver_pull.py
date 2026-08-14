@@ -56,7 +56,20 @@ async def test_full_refresh_scan_paginates_and_coerces_sparse_rows() -> None:
     )
     assert result.rows_pulled == 2
     assert result.new_watermark is None
-    assert result.dataframe["note"].tolist() == ["em?dash", ""]
+    note = result.dataframe["note"]
+    # A DynamoDB item is sparse: row "b" carries no `note` attribute at all.
+    # Post sink-split, a missing attribute lands as a true SQL NULL on a pandas
+    # nullable dtype -- NOT the empty string this test asserted in the pre-sink
+    # era. Empty-string fill would make a missing attribute indistinguishable
+    # from an attribute explicitly set to "", which is the exact fidelity loss
+    # the null contract exists to prevent.
+    assert note.dtype == "string"
+    assert note[0] == "em?dash"
+    assert note.isna().tolist() == [False, True]
+    # Discriminator: count(*) vs count(col) must disagree, or NULL has collapsed
+    # into a sentinel value somewhere in the coercion path.
+    assert len(note) == 2
+    assert note.notna().sum() == 1
     assert client.scan.call_args_list[1].kwargs["ExclusiveStartKey"] == {"pk": {"S": "a"}}
 
 
