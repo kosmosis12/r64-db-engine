@@ -27,6 +27,7 @@ dependencies = [
     # 65536-row block chunking that meshroad's per-block column cache is keyed
     # on. Floating this pin would silently change block layout.
     "pyarrow==25.0.0",
+    "duckdb>=1.5.5",
 ]
 
 [project.optional-dependencies]

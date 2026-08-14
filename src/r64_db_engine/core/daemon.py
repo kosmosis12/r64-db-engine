@@ -414,7 +414,14 @@ class Daemon:
             },
             "source": {
                 "dialect": self.config.dialect,
-                "lane": "arrow" if self.uses_arrow_lane() else "dataframe",
+                # `None` until connected: a driver reads its capability from
+                # config in connect(), so any lane reported before then is a
+                # guess, and a guess here reads as fact on /health.
+                "lane": (
+                    ("arrow" if self.uses_arrow_lane() else "dataframe")
+                    if self._pg_connected
+                    else None
+                ),
                 "connected": self._pg_connected,
                 "host": self.config.driver_config().get("host"),
                 "database": self.config.driver_config().get("database"),

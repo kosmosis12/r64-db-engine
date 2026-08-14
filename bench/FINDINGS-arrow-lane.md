@@ -2,8 +2,9 @@
 
 **Campaign:** CC Phase 2 · **Date:** 2026-08-14 · **Machine:** cachyPC
 **Branch:** `feat/arrow-lane` off `main` @ `7820d18`
-**Status at this point:** **Phase A complete. No performance work done, no
-performance claim made.** Phases B (DuckDB), C (probe), D (serve) not started.
+**Status at this point:** **Phases A and B complete. No performance work done,
+no performance claim made** — that is Phase C, which has not started. Phase D
+(serve + roster) has not started.
 
 ---
 
@@ -179,3 +180,186 @@ can be proven before a real Arrow source exists.
 | `.venv` | — | unmodified; no dependency added | ✅ |
 
 No process was started or killed in this phase.
+
+---
+
+# Phase B — DuckDB driver (local), Gate B
+
+**Status: local DuckDB proven. MotherDuck PARKED — no `MOTHERDUCK_TOKEN` in the
+environment, so every claim below fences to LOCAL DuckDB only.**
+
+`duckdb==1.5.5` added under fence 5: declared in `pyproject.toml`, `uv.lock`
+regenerated, and the regeneration verified to add exactly one package with
+**zero version changes on any existing pin and nothing removed**.
+
+## B-0 — PG-010's live proof, stated exactly
+
+`dialect: duckdb` became configurable by **registering the driver and nothing
+else**. Precisely:
+
+- `core/` contains **no reference to `duckdb`** (`grep -rn duckdb src/.../core/`
+  is empty).
+- The only `core/` change in Phase B is a 7-line fix to *Gate A's own*
+  `status_snapshot()` field — reporting `lane: None` before connect instead of
+  guessing — which has nothing to do with this driver.
+
+This is the test the registry was built to pass, and it passed without being
+bent. Phase 3 must clear the same bar twice more.
+
+## B-1 — `LowCardinality(String)` does not survive Parquet
+
+`status` is `LowCardinality(String)` at ClickHouse and lands as plain `VARCHAR`
+in DuckDB: Parquet has no LowCardinality. **Not a defect and not fixed at
+load** — dictionary encoding is a property of the ARTIFACT, not of the source,
+and the sink already re-applies it via `dictionary_columns: {Perf: [status]}`.
+The artifact carries `dictionary<values=string, indices=int32>` as required.
+
+## B-2 — the timezone trap: an 8-hour silent shift that every check would pass
+
+**The most dangerous thing found this campaign.**
+
+`event_time` is `DateTime64(6)` at ClickHouse and lands as `TIMESTAMP WITH TIME
+ZONE`, because ClickHouse marks it adjusted-to-UTC in the Parquet metadata.
+**DuckDB's default session TimeZone is the machine's local zone** — here
+`America/Los_Angeles`. A naive `CAST(event_time AS TIMESTAMP)` therefore shifts
+every value by the local UTC offset:
+
+```
+naive cast @ default LA : 2025-12-31 16:00:15.184566 .. 2026-06-29 16:59:30.942340
+naive cast @ UTC        : 2026-01-01 00:00:15.184566 .. 2026-06-29 23:59:30.942340
+ClickHouse source truth : 2026-01-01 00:00:15.184566 .. 2026-06-29 23:59:30.942340
+```
+
+**Every ground-truth check would still have passed**, because not one of them
+touches `event_time` — count, sums, null counts and cardinalities are all blind
+to it. The artifact would have been eight hours wrong and fully green.
+
+**Fixed at the LOAD, never in the ground truth**: `bench/load-duckdb.py` issues
+`SET TimeZone='UTC'` before the cast, and asserts the resulting min/max against
+the ClickHouse source bounds. The e2e config pins `settings: {TimeZone: UTC}`
+on the connection for the same reason.
+
+## B-3 — cross-lane schema divergence: `string` vs `large_string`
+
+Extends the ratified checksum doctrine with a second lane-dependent property.
+Same DuckDB source, same rows, both lanes, real meshbench data:
+
+| column | N (Arrow lane) | P' (DataFrame lane) |
+|---|---|---|
+| `region`, `city`, `category`, `segment`, `product_name` | `string` | **`large_string`** |
+| `status` | `dictionary<string, int32>` | `dictionary<string, int32>` |
+| `event_time` | `timestamp[us]` | `timestamp[us]` |
+| everything else | identical | identical |
+| **sha256** | **differs** | **differs** |
+
+pandas 3.0's `string` dtype yields `large_string` (the ClickHouse campaign
+recorded the same); DuckDB's Arrow export yields plain utf8. Both are valid
+Arrow strings and meshroad reads both.
+
+**Doctrine, per Finding 1 as ratified, now with a second exception named:**
+
+> Cross-lane equivalence = **data** + **schema-minus-metadata** + **block
+> structure**. Schema comparison must additionally tolerate **string width**
+> (`string` vs `large_string`), which is lane-dependent, not fidelity-relevant.
+> Checksums are lane-scoped: **never compare an N sha to a P' sha.**
+
+Pinned by `test_arrow_and_dataframe_lanes_agree_on_data_but_not_on_bytes`.
+**Phase C must apply this fence wherever N-vs-P' shas appear.**
+
+## B-4 — `timestamp[us]` arrives natively on the Arrow lane
+
+The df lane needs `timestamp_unit: us` configured to reach the meshroad
+reference shape, because pandas forces `datetime64[ns]` and the sink casts back
+down. DuckDB's `TIMESTAMP` is microsecond natively, so the **Arrow lane needs
+no timestamp configuration at all** — the e2e config sets none. One fewer knob
+between source and artifact, and one fewer opportunity for a lossy cast.
+
+## B-5 — driver-specific PER-TABLE options are not expressible (PG-010, table axis)
+
+Determinism needs `ORDER BY row_id`. The natural expression is a per-table
+`order_by:` key — but `core.config.TableConfig` is `extra="forbid"`, so a
+driver-specific table option cannot be written in YAML. **This is the PG-010
+leak class again, on the table axis rather than the top-level one.**
+
+**Not fixed, and no core edit made.** Inline SQL covers it completely:
+
+```yaml
+source: "SELECT * FROM main.perf_1m ORDER BY row_id"
+```
+
+The driver passes an unprojected inline source through **verbatim** rather than
+wrapping it as `SELECT * FROM (<source>) AS sub`, because a wrap would bury the
+ORDER BY in a subquery where SQL does not oblige the engine to preserve it —
+the ordering would hold by luck and stop holding without warning. Pinned by
+`test_inline_sql_is_passed_through_verbatim_to_preserve_ordering`.
+
+Filed for a future decision: widening `TableConfig` is the same call PG-010
+was, and deserves the same deliberation rather than being slipped in here.
+
+## B-6 — `batch_size: 0` was silently swallowed
+
+`int(config.get("batch_size") or _DEFAULT)` folds an explicit `0` into the
+default, so the "must be positive" guard never fired on the one value most
+likely to be a mistake. Caught by its own unit test before it shipped. Fixed.
+
+## B-7 — batch size: the choice and why
+
+Default **65,536 rows**, matching `sinks/arrow_ipc._BLOCK_ROWS` exactly. The
+sink re-chunks regardless, so this does not change the artifact; it changes how
+much the re-chunk buffer has to hold. One source batch per artifact block keeps
+that buffer at its tightest (one block plus one batch). Larger batches raise the
+memory floor for no artifact benefit; much smaller ones pay per-batch overhead
+and make the buffer do merging the source could have avoided. Configurable via
+`duckdb.batch_size`; a second value is permitted in Phase C as an observation,
+not as tuning.
+
+---
+
+## Dataset transfer — verified, ground truth carried over VERBATIM
+
+Exported from the live `meshroad-ch` container, `ORDER BY row_id`, Parquet:
+
+| file | bytes | sha256 |
+|---|---|---|
+| `~/bench-ch/perf_1m.parquet` | 39,298,826 | `7e23115e79c8727f889bd0fe5a693bb882aa9f374fde17e6ac56d5c55d1b0ad4` |
+| `~/bench-ch/perf_10m.parquet` | 392,671,684 | `5b6b466c816dc77f1961772e5f20e914d2804db01ee74e2849f7f7c645fae209` |
+
+Loaded by `bench/load-duckdb.py` into `~/bench-ch/meshbench.duckdb`. **10/10
+aggregates match `bench/GROUND-TRUTH-clickhouse.json` on both tables**,
+including the integer-authority sum (`11,994,337,292` / `120,020,064,468`) and
+the null counts (`20,039` / `200,407`), plus `event_time` bounds and a
+`row_id` monotonicity assertion. The ground-truth file was **not modified**.
+
+## Gate B — status
+
+| Condition | |
+|---|---|
+| Suite green | ✅ **393 passed / 51 skipped** (was 356) |
+| e2e green under `--integration` | ✅ **11/11**, covering all six required proofs |
+| — schema exact 14/14 | ✅ int64 / **string** (not large_string, B-3) / dict-status / double / timestamp[us] |
+| — aggregate parity 10/10 | ✅ vs ClickHouse ground truth |
+| — RF-002 armed | ✅ `score` null_count = 20,039 exact; no other column gained nulls; no NULL became NaN |
+| — PG-011 refusal | ✅ incremental refused at config time |
+| — dictionary artifact valid | ✅ `dictionary<values=string, indices=int32>`, 16 blocks |
+| — checksum reproducibility | ✅ two consecutive pulls byte-identical (lane-scoped) |
+| Ground-truth transfer verified | ✅ 10/10 both tables, before any e2e |
+| MotherDuck | ⏸ **PARKED** — no `MOTHERDUCK_TOKEN`. Not attempted, not blocked. |
+| `core/` untouched by the driver | ✅ no `duckdb` reference in `core/` |
+
+## Deviations (disclosed; ratification is Kos's)
+
+| # | Deviation | Why |
+|---|---|---|
+| B-d1 | Added a `duckdb.arrow: bool` config knob (default true) toggling `supports_arrow()` | Phase C's **P' cell** requires the same driver against the same source through the DataFrame lane. Without this it would need monkeypatching, which is not a configuration and could not be reproduced from a config file. |
+| B-d2 | **Started the `meshroad-ch` container**, which was `Exited (255)` for 41 hours | The brief requires exporting from the live CH container, and its restore block specifies meshroad-ch is left UP. Started explicitly by name, not by pattern. `:8802`/`:8803` untouched. |
+| B-d3 | No conformance `spec.py` for duckdb | The Phase 2 brief does not require one; the conformance generator is a Gate-A-of-Phase-1 artifact. Not in scope, called out so it is not assumed present. |
+
+## Planes of record
+
+| | Before | Now | |
+|---|---|---|---|
+| `meshroad-serve` (:8802) | active, MainPID **1123** | active, MainPID **1123** | ✅ |
+| `meshroad-cockpit` (:8803) | active, MainPID **1315** | active, MainPID **1315** | ✅ |
+| `meshroad-ch` | Exited (255), 41h | **Up** (per restore block) | ⚠️ B-d2 |
+| `:8902` dev serve | not started | not started (Phase D) | — |
+| meshroad `src/` / `gui/` | untouched | untouched | ✅ |

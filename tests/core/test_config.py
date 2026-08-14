@@ -182,6 +182,19 @@ def test_per_table_overrides_defaults():
 # --------------------------------------------------------------------------
 
 
+def _registered_listing() -> str:
+    """The listing the validator should print, read from the registry.
+
+    Deliberately not a frozen string: the assertion under test is that the
+    message is REGISTRY-DERIVED. Hard-coding the driver set would make every
+    new driver break these tests for the wrong reason — as adding `duckdb` in
+    Phase B did.
+    """
+    from r64_db_engine.drivers import DRIVERS
+
+    return "registered: " + ", ".join(sorted(DRIVERS))
+
+
 class _FakeDriver:
     """Stands in for a driver core has never heard of. Never connected."""
 
@@ -324,7 +337,7 @@ def test_unregistered_dialect_is_refused_listing_registered_dialects():
 
     message = str(exc.value)
     assert "unknown dialect 'dynamodb'" in message
-    assert "registered: clickhouse, postgres" in message
+    assert _registered_listing() in message
 
 
 def test_unregistered_dialect_block_alongside_a_valid_dialect_is_refused():
@@ -342,14 +355,15 @@ def test_unregistered_dialect_block_alongside_a_valid_dialect_is_refused():
 
     message = str(exc.value)
     assert "unknown top-level config key(s): dynamodb" in message
-    assert "registered: clickhouse, postgres" in message
+    assert _registered_listing() in message
 
 
 def test_error_lists_the_dialects_registered_right_now(registered):
     """The listing is read from the registry, so it grows when a driver lands."""
     with pytest.raises(Exception, match="unknown dialect") as before:
         Config.model_validate(_ddb_config())
-    assert "registered: clickhouse, postgres" in str(before.value)
+    before_listing = _registered_listing()
+    assert before_listing in str(before.value)
 
     registered()  # simulate Gate C merging the DynamoDB driver
 
@@ -361,7 +375,10 @@ def test_error_lists_the_dialects_registered_right_now(registered):
                 "tables": [{"source": "t", "target": "T"}],
             }
         )
-    assert "registered: clickhouse, dynamodb, postgres" in str(after.value)
+    # The listing GREW by exactly the newly registered dialect.
+    assert _registered_listing() in str(after.value)
+    assert "dynamodb" in _registered_listing()
+    assert before_listing != _registered_listing()
 
 
 # -- the rest of the allow-set contract ------------------------------------

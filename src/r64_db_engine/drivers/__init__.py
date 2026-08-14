@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from r64_db_engine.core.driver import Driver
 from r64_db_engine.drivers.clickhouse.driver import ClickHouseDriver
+from r64_db_engine.drivers.duckdb.driver import DuckDBDriver
 from r64_db_engine.drivers.postgres.driver import PostgresDriver
 
 DRIVERS: dict[str, type[Driver]] = {
     ClickHouseDriver.dialect_name(): ClickHouseDriver,
+    DuckDBDriver.dialect_name(): DuckDBDriver,
     PostgresDriver.dialect_name(): PostgresDriver,
 }
 

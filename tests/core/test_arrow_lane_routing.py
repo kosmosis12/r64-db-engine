@@ -188,6 +188,13 @@ def test_status_reports_which_lane_is_in_use(tmp_path: Path) -> None:
     arrow = _daemon(tmp_path / "a", _ArrowDriver(), ArrowIpcSink())
     pandas_lane = _daemon(tmp_path / "b", _PandasDriver(), ArrowIpcSink())
 
+    # Before connecting, the lane is unknown rather than guessed: a driver reads
+    # its capability from config in connect(), so a value here would be fiction.
+    assert arrow.status_snapshot()["source"]["lane"] is None
+
+    asyncio.run(arrow.run(once=True))
+    asyncio.run(pandas_lane.run(once=True))
+
     assert arrow.status_snapshot()["source"]["lane"] == "arrow"
     assert pandas_lane.status_snapshot()["source"]["lane"] == "dataframe"
 
