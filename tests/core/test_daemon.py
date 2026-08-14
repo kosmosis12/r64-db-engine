@@ -267,3 +267,20 @@ def test_core_does_not_import_postgres_driver() -> None:
             assert not mod_name.startswith("r64_db_engine.drivers.postgres"), (
                 f"core module {mod_info.name} leaked a postgres dependency via {attr}"
             )
+
+
+def test_core_does_not_import_clickhouse_driver() -> None:
+    """Architectural firewall: core/ never imports drivers/clickhouse."""
+    import importlib
+    import pkgutil
+
+    import r64_db_engine.core as core_pkg
+
+    for mod_info in pkgutil.walk_packages(core_pkg.__path__, prefix="r64_db_engine.core."):
+        mod = importlib.import_module(mod_info.name)
+        for attr in dir(mod):
+            obj = getattr(mod, attr, None)
+            mod_name = getattr(obj, "__module__", "") or ""
+            assert not mod_name.startswith("r64_db_engine.drivers.clickhouse"), (
+                f"core module {mod_info.name} leaked a clickhouse dependency via {attr}"
+            )

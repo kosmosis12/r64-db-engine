@@ -304,3 +304,64 @@ def test_written_file_is_uncompressed_and_mmap_readable(tmp_path: Path) -> None:
     with pa.memory_map(str(path), "rb") as source:
         table = feather.read_table(source)
         assert table.column("v").to_pylist()[:3] == [0, 1, 2]
+
+
+# --------------------------------------------------------------------------
+# timestamp_unit — opt-in normalization, lossless or loud
+# --------------------------------------------------------------------------
+
+
+def test_timestamp_unit_us_matches_the_meshroad_reference_artifact(tmp_path: Path) -> None:
+    """DateTime64(6) data lands as timestamp[us], not timestamp[ns].
+
+    pandas has no microsecond-native path here: it carries datetime64[ns], so
+    `from_pandas` produces timestamp[ns] while the proven perf_1m.arrow
+    artifact meshroad serves carries timestamp[us]. Microsecond source data
+    only became nanoseconds by passing through pandas, so casting it back is
+    exact — asserted on the value, not just the type.
+    """
+    sink = _sink(tmp_path, timestamp_unit="us")
+    df = pd.DataFrame(
+        {"event_time": pd.to_datetime(["2026-01-01 00:00:00.123456", "2026-06-30 23:59:59.999999"])}
+    )
+
+    table = feather.read_table(sink.write(df, "Ts"))
+
+    assert table.schema.field("event_time").type == pa.timestamp("us")
+    assert [str(v) for v in table.column("event_time").to_pylist()] == [
+        "2026-01-01 00:00:00.123456",
+        "2026-06-30 23:59:59.999999",
+    ]
+
+
+def test_timestamp_unit_default_leaves_resolution_untouched(tmp_path: Path) -> None:
+    """No `timestamp_unit` means no cast — the knob is opt-in.
+
+    A blanket ns->us default would silently truncate any source that genuinely
+    has nanosecond resolution, so the absence of config must change nothing.
+    """
+    sink = _sink(tmp_path)
+    df = pd.DataFrame({"event_time": pd.to_datetime(["2026-01-01 00:00:00.123456789"])})
+
+    table = feather.read_table(sink.write(df, "TsDefault"))
+
+    assert table.schema.field("event_time").type == pa.timestamp("ns")
+
+
+def test_timestamp_unit_refuses_to_truncate_precision(tmp_path: Path) -> None:
+    """A lossy cast raises instead of quietly rounding.
+
+    Sub-microsecond detail dropped here would still compare equal on every
+    aggregate the benchmark checks — precisely the loss that survives a green
+    test run — so the cast is SAFE and the failure is loud.
+    """
+    sink = _sink(tmp_path, timestamp_unit="us")
+    df = pd.DataFrame({"event_time": pd.to_datetime(["2026-01-01 00:00:00.123456789"])})
+
+    with pytest.raises(SinkError, match="would lose precision"):
+        sink.write(df, "TsLossy")
+
+
+def test_timestamp_unit_rejects_a_bogus_unit(tmp_path: Path) -> None:
+    with pytest.raises(SinkError, match="must be one of"):
+        _sink(tmp_path, timestamp_unit="fortnights")

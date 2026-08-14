@@ -90,7 +90,7 @@ async def _cmd_validate(config_path: str) -> int:
     r64log.configure(cfg.telemetry.log_level, cfg.telemetry.log_format)
     daemon = build_daemon(cfg)
     try:
-        await daemon.driver.connect(cfg.postgres.model_dump())
+        await daemon.driver.connect(cfg.driver_config())
         any_err = False
         for table in cfg.tables:
             resolved = cfg.resolve_table(table)
@@ -112,7 +112,7 @@ async def _cmd_discover(config_path: str, schema: str | None) -> int:
     r64log.configure(cfg.telemetry.log_level, cfg.telemetry.log_format)
     daemon = build_daemon(cfg)
     try:
-        await daemon.driver.connect(cfg.postgres.model_dump())
+        await daemon.driver.connect(cfg.driver_config())
         tables = await daemon.driver.discover(schema_filter=schema)
         for t in tables:
             rows = "?" if t.estimated_rows is None else str(t.estimated_rows)
@@ -181,8 +181,12 @@ def _print_status(body: dict[str, Any]) -> None:
     print(f"status:   {body.get('status')}")
     print(f"uptime:   {body.get('uptime_seconds')}s")
     print(f"version:  {body.get('version')}")
-    pg = body.get("postgres", {})
-    print(f"postgres: {pg.get('host')}/{pg.get('database')} connected={pg.get('connected')}")
+    source = body.get("source") or body.get("postgres", {})
+    dialect = source.get("dialect", "postgres")
+    print(
+        f"{dialect}: {source.get('host')}/{source.get('database')} "
+        f"connected={source.get('connected')}"
+    )
     print("tables:")
     for t in body.get("tables", []):
         line = f"   - {t['target']:<28} status={t['status']:<8} mode={t['mode']:<13}"

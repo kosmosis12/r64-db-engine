@@ -29,6 +29,16 @@ class PostgresConfig(BaseModel):
     statement_timeout: int = 300
 
 
+class ClickHouseConfig(BaseModel):
+    host: str = "localhost"
+    port: int = 8123
+    database: str
+    user: str | None = None
+    password: str | None = None
+    secure: bool = False
+    connect_timeout: int = 10
+
+
 class Row64Config(BaseModel):
     loading_dir: str
     group: str = "PostgresSource"
@@ -100,8 +110,9 @@ class SinkConfig(BaseModel):
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    dialect: Literal["postgres"] = "postgres"
-    postgres: PostgresConfig
+    dialect: Literal["postgres", "clickhouse"] = "postgres"
+    postgres: PostgresConfig | None = None
+    clickhouse: ClickHouseConfig | None = None
     row64: Row64Config
     # Optional: absent means "the registry's default sink, configured from the
     # legacy `row64:` block", so every pre-sink config keeps working untouched.
@@ -110,6 +121,14 @@ class Config(BaseModel):
     tables: list[TableConfig]
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+
+    @model_validator(mode="after")
+    def _check_driver_config(self) -> Config:
+        if self.dialect == "postgres" and self.postgres is None:
+            raise ValueError("postgres config is required when dialect is 'postgres'")
+        if self.dialect == "clickhouse" and self.clickhouse is None:
+            raise ValueError("clickhouse config is required when dialect is 'clickhouse'")
+        return self
 
     @field_validator("tables")
     @classmethod
@@ -140,6 +159,18 @@ class Config(BaseModel):
             "max_rows": max_rows,
             "ascii_sanitize": ascii_sanitize,
         }
+
+    def driver_config(self) -> dict[str, Any]:
+        """Return the config block for the selected dialect."""
+        if self.dialect == "postgres":
+            if self.postgres is None:
+                raise ValueError("postgres config is required")
+            return self.postgres.model_dump()
+        if self.dialect == "clickhouse":
+            if self.clickhouse is None:
+                raise ValueError("clickhouse config is required")
+            return self.clickhouse.model_dump()
+        raise ValueError(f"unknown dialect: {self.dialect}")
 
 
 def parse_cadence(s: str) -> int:
@@ -188,6 +219,7 @@ def load_config(
 __all__ = [
     "Config",
     "PostgresConfig",
+    "ClickHouseConfig",
     "Row64Config",
     "SinkConfig",
     "DefaultsConfig",
