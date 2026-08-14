@@ -68,6 +68,13 @@ So: genuine NaNs are indistinguishable from NULLs here and land as null. Do not
 "fix" this without first fixing the conflation in the driver's coercion layer,
 where the distinction still exists.
 
+**This applies to the pandas entry point ONLY.** `write_stream` receives Arrow
+data that never passed through pandas, so the NaN/NULL distinction is still
+intact when it arrives — and is preserved exactly. A DuckDB float column
+carrying a genuine NaN lands as a NaN with `null_count` unchanged. The two
+entry points therefore differ here, unavoidably and by design: one is handed
+data whose distinction was already destroyed upstream, the other is not.
+
 # Atomicity
 
 Write to `<target>.arrow.tmp.<uuid>` in the destination directory, fsync the
@@ -91,7 +98,7 @@ from typing import Any
 
 import pandas as pd
 
-from r64_db_engine.core.sink import Sink, SinkError
+from r64_db_engine.core.sink import Sink, SinkError, StreamWriteResult
 
 log = logging.getLogger(__name__)
 
@@ -182,6 +189,47 @@ class ArrowIpcSink(Sink):
         return self.target_dir / f"{target}.arrow"
 
     def write(self, df: pd.DataFrame, target: str) -> Path:
+        def produce(tmp: Path) -> int:
+            table = _to_arrow_table(
+                df, self._dictionary_columns.get(target, []), self._timestamp_unit
+            )
+            _write_ipc_file(table, tmp)
+            return len(df)
+
+        final, rows = self._atomic_produce(target, produce)
+        log.debug("arrow_write_ok target=%s path=%s rows=%d", target, final, rows)
+        return final
+
+    def supports_streaming(self) -> bool:
+        return True
+
+    def write_stream(self, reader: Any, target: str) -> StreamWriteResult:
+        """Stream a `RecordBatchReader` to the same artifact the batch path writes.
+
+        The reader is drained here and nowhere else, so this is the only place
+        that ever learns the row count.
+        """
+
+        def produce(tmp: Path) -> int:
+            return _write_ipc_stream(
+                reader,
+                tmp,
+                self._dictionary_columns.get(target, []),
+                self._timestamp_unit,
+            )
+
+        final, rows = self._atomic_produce(target, produce)
+        log.debug("arrow_stream_write_ok target=%s path=%s rows=%d", target, final, rows)
+        return StreamWriteResult(path=final, rows_written=rows)
+
+    def _atomic_produce(self, target: str, produce: Any) -> tuple[Path, int]:
+        """Run `produce(tmp)` under the sink's atomicity + SIGTERM discipline.
+
+        Extracted so the streaming path cannot drift from the batch path on the
+        one property both owe their consumer: a reader sees the whole previous
+        artifact or the whole new one, never a partial file. `produce` returns
+        the row count it wrote.
+        """
         self.ensure_ready()
         final = self.target_path(target)
         tmp = self.target_dir / f".{target}.arrow.tmp.{uuid.uuid4().hex}"
@@ -197,15 +245,11 @@ class ArrowIpcSink(Sink):
             previous_sigterm = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, terminate)
         try:
-            table = _to_arrow_table(
-                df, self._dictionary_columns.get(target, []), self._timestamp_unit
-            )
-            _write_ipc_file(table, tmp)
+            rows = produce(tmp)
             _fsync_path(tmp)
             os.rename(tmp, final)
             _fsync_dir(self.target_dir)
-            log.debug("arrow_write_ok target=%s path=%s rows=%d", target, final, len(df))
-            return final
+            return final, rows
         finally:
             _safe_unlink(tmp)
             if manages_sigterm and previous_sigterm is not None:
@@ -248,11 +292,23 @@ def _to_arrow_table(
     if timestamp_unit is not None:
         table = _cast_timestamps(table, timestamp_unit)
 
-    # Dictionary-encode the configured columns. Explicit config, never
-    # cardinality auto-detection: an auto threshold makes the OUTPUT SCHEMA
-    # DATA-DEPENDENT, so a column could encode on one pull and land as plain
-    # utf8 on the next when its distinct count drifts across the threshold.
-    # A consumer that registered the first schema then breaks on the second.
+    return _cast_dictionary_columns(table, dictionary_columns)
+
+
+def _cast_dictionary_columns(table: Any, dictionary_columns: list[str]) -> Any:
+    """Dictionary-encode the configured columns.
+
+    Explicit config, never cardinality auto-detection: an auto threshold makes
+    the OUTPUT SCHEMA DATA-DEPENDENT, so a column could encode on one pull and
+    land as plain utf8 on the next when its distinct count drifts across the
+    threshold. A consumer that registered the first schema then breaks on the
+    second.
+
+    Shared by both entry points so the batch and streaming paths cannot drift
+    on what the artifact's schema looks like.
+    """
+    import pyarrow as pa
+
     for name in dictionary_columns:
         if name not in table.column_names:
             raise SinkError(
@@ -261,6 +317,11 @@ def _to_arrow_table(
             )
         idx = table.schema.get_field_index(name)
         field = table.schema.field(idx)
+        if pa.types.is_dictionary(field.type):
+            # Already encoded by the source — the Arrow lane can hand back
+            # dictionary columns natively. Re-casting would be a no-op at best
+            # and a dictionary reshuffle at worst.
+            continue
         if not pa.types.is_string(field.type) and not pa.types.is_large_string(field.type):
             raise SinkError(
                 f"dictionary_columns names '{name}' of type {field.type}; "
@@ -317,9 +378,142 @@ def _write_ipc_file(table: Any, path: Path) -> None:
     """
     import pyarrow as pa
 
+    # `combine_chunks()` is NOT redundant. `to_batches(max_chunksize=N)` only
+    # SPLITS chunks larger than N — it never MERGES smaller ones. A table whose
+    # columns arrive already chunked (30000 rows at a time, say) would otherwise
+    # be written as 30000-row blocks and the 65536 discipline would silently
+    # become "whatever the input happened to be chunked at". `from_pandas`
+    # yields single-chunk columns, so the batch path never hit this, but the
+    # guarantee must not depend on that accident.
+    table = table.combine_chunks()
+
     with pa.ipc.new_file(str(path), table.schema) as writer:
         for batch in table.to_batches(max_chunksize=_BLOCK_ROWS):
             writer.write_batch(batch)
+
+
+def _timestamp_cast_schema(schema: Any, unit: str | None) -> Any:
+    """The schema `_cast_timestamps` would produce, without needing the data.
+
+    The IPC file writer must be opened with the final schema before any block
+    exists, so the timestamp policy has to be resolvable from the schema alone.
+    """
+    import pyarrow as pa
+
+    if unit is None:
+        return schema
+    fields = [
+        pa.field(f.name, pa.timestamp(unit, tz=f.type.tz), nullable=f.nullable)
+        if pa.types.is_timestamp(f.type) and f.type.unit != unit
+        else f
+        for f in schema
+    ]
+    return pa.schema(fields, metadata=schema.metadata)
+
+
+def _has_dictionary_field(schema: Any) -> bool:
+    import pyarrow as pa
+
+    return any(pa.types.is_dictionary(f.type) for f in schema)
+
+
+def _write_ipc_stream(
+    reader: Any,
+    path: Path,
+    dictionary_columns: list[str],
+    timestamp_unit: str | None,
+) -> int:
+    """Drain `reader` into a multi-block Arrow IPC file. Returns rows written.
+
+    Two modes, chosen by whether the artifact carries a dictionary column.
+
+    # Streaming mode (no dictionary columns)
+
+    Batches are buffered only until a full `_BLOCK_ROWS` block can be emitted,
+    so peak memory is bounded by one block plus one source batch rather than by
+    the result. Source batch size is deliberately NOT respected: a source
+    handing 1M-row batches and a source handing 30-row batches must both land
+    65536-row blocks, or the consumer's per-block cache granularity silently
+    becomes a property of the source rather than of the artifact.
+
+    # Collect mode (dictionary columns present)
+
+    The Arrow IPC *file* format permits exactly one non-delta dictionary per
+    field. Writing per-batch dictionaries raises `ArrowInvalid: Dictionary
+    replacement detected` — loudly, which is the good failure, but it means a
+    unified dictionary must exist before the first batch is written, and that
+    cannot be known without seeing every batch. So a target with dictionary
+    columns is collected, unified via `unify_dictionaries()`, and then written
+    through the very same `_write_ipc_file` the batch path uses.
+
+    This is option (b) of the brief's preference order, and it trades the
+    memory bound away FOR DICTIONARY TARGETS ONLY. Option (a) — a growing
+    dictionary written incrementally — is not expressible in the file format
+    without delta-dictionary support in the writer. Filed as a ledger item with
+    that as the upgrade path; non-dictionary targets are unaffected.
+    """
+    import pyarrow as pa
+
+    collect = bool(dictionary_columns) or _has_dictionary_field(reader.schema)
+
+    if collect:
+        table = reader.read_all()
+        if _has_dictionary_field(table.schema):
+            # Unify BEFORE any cast: the per-batch dictionaries are what the
+            # file format cannot represent, and unify_dictionaries is the only
+            # thing that reconciles them.
+            table = table.unify_dictionaries()
+        table = _to_arrow_table_from_arrow(table, dictionary_columns, timestamp_unit)
+        _write_ipc_file(table, path)
+        return int(table.num_rows)
+
+    source_schema = reader.schema
+    target_schema = _timestamp_cast_schema(source_schema, timestamp_unit)
+
+    rows = 0
+    pending: list[Any] = []
+    buffered = 0
+
+    with pa.ipc.new_file(str(path), target_schema) as writer:
+
+        def flush(count: int) -> None:
+            nonlocal pending, buffered
+            block = pa.Table.from_batches(pending, schema=source_schema).combine_chunks()
+            head, tail = block.slice(0, count), block.slice(count)
+            if timestamp_unit:
+                head = _cast_timestamps(head, timestamp_unit)
+            for batch in head.to_batches():
+                writer.write_batch(batch)
+            pending = tail.to_batches() if tail.num_rows else []
+            buffered = int(tail.num_rows)
+
+        for batch in reader:
+            if batch.num_rows == 0:
+                continue
+            pending.append(batch)
+            buffered += batch.num_rows
+            rows += batch.num_rows
+            while buffered >= _BLOCK_ROWS:
+                flush(_BLOCK_ROWS)
+        if buffered:
+            flush(buffered)
+
+    return rows
+
+
+def _to_arrow_table_from_arrow(
+    table: Any, dictionary_columns: list[str], timestamp_unit: str | None
+) -> Any:
+    """Apply the sink's schema policy to an already-Arrow table.
+
+    The pandas entry point (`_to_arrow_table`) exists to convert; this exists
+    to NOT convert. Routing Arrow data through pandas would reintroduce exactly
+    the NaN/NULL conflation the module docstring describes as unrecoverable —
+    on this lane the distinction still exists, so it is preserved.
+    """
+    if timestamp_unit is not None:
+        table = _cast_timestamps(table, timestamp_unit)
+    return _cast_dictionary_columns(table, dictionary_columns)
 
 
 def _fsync_path(path: Path) -> None:

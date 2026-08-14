@@ -39,6 +39,7 @@ implementation detail a sink may opt out of.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,19 @@ import pandas as pd
 
 class SinkError(RuntimeError):
     """A sink could not complete a write, or was configured incompatibly."""
+
+
+@dataclass(frozen=True)
+class StreamWriteResult:
+    """Outcome of a streaming write.
+
+    Carries `rows_written` because a streaming write is the one path where the
+    caller cannot know the row count in advance — the reader is drained by the
+    sink, so the sink is the only party that ever sees the total.
+    """
+
+    path: Path
+    rows_written: int
 
 
 class Sink(ABC):
@@ -94,6 +108,31 @@ class Sink(ABC):
     def cleanup_orphan_tempfiles(self) -> int:
         """Remove leftover tempfiles from an interrupted write. Returns the count."""
 
+    # -- Arrow-native lane: an optional CAPABILITY, mirroring Driver --------
+
+    def supports_streaming(self) -> bool:
+        """Whether this sink implements `write_stream`.
+
+        Defaults to False, which is correct for any format that must see the
+        whole result before it can write anything.
+        """
+        return False
+
+    def write_stream(self, reader: Any, target: str) -> StreamWriteResult:
+        """Write an undrained `pyarrow.RecordBatchReader` atomically as `target`.
+
+        Same atomicity contract as `write`, and the same artifact contract: a
+        consumer must not be able to tell which entry point produced the file.
+
+        Refuses by default rather than falling back to draining the reader into
+        memory and calling `write`. That fallback would be invisible — it would
+        produce a correct artifact while silently discarding the memory bound
+        that is the entire reason this path exists.
+        """
+        raise SinkError(
+            f"sink '{type(self).sink_name()}' does not support streaming writes"
+        )
+
     def supports_incremental(self) -> bool:
         """Whether this sink can accept a partial (watermarked) batch.
 
@@ -112,4 +151,4 @@ class Sink(ABC):
         return False
 
 
-__all__ = ["Sink", "SinkError"]
+__all__ = ["Sink", "SinkError", "StreamWriteResult"]

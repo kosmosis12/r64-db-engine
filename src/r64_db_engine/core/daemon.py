@@ -23,7 +23,7 @@ import pandas as pd
 from r64_db_engine.core import coercion
 from r64_db_engine.core import logging as r64log
 from r64_db_engine.core.config import Config
-from r64_db_engine.core.driver import Driver
+from r64_db_engine.core.driver import ArrowPullResult, Driver
 from r64_db_engine.core.sink import Sink, SinkError
 from r64_db_engine.core.state import StateStore
 
@@ -192,9 +192,10 @@ class Daemon:
         self, tcfg: dict[str, Any], prev_watermark: str | int | None
     ):
         last_exc: Exception | None = None
+        pull = self.driver.pull_arrow if self.uses_arrow_lane() else self.driver.pull
         for attempt in range(len(_RETRY_DELAYS) + 1):
             try:
-                return await self.driver.pull(tcfg, prev_watermark)
+                return await pull(tcfg, prev_watermark)
             except Exception as exc:
                 if _is_permanent(exc):
                     raise _PermanentError(str(exc)) from exc
@@ -223,13 +224,14 @@ class Daemon:
         *,
         reset_incremental: bool,
     ) -> None:
-        df: pd.DataFrame = result.dataframe
         mode = tcfg["mode"]
 
-        if mode == "incremental" and not reset_incremental:
-            df = self._merge_incremental(df, target)
-
-        self.writer.write(df, target)
+        if isinstance(result, ArrowPullResult):
+            rows_pulled, current_schema = self._write_arrow(target, tcfg, result)
+        else:
+            rows_pulled, current_schema = self._write_dataframe(
+                target, tcfg, result, reset_incremental=reset_incremental
+            )
 
         # Watermark
         if result.new_watermark is not None:
@@ -237,16 +239,12 @@ class Daemon:
                 target,
                 result.new_watermark,
                 tcfg["incremental_type"],
-                rows_pulled=result.rows_pulled,
+                rows_pulled=rows_pulled,
                 duration_ms=result.duration_ms,
             )
             rt.watermark = result.new_watermark
 
         # Schema drift
-        current_schema = [
-            {"name": col, "source_type": "", "pandas_dtype": str(df.dtypes[col])}
-            for col in df.columns
-        ]
         diff = coercion.compare_schemas(prev_schema, current_schema)
         if any(diff.values()) and prev_schema is not None:
             rt.schema_drift_detected = True
@@ -262,33 +260,95 @@ class Daemon:
         self.state.set_schema(target, current_schema)
 
         finished_at = _iso_now()
-        self.state.record_pull(target, started_at, finished_at, "success", result.rows_pulled, None)
+        self.state.record_pull(target, started_at, finished_at, "success", rows_pulled, None)
         rt.status = "ok"
         rt.last_success_at = finished_at
-        rt.rows_pulled_last = result.rows_pulled
-        rt.rows_pulled_total += result.rows_pulled
+        rt.rows_pulled_last = rows_pulled
+        rt.rows_pulled_total += rows_pulled
         rt.consecutive_failures = 0
         r64log.event(
             log,
             "pull_success",
             target=target,
-            rows=result.rows_pulled,
+            rows=rows_pulled,
             duration_ms=result.duration_ms,
             mode=mode,
+            lane="arrow" if isinstance(result, ArrowPullResult) else "dataframe",
             watermark_after=result.new_watermark,
         )
 
         if mode == "full_refresh" and (
-            result.duration_ms > 60_000 or result.rows_pulled > 1_000_000
+            result.duration_ms > 60_000 or rows_pulled > 1_000_000
         ):
             r64log.event(
                 log,
                 "full_refresh_large",
                 level=logging.WARNING,
                 target=target,
-                rows=result.rows_pulled,
+                rows=rows_pulled,
                 duration_ms=result.duration_ms,
             )
+
+    def uses_arrow_lane(self) -> bool:
+        """Whether pulls route through the Arrow-native lane.
+
+        BOTH ends must advertise the capability. An Arrow-capable driver
+        against a sink that cannot stream (ramdb, whose codec must see the
+        whole frame) falls back to the DataFrame lane, which is correct rather
+        than merely convenient: the alternative is draining the reader into
+        memory to rebuild a DataFrame, which costs more than the pandas lane
+        and buys nothing.
+        """
+        return self.driver.supports_arrow() and self.writer.supports_streaming()
+
+    def _write_dataframe(
+        self,
+        target: str,
+        tcfg: dict[str, Any],
+        result,
+        *,
+        reset_incremental: bool,
+    ) -> tuple[int, list[dict[str, str]]]:
+        df: pd.DataFrame = result.dataframe
+        if tcfg["mode"] == "incremental" and not reset_incremental:
+            df = self._merge_incremental(df, target)
+        self.writer.write(df, target)
+        schema = [
+            {"name": col, "source_type": "", "pandas_dtype": str(df.dtypes[col])}
+            for col in df.columns
+        ]
+        return result.rows_pulled, schema
+
+    def _write_arrow(
+        self, target: str, tcfg: dict[str, Any], result: ArrowPullResult
+    ) -> tuple[int, list[dict[str, str]]]:
+        """Stream the pull straight to the sink. Nothing materializes here.
+
+        The full-refresh law is re-asserted rather than assumed. A non-appendable
+        sink is already refused at construction
+        (`_reject_incremental_on_nonappendable_sink`), but that guard keys on the
+        SINK. This one keys on the LANE: incremental merging works by reading the
+        previous artifact back and concatenating DataFrames, which no streaming
+        write can do without materializing exactly what this lane exists to
+        avoid. A future appendable streaming sink must not silently inherit a
+        merge path that cannot serve it.
+        """
+        if tcfg["mode"] == "incremental":
+            raise _PermanentError(
+                f"table '{target}': incremental mode is not supported on the "
+                f"Arrow-native lane — it requires reading the previous artifact "
+                f"back and merging, which defeats the streaming memory bound. "
+                f"Use mode: full_refresh."
+            )
+
+        # Read the schema BEFORE the sink drains the reader; afterwards there is
+        # no reader left to ask.
+        schema = [
+            {"name": field.name, "source_type": "", "pandas_dtype": str(field.type)}
+            for field in result.reader.schema
+        ]
+        written = self.writer.write_stream(result.reader, target)
+        return written.rows_written, schema
 
     def _handle_failure(
         self, target: str, rt: TableRuntimeState, msg: str, started_at: str, *, permanent: bool
@@ -354,6 +414,7 @@ class Daemon:
             },
             "source": {
                 "dialect": self.config.dialect,
+                "lane": "arrow" if self.uses_arrow_lane() else "dataframe",
                 "connected": self._pg_connected,
                 "host": self.config.driver_config().get("host"),
                 "database": self.config.driver_config().get("database"),
@@ -387,6 +448,11 @@ class _PermanentError(RuntimeError):
 
 
 def _is_permanent(exc: Exception) -> bool:
+    # A missing capability implementation is a programming error, not a blip.
+    # Retrying it three times with backoff burns 21s to reach the same answer,
+    # and reports "degraded" for something that will never recover on its own.
+    if isinstance(exc, NotImplementedError):
+        return True
     sqlstate = getattr(exc, "sqlstate", None)
     diag = getattr(exc, "diag", None)
     code = sqlstate or (getattr(diag, "sqlstate", None) if diag else None)
