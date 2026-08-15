@@ -8,7 +8,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--integration",
         action="store_true",
         default=False,
-        help="run integration tests that need a real Postgres (testcontainers)",
+        help="run integration tests that need real local source services",
     )
 
 
@@ -17,7 +17,7 @@ def pytest_collection_modifyitems(
 ) -> None:
     if config.getoption("--integration"):
         return
-    skip = pytest.mark.skip(reason="needs --integration")
+    skip = pytest.mark.skip(reason="needs --integration and real local source services")
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip)

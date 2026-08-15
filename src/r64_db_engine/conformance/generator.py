@@ -82,6 +82,7 @@ def _coercion_module(spec: SourceSpec) -> str:
 
         TYPE_MAP: dict[str, str] = {spec.type_map!r}
         COERCER_MAP: dict[str, str] = {dict(spec.coercer_map)!r}
+        DTYPE_RESOLVER_MAP: dict[str, str] = {dict(spec.dtype_resolver_map)!r}
         ARRAY_DTYPE = {spec.array_dtype!r}
         UNKNOWN_DTYPE = {spec.unknown_dtype!r}
         ARRAY_COERCER = {spec.array_coercer!r}
@@ -94,10 +95,22 @@ def _coercion_module(spec: SourceSpec) -> str:
             return s
 
 
-        def pandas_dtype_for(source_type: str) -> str:
+        _VALUE_UNSET = object()
+
+
+        def pandas_dtype_for(source_type: str, value: Any = _VALUE_UNSET) -> str:
             norm = _normalize(source_type)
             if norm.endswith("[]"):
                 return ARRAY_DTYPE
+            resolver_key = DTYPE_RESOLVER_MAP.get(norm)
+            if resolver_key is not None and value is not _VALUE_UNSET:
+                resolver = coercers.DTYPE_RESOLVERS.get(resolver_key)
+                if resolver is None:
+                    raise ValueError(
+                        f"dtype resolver {{resolver_key!r}} (for {{source_type!r}}) "
+                        "not in coercers.DTYPE_RESOLVERS"
+                    )
+                return resolver(value)
             return TYPE_MAP.get(norm, UNKNOWN_DTYPE)
 
 
@@ -235,6 +248,7 @@ def _spec_module(spec: SourceSpec, fixtures_ref: str) -> str:
             unknown_dtype={spec.unknown_dtype!r},
             coercer_map=dict(_coercion.COERCER_MAP),
             array_coercer={spec.array_coercer!r},
+            dtype_resolver_map=dict(_coercion.DTYPE_RESOLVER_MAP),
             coerce_value=_coercion.coerce_value,
             pandas_dtype_for=_coercion.pandas_dtype_for,
             pushdown=PushdownStub(notes={spec.pushdown.notes!r}),
