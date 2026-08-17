@@ -1,0 +1,92 @@
+# Conformance target: ClickHouse / meshbench.perf_1m -> ArrowIpcSink.
+#
+# This is a NORMAL ENGINE CONFIG DOCUMENT, not a battery-specific format. It
+# validates through `r64_db_engine.core.config.Config` unchanged and would run
+# under the daemon as-is. That is deliberate: a conformance run must exercise
+# the same config path an operator uses, or it proves something about a
+# configuration nobody ships.
+#
+# It therefore carries no battery keys. Everything the battery needs beyond the
+# engine's own config — the schema spec, RF-002 discriminators, B-2 boundary
+# columns, the aggregate map, the serve-gate workload — lives in
+# `factory/specs/meshbench-schema.json`. Core's `Config` refuses unknown
+# top-level keys against the driver registry, so smuggling battery state in
+# here would not even parse.
+#
+# CREDENTIALS: none, by design. The container binds loopback-only
+# (127.0.0.1:8123) with a passwordless `default` user, so this whole target is
+# runnable with zero secrets. A target that does need one carries a path to a
+# 0600 file, never a value.
+#
+# OUTPUT DIR: `factory.conformance` creates this directory if absent and
+# overrides it when `--work-dir` is given. It is outside the repo because a
+# meshbench artifact is ~150 MB and two consecutive pulls are taken per run
+# (the checksum check), which is not something to commit.
+
+dialect: clickhouse
+
+clickhouse:
+  host: 127.0.0.1
+  port: 8123
+  database: meshbench
+  user: default
+  secure: false
+
+# Required by the config model. Unused once an explicit sink is set, but the
+# model still validates it, so it is present and honest rather than omitted.
+row64:
+  loading_dir: /tmp/r64-factory/clickhouse-meshbench/loading
+  group: CH
+
+sink:
+  type: arrow_ipc
+  output_dir: /tmp/r64-factory/clickhouse-meshbench/arrow_out
+  # Explicit config, never cardinality auto-detection: an auto threshold would
+  # make the OUTPUT SCHEMA DATA-DEPENDENT, so `status` could encode on one pull
+  # and land as plain utf8 on the next when its distinct count drifted.
+  # `region` is equally low-cardinality (8 values) and is deliberately left
+  # plain, which is what proves the sink is not auto-detecting.
+  dictionary_columns:
+    perf_1m: [status]
+  # ClickHouse DateTime64(6) is microsecond data. pandas widens it to
+  # nanoseconds in transit, so the sink casts it back — a SAFE cast, so a
+  # source with genuinely finer resolution would raise rather than truncate.
+  timestamp_unit: us
+
+tables:
+  # SCAN ORDER IS PINNED, AND THAT IS LOAD-BEARING.
+  #
+  # `source: meshbench.perf_1m` — the obvious spelling — is NOT byte-reproducible.
+  # Found by this battery's own checksum check on its first run, then isolated:
+  # two consecutive pulls of the same unchanged table returned the same multiset
+  # of rows in a DIFFERENT ORDER (row_id began at 196608 on one pull and 131072
+  # on the next, neither ascending), because ClickHouse reads parts and granules
+  # in parallel and a bare SELECT promises no order. The permuted row order then
+  # permuted the `status` dictionary, since dictionary values are assigned in
+  # first-seen order. Row count, schema, block layout and every aggregate were
+  # identical; only the bytes differed.
+  #
+  # This is the scan-order determinism trap, and the cure is the documented one:
+  # decide an ORDER BY and verify by checksum. With the order pinned, three
+  # consecutive pulls produced one sha256 (db2912df…), row_id ascending, and a
+  # stable dictionary.
+  #
+  # Expressed as inline SQL because the driver accepts a `SELECT ...` source and
+  # wraps it as a subquery; there is no per-table `order_by` key to use instead
+  # (that gap is B-5, filed on the arrow lane).
+  #
+  # NOTE FOR OPERATORS: a production full_refresh config that does NOT pin an
+  # order is still CORRECT — every row arrives, every aggregate matches. It is
+  # only byte-reproducibility that is lost, which matters here because the
+  # checksum check is what would otherwise catch a real nondeterminism.
+  - source: SELECT * FROM meshbench.perf_1m ORDER BY row_id
+    target: perf_1m
+    mode: full_refresh
+    cadence: 5s
+
+runtime:
+  state_dir: /tmp/r64-factory/clickhouse-meshbench/state
+
+telemetry:
+  health_port: 0
+  metrics_port: 0

@@ -1,0 +1,621 @@
+{
+  "verdict": "PASS",
+  "tally": {
+    "PASS": 9,
+    "FAIL": 0,
+    "SKIPPED": 0
+  },
+  "dialect": "clickhouse",
+  "table": "perf_1m",
+  "source": "SELECT * FROM meshbench.perf_1m ORDER BY row_id",
+  "generated_utc": "2026-08-17T02:41:33Z",
+  "invocation": {
+    "config": "/home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml",
+    "ground_truth": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json",
+    "spec": "/home/kos/builds/r64-db-engine/factory/specs/meshbench-schema.json",
+    "serve_gate": true,
+    "source_endpoint": "http://127.0.0.1:8123/ (database=meshbench, user=default)",
+    "source_timezone": "UTC",
+    "note": "data checks read pull 1; the serve gate, when run, reads the file as it stands after pull 2 (identical when the checksum check passes)"
+  },
+  "artifact": {
+    "path": "/tmp/r64-factory/clickhouse-meshbench/arrow_out/perf_1m.arrow",
+    "sha256_pull1": "db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a",
+    "sha256_pull2": "db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a",
+    "bytes": 149806522,
+    "rows": 1000000,
+    "blocks": 16
+  },
+  "environment": {
+    "python": "3.13.12",
+    "platform": "Linux-7.1.5-1-cachyos-x86_64-with-glibc2.44",
+    "packages": {
+      "pyarrow": "25.0.0",
+      "pandas": "3.0.5",
+      "pydantic": "2.13.4",
+      "clickhouse_connect": "1.6.0",
+      "row64tools": "<no __version__>",
+      "jsonschema": "<not installed>",
+      "httpx": "<not installed>"
+    },
+    "git": {
+      "commit": "7820d1827e77b7a6d6f0200676698099b74fd06e",
+      "branch": "feat/meshforge-factory",
+      "dirty": true
+    },
+    "container": {
+      "name": "meshroad-ch",
+      "image": "clickhouse/clickhouse-server:latest",
+      "image_id": "sha256:07afc18d8a9706eb9d85c5c5d2752e5270f91bbc2894caeaecb73e4d0f603bf5",
+      "status": "running"
+    }
+  },
+  "checks": [
+    {
+      "name": "registry_admission",
+      "status": "PASS",
+      "detail": "dialect 'clickhouse' against registry ['clickhouse', 'postgres']",
+      "comparisons": [
+        {
+          "label": "resolved driver dialect_name()",
+          "actual": "clickhouse",
+          "expected": "clickhouse",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "dialect present in registry listing",
+          "actual": [
+            "clickhouse",
+            "postgres"
+          ],
+          "expected": "contains 'clickhouse'",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "drivers.resolve: refuses unregistered dialect",
+          "actual": "raised",
+          "expected": "raised",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "drivers.resolve: refusal lists registered dialects",
+          "actual": [
+            "clickhouse",
+            "postgres"
+          ],
+          "expected": [
+            "clickhouse",
+            "postgres"
+          ],
+          "ok": true,
+          "note": "message: unknown dialect 'definitely-not-a-registered-dialect' (available: clickhouse, postgres)"
+        },
+        {
+          "label": "Config validation: refuses unregistered dialect",
+          "actual": "raised",
+          "expected": "raised",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "Config validation: refusal lists registered dialects",
+          "actual": [
+            "clickhouse",
+            "postgres"
+          ],
+          "expected": [
+            "clickhouse",
+            "postgres"
+          ],
+          "ok": true,
+          "note": "message: 1 validation error for Config\n  Value error, unknown dialect 'definitely-not-a-registered-dialect' (registered: clickhouse, postgres) [type=value_error, input_value={'dialect': 'definitely-n...: 0, 'metrics_port': 0}}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error"
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "schema_exactness",
+      "status": "PASS",
+      "detail": "14 columns, string-width tolerance ON (B-3)",
+      "comparisons": [
+        {
+          "label": "column count",
+          "actual": 14,
+          "expected": 14,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "column names and order",
+          "actual": [
+            "row_id",
+            "account_id",
+            "user_id",
+            "region",
+            "city",
+            "category",
+            "segment",
+            "product_name",
+            "status",
+            "amount",
+            "quantity",
+            "price",
+            "score",
+            "event_time"
+          ],
+          "expected": [
+            "row_id",
+            "account_id",
+            "user_id",
+            "region",
+            "city",
+            "category",
+            "segment",
+            "product_name",
+            "status",
+            "amount",
+            "quantity",
+            "price",
+            "score",
+            "event_time"
+          ],
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[row_id]",
+          "actual": "int64",
+          "expected": "int64",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[account_id]",
+          "actual": "int64",
+          "expected": "int64",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[user_id]",
+          "actual": "int64",
+          "expected": "int64",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[region]",
+          "actual": "large_string",
+          "expected": "large_string",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[city]",
+          "actual": "large_string",
+          "expected": "large_string",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[category]",
+          "actual": "large_string",
+          "expected": "large_string",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[segment]",
+          "actual": "large_string",
+          "expected": "large_string",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[product_name]",
+          "actual": "large_string",
+          "expected": "large_string",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[status]",
+          "actual": "dictionary<values=string, indices=int32, ordered=0>",
+          "expected": "dictionary<values=string, indices=int32, ordered=0>",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[amount]",
+          "actual": "double",
+          "expected": "double",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[quantity]",
+          "actual": "int64",
+          "expected": "int64",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[price]",
+          "actual": "double",
+          "expected": "double",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[score]",
+          "actual": "double",
+          "expected": "double",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[event_time]",
+          "actual": "timestamp[us]",
+          "expected": "timestamp[us]",
+          "ok": true,
+          "note": ""
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "aggregate_parity",
+      "status": "PASS",
+      "detail": "12 aggregates vs ground truth",
+      "comparisons": [
+        {
+          "label": "count",
+          "actual": 1000000,
+          "expected": 1000000,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "uniq_status",
+          "actual": 6,
+          "expected": 6,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "uniq_region",
+          "actual": 8,
+          "expected": 8,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "uniq_product_name",
+          "actual": 50000,
+          "expected": 50000,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "count_status_active",
+          "actual": 166627,
+          "expected": 166627,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "count_region_west",
+          "actual": 124935,
+          "expected": 124935,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "sum_quantity",
+          "actual": 250480021,
+          "expected": 250480021,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "max_account_id",
+          "actual": 3599999873,
+          "expected": 3599999873,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "scaled_amount_sum_exact_int",
+          "actual": 11994337292,
+          "expected": 11994337292,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "scaled_amount_sum",
+          "actual": 11994337292,
+          "expected": 11994337292,
+          "ok": true,
+          "note": "corroborating only \u2014 does not gate (float-order sensitivity)"
+        },
+        {
+          "label": "count_score_null",
+          "actual": 20039,
+          "expected": 20039,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "pct_score_null",
+          "actual": 2.0039,
+          "expected": 2.0039,
+          "ok": true,
+          "note": ""
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "rf002_null_discriminator",
+      "status": "PASS",
+      "detail": "1 declared discriminator(s) on perf_1m: score",
+      "comparisons": [
+        {
+          "label": "score: spec vs ground-truth null count",
+          "actual": 20039,
+          "expected": 20039,
+          "ok": true,
+          "note": "two independent records of the same number; disagreement means one of the two files is stale"
+        },
+        {
+          "label": "score: artifact null_count",
+          "actual": 20039,
+          "expected": 20039,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "score: count(col) vs count(*)",
+          "actual": "979961 vs 1000000",
+          "expected": "must differ",
+          "ok": true,
+          "note": "if equal, nulls were filled in transit"
+        },
+        {
+          "label": "score: NaN smuggled as a value",
+          "actual": 0,
+          "expected": 0,
+          "ok": true,
+          "note": "a literal NaN sets null_count=0 and poisons every downstream sum()"
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "b2_boundary",
+      "status": "PASS",
+      "detail": "boundary columns ['event_time'] vs live source (source session timezone: UTC)",
+      "comparisons": [
+        {
+          "label": "event_time: min",
+          "actual": "2026-01-01 00:00:15.184566",
+          "expected": "2026-01-01 00:00:15.184566",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "event_time: max",
+          "actual": "2026-06-29 23:59:30.942340",
+          "expected": "2026-06-29 23:59:30.942340",
+          "ok": true,
+          "note": ""
+        }
+      ],
+      "queries": [
+        "SELECT timezone()",
+        "SELECT toString(min(event_time)), toString(max(event_time)) FROM (SELECT * FROM meshbench.perf_1m ORDER BY row_id) AS sub"
+      ],
+      "observations": {
+        "source_timezone": "UTC"
+      }
+    },
+    {
+      "name": "pg011_refusal",
+      "status": "PASS",
+      "detail": "refused with: sink 'arrow_ipc' cannot serve incremental mode (its output format is not appendable in place), but these tables request it: perf_1m. Use mode: full_refresh.",
+      "comparisons": [
+        {
+          "label": "incremental on non-appendable sink",
+          "actual": "raised",
+          "expected": "raised",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "refusal names the cause",
+          "actual": "sink 'arrow_ipc' cannot serve incremental mode (its output format is not appendable in place), but these tables request it: perf_1m. Use mode: full_refresh.",
+          "expected": "cannot serve incremental mode",
+          "ok": true,
+          "note": ""
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "block_structure",
+      "status": "PASS",
+      "detail": "16 blocks expected for 1000000 rows at 65536/block",
+      "comparisons": [
+        {
+          "label": "block count",
+          "actual": 16,
+          "expected": 16,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "rows across blocks",
+          "actual": 1000000,
+          "expected": 1000000,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "block layout",
+          "actual": [
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            16960
+          ],
+          "expected": [
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            65536,
+            16960
+          ],
+          "ok": true,
+          "note": "65536-row blocks, final block carries the remainder"
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "checksum",
+      "status": "PASS",
+      "detail": "two consecutive same-lane pulls are byte-identical (sha256 db2912dfbd6a4233\u2026)",
+      "comparisons": [
+        {
+          "label": "sha256 (pull 1 vs pull 2)",
+          "actual": "db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a",
+          "expected": "db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a",
+          "ok": true,
+          "note": ""
+        }
+      ],
+      "queries": [],
+      "observations": {
+        "lane_scope": "byte-identity asserted WITHIN this lane only; cross-lane comparison uses data + schema-minus-metadata + block structure, with string-width tolerance"
+      }
+    },
+    {
+      "name": "zero_copy_serve_gate",
+      "status": "PASS",
+      "detail": "counter deltas from the server's own get_flight_info app_metadata",
+      "comparisons": [
+        {
+          "label": "cold: copied_columns",
+          "actual": 0,
+          "expected": 0,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "warm: copied_columns",
+          "actual": 0,
+          "expected": 0,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "cold: zero_copy_columns == columns_decoded",
+          "actual": "32 vs 32",
+          "expected": "equal",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "cold: columns actually decoded",
+          "actual": 32,
+          "expected": "> 0",
+          "ok": true,
+          "note": "a cold pass that decodes nothing did not exercise the reader"
+        },
+        {
+          "label": "warm: miss_rate %",
+          "actual": 0.0,
+          "expected": 0.0,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "warm: columns_decoded",
+          "actual": 0,
+          "expected": 0,
+          "ok": true,
+          "note": "stronger than miss_rate: a warm pass must decode nothing at all"
+        }
+      ],
+      "queries": [],
+      "observations": {
+        "cold_delta": {
+          "cache_hits": 0,
+          "cache_misses": 32,
+          "columns_decoded": 32,
+          "blocks_assembled": 16,
+          "zero_copy_columns": 32,
+          "copied_columns": 0,
+          "bytes_read": 12001040,
+          "bytes_served_cached": 0
+        },
+        "warm_delta": {
+          "cache_hits": 32,
+          "cache_misses": 0,
+          "columns_decoded": 0,
+          "blocks_assembled": 16,
+          "zero_copy_columns": 0,
+          "copied_columns": 0,
+          "bytes_read": 0,
+          "bytes_served_cached": 12001040
+        },
+        "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
+        "addr": "127.0.0.1:8903",
+        "pid": 188451,
+        "baseline": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "columns_decoded": 0,
+          "blocks_assembled": 0,
+          "zero_copy_columns": 0,
+          "copied_columns": 0,
+          "bytes_read": 0,
+          "bytes_served_cached": 0
+        },
+        "rows": 6
+      }
+    }
+  ]
+}
