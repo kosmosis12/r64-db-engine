@@ -3,7 +3,7 @@
 Branch: `feat/meshforge-factory` (off `main` @ `7820d18`)
 Session: 2026-08-16 → 2026-08-17 · Brief: `CC-BRIEF-meshforge-r64.md` · Index: `docs/MESHFORGE-SKILL-INDEX.md`
 
-**Status: all four gates met. Pushed, NOT merged — cross-agent QA is mandatory
+**Status: all four gates met. CI green on PR #9. NOT merged — cross-agent QA is mandatory
 between conformance-green and merge (Law 2). See §6.**
 
 ---
@@ -47,8 +47,14 @@ Six lines in the registry. Nothing else outside the driver's own directory.
 
 | | passed | skipped | collected |
 |---|---:|---:|---:|
-| Baseline (`main` @ `7820d18`) | 325 | 40 | 365 |
-| This branch | **557** | 66 | 623 |
+| Baseline (`main` @ `7820d18`) — local | 325 | 40 | 365 |
+| This branch — local | **558** | 66 | 624 |
+| This branch — **CI**, PR #9 | **555** | 69 | 624 |
+
+CI passes three fewer and skips three more than local: the two
+`systemd-analyze verify` cases and the one deployment-host path check, each
+skipped with an explicit reason because a CI runner is not the deployment host
+(F-10).
 
 Of the 66 integration-gated tests, the **26 new ones** were run green this
 session with `--integration`: clickhouse conformance (13), rest conformance
@@ -78,10 +84,27 @@ full green integration sweep.
 > nothing. **`main` itself stays red until this branch merges** — the fix rides
 > in with the merge rather than being back-ported, because a separate hotfix to
 > `main` would diverge from the branch under audit for no benefit.
->
-> **Note:** this branch's CI has not run. `.github/workflows/ci.yml` triggers on
-> `push` only for `main` and `claude/**`, plus `pull_request`; `feat/meshforge-factory`
-> matches neither and has no PR. The lint/type/test results above are all local.
+
+### CI on the PR — [#9](https://github.com/kosmosis12/r64-db-engine/pull/9)
+
+`pull_request` is the only trigger this branch can hit (`push` fires only for
+`main` and `claude/**`), so the PR *is* the first real CI execution — which is
+why it was opened before the audit rather than after.
+
+| run | sha | Ruff | Mypy | Unit tests | result |
+|---|---|---|---|---|---|
+| [32013443763](https://github.com/kosmosis12/r64-db-engine/actions/runs/32013443763) | `15438ac` | pass | **pass** | 3 failed, 554 passed | failure |
+| [32014133500](https://github.com/kosmosis12/r64-db-engine/actions/runs/32014133500) | `f2638be` | pass | **pass** | **555 passed, 69 skipped** | **success** |
+
+Three things that run proved, in order of how much they mattered:
+
+1. **The healed `mypy` step passes with `factory/` on its path** — first green
+   type-check of this code in CI, and the step that F-7 had silently broken.
+2. **D-11 worked.** 554 tests passed where 321 did before: the golden `.ramdb`
+   fixtures load, so the byte contract is guarded in CI for the first time.
+3. **Three failures, all mine** — and a real defect, not a CI quirk. See F-10.
+
+Every skip in the green run carries a stated reason; none is silent.
 
 ---
 
@@ -175,6 +198,31 @@ regression, not a fixture to refresh"* — so the guard on the ramdb byte contra
 has been unable to run in CI at all. **Not fixed here:** un-ignoring those files
 is a repo-hygiene policy call on a pre-existing condition, and it is outside
 both this brief and the #11 ratification. Filed as D-11 with a one-line fix.
+
+**F-10 · My systemd tests asserted where they were RUNNING, not what the unit
+says.** The first PR CI run failed three tests, all mine. A systemd unit must
+hardcode absolute paths on its deployment host, so it legitimately names
+`/home/kos/...` while a CI runner checks the repo out at `/home/runner/work/...`.
+Asserting the unit's paths equal `conformance.REPO_ROOT` therefore tested where
+the tests happened to be running rather than whether the unit was correct — the
+units were right, the tests were machine-dependent.
+
+Replaced with the property that is both portable and the one with actual teeth:
+**internal consistency** — whatever root the unit declares as
+`WorkingDirectory`, its `ExecStart` must use *that* root's venv and *that*
+root's sweep. A unit whose two halves drifted apart would install cleanly and
+fail at 04:00 on a Sunday, and that is now what is checked. The stronger "and
+that root is this checkout" claim is kept but fenced to its own test, skipped
+off-host with a reason naming both paths; `systemd-analyze verify` likewise
+skips when the declared interpreter is absent, since it resolves `ExecStart`
+and cannot verify a unit whose binary does not exist. Both are honest
+environmental skips — the units are still verified for real on the deployment
+host, the only place the answer means anything.
+
+*Worth noting as a pattern: this is the third defect this session found by
+running the same assertion in a second environment (the others being F-2's
+cumulative counters and F-6's missing time bound). A check that has only ever
+run in one place has not been tested, it has been observed.*
 
 **F-9 · Non-public address categories overlap.** `0.0.0.0`, `127.0.0.1` and
 `169.254.169.254` all report `is_private` as well as their own more specific
