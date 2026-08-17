@@ -3,9 +3,10 @@
 Branch: `feat/meshforge-factory` (off `main` @ `7820d18`)
 Session: 2026-08-16 → 2026-08-17 · Brief: `CC-BRIEF-meshforge-r64.md` · Index: `docs/MESHFORGE-SKILL-INDEX.md`
 
-**Status: all four gates met. Codex rounds 1 (§9), 2 (§10) and 3 (§11)
-remediated. Round 3: Q1 CLEAN, Q2/Q3 BLOCK — both addressed. Re-pushed for
-round 4. NOT merged: merge remains blocked on the audit verdict per Law 2.**
+**Status: all four gates met. Codex rounds 1–4 remediated (§9–§12). Round 4:
+Q1 SPLIT by operator ruling (TOCTOU out of frame, two crash-consistency
+sub-items accepted), Q2 accepted in full — both addressed. Re-pushed for
+round 5. NOT merged: merge remains blocked on the audit verdict per Law 2.**
 
 ---
 
@@ -873,4 +874,111 @@ Remediation commits:
 ```
 7a00730 Q3(secrets): scrub credentials at the error boundary; rescope the claim
 f01843b Q2(evidence): verify a stored artifact before reusing its content address
+```
+
+---
+
+## 12. Codex round 4 — verdicts, operator ruling, remediation
+
+Audit received 2026-08-17. **BLOCK / BLOCK.** Q1 SPLIT by operator ruling; Q2
+accepted in full. Both addressed; branch re-pushed for round 5.
+
+| # | Question | Verdict | Remediation | SHA |
+|---|---|---|---|---|
+| **Q1** | TOCTOU between verify and emit | **SPLIT** — model out of frame; two sub-items accepted | preserve-before-overwrite, hash-late, boundary line | `fb84432` |
+| **Q2** | Credential echo through validation errors | **ACCEPTED IN FULL** | value-free errors, outer boundary, declared floor, sink scrubbing | `49c01ed` |
+
+### The operator ruling — recorded verbatim
+
+> **Q1 SPLIT.** TOCTOU atomic binding is ruled **OUT OF FRAME**, reasoning of
+> record: packs are unsigned local files — an attacker with concurrent local
+> write access to swap stored bytes can more simply rewrite the pack itself, so
+> atomic verify-to-emit binding adds zero capability against that attacker. The
+> round-4 prompt introduced the TOCTOU model; the answer demonstrates the model
+> is outside what packs defend.
+
+Two sub-items were nonetheless **ACCEPTED** — crash-consistency class, no
+adversary required — and are implemented. That distinction is the useful part
+of the ruling: the same code path had a real defect (a crash could destroy the
+only evidence of corruption) that had nothing to do with the adversary the
+question posed.
+
+### Q1 — what was actually fixed
+
+**(a) Preserve before overwrite.** `--repair-store` overwrote the corrupted
+entry directly, so a crash mid-repair could leave neither the corruption nor a
+record of it. The corrupted bytes are now copied aside FIRST — to
+`<digest>.corrupt-<actualhash>`, named by what they really hashed to — and only
+then is the entry repaired. A crash at any point leaves one of two states and
+never a third: the original corruption still in place, or the preserved copy
+alongside a partial or complete repair. Proven by failing the repair copy AFTER
+preservation, and separately by failing preservation itself and asserting the
+repair never starts.
+
+**(b) Hash late.** The digest the pack claims now comes from the LAST read
+before the record is emitted, not an earlier check whose result is then
+asserted about a file touched since. Verification and claim are one
+observation. The manifest route pins the manifest's own sha256, so the pack
+pins the bytes of the file it points at rather than merely naming its path.
+
+**(c)** The CLOSURE BOUNDARY carries the ruling into every pack:
+
+> packs attest generation-time state; they are unsigned and do not defend
+> against concurrent local mutation of the store or of the pack itself.
+
+### Q2 — credential echo, killed at the sink
+
+Accepted in full: **drift events are agent-read, and credential echo is remote
+provider behaviour.** Nothing the engine does controls whether a response
+contains the key it was sent, so the fix cannot live at the source.
+
+**(a) Value-free validation errors — the primary defence.** jsonschema's
+`ValidationError.message` embeds the INSTANCE. For a provider that echoes a
+submitted API key back in its error body, that message *is* the credential. It
+is no longer propagated: errors and drift events report instance path, violated
+constraint (from OUR schema, which carries no secrets) and schema path — never
+the value. This kills the partial-secret echo class outright rather than
+filtering it afterwards. A test asserts the message still says *which*
+constraint broke and where: value-free must not mean information-free.
+
+**(b) One outer boundary** over the whole post-secret-load path — build_request,
+send, peer-check, read, decode, validate. Inner sites keep their scrubbing, but
+per-site scrubbing is a promise that every future raise remembered to make it,
+which code cannot keep. The boundary covers exceptions from httpx, jsonschema
+and the standard library alike, preserves our own exception types, and re-raises
+`from None`. Tested by injecting a raise from **each of the six stages**;
+mutation-proven by neutering it.
+
+**(c) Declared floor.** Secrets under 8 characters are not registered for
+literal scrubbing — replacing a short string across arbitrary error text
+corrupts unrelated content, and a redaction that eats the word "table" is worse
+than useless. Declared in code and skill, with the reason it is safe: value-free
+errors mean a sub-floor credential still never reaches a message. Tested with a
+deliberately sub-floor secret. The skill's "every secret loaded during a call"
+phrasing is deleted — it was the overclaim the floor contradicts.
+
+**(d)** The drift serializer scrubs the final serialized JSON, and the ntfy
+body, before either leaves the process.
+
+### Verification after round 4
+
+| | result |
+|---|---|
+| Suite (local) | **835 passed / 66 skipped** |
+| `ruff check src tests factory` | clean |
+| `mypy src factory` | clean |
+| Both greps | **0** · `core/` untouched |
+| Both packs | ratify `49c01ed`, clean tree, `ratifies_head: true`, `store_verified: true`, `store_verified_sha256` present, 5 closure-boundary items |
+
+### Claims after round 4
+
+Q2's work tightened the recipe-engine credential clause behind **MF-03**; the
+claim text itself is unchanged from its round-2 rescope. **MF-01** and
+**MF-02** unchanged. All three remain **FENCED** pending round 5.
+
+Remediation commits:
+
+```
+49c01ed Q2(secrets): value-free validation errors, one outer boundary, declared floor
+fb84432 Q1(evidence): preserve corruption before repair; hash late; state the boundary
 ```

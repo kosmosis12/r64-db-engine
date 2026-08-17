@@ -10,7 +10,7 @@
   "dialect": "clickhouse",
   "table": "perf_1m",
   "source": "SELECT * FROM meshbench.perf_1m ORDER BY row_id",
-  "generated_utc": "2026-08-17T12:55:25Z",
+  "generated_utc": "2026-08-17T14:11:19Z",
   "invocation": {
     "config": "/home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml",
     "ground_truth": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json",
@@ -22,7 +22,7 @@
   },
   "provenance": {
     "git": {
-      "commit": "7a007303a69b3a62b0b3ed4d179319ed16907316",
+      "commit": "49c01eddbbafb7ebba4c5284b6781f43a2b708eb",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -46,7 +46,7 @@
     },
     "implementation": {
       "distribution_version": "0.1.0",
-      "source_sha256": "f73e5dd29174a4ad3c2fecae40c1af170002c5f0f13665453c6e7c1e1f1fb79b",
+      "source_sha256": "b04bf3bae6c5532448b5237dbf23a7e2d6547e15eb41795d479992b0704418ef",
       "source_files": 46
     },
     "toolchain": {
@@ -76,9 +76,11 @@
       "bytes": 149806522,
       "produced_at": "/tmp/r64-factory-sweep/clickhouse-meshbench/arrow_out/perf_1m.arrow",
       "suffix": ".arrow",
+      "manifest_sha256": "ecebc7fd82b4463a38fe70a16eec051be097d6228595b66bdf7118e7e3424e86",
+      "store_verified": true,
+      "store_verified_sha256": "ecebc7fd82b4463a38fe70a16eec051be097d6228595b66bdf7118e7e3424e86",
       "storage": "content-addressed manifest",
       "path": "factory/evidence/artifacts/db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a.manifest.json",
-      "store_verified": true,
       "note": "artifact is 149806522 bytes, over the 8388608-byte copy limit; the sha256 above is the content address and the bytes are not committed. The manifest is rewritten each run, so no stored bytes are reused and verify-on-reuse does not apply."
     },
     "closure_boundary": [
@@ -97,6 +99,11 @@
         "pinned": false,
         "measured": true,
         "why": "a live database or API cannot be pinned by a pack \u2014 it is not ours and it moves. What the pack carries is MEASUREMENT of it at run time: row counts, aggregates, min/max bounds, session timezone, and the artifact's content address. Those values are already in this pack; they establish what the source held during this run, not that it will hold it again."
+      },
+      {
+        "item": "concurrent local mutation of the store or of the pack itself",
+        "pinned": false,
+        "why": "packs attest generation-time state; they are unsigned and do not defend against concurrent local mutation of the store or of the pack itself. An attacker with local write access can rewrite the pack more easily than the bytes it points at, so verification here establishes what was true when the pack was written \u2014 not what is true when it is read."
       },
       {
         "item": "the machine's wall clock and scheduling",
@@ -126,7 +133,7 @@
       "httpx": "0.28.1"
     },
     "git": {
-      "commit": "7a007303a69b3a62b0b3ed4d179319ed16907316",
+      "commit": "49c01eddbbafb7ebba4c5284b6781f43a2b708eb",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -766,7 +773,7 @@
         },
         "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
         "addr": "127.0.0.1:8903",
-        "pid": 1084913,
+        "pid": 1196433,
         "baseline": {
           "cache_hits": 0,
           "cache_misses": 0,

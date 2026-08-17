@@ -1,8 +1,8 @@
 # EVIDENCE — clickhouse / perf_1m
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T12:55:25Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T14:11:19Z.
 
-> Ratifies `7a007303a69b` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
+> Ratifies `49c01eddbbaf` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -214,7 +214,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
   "addr": "127.0.0.1:8903",
-  "pid": 1084913,
+  "pid": 1196433,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -238,6 +238,7 @@ counter deltas from the server's own get_flight_info app_metadata
 | secret contents | **no** | a sha256 of a low-entropy API key is offline-guessable, and an evidence pack travels. Only path, size, mtime and mode are recorded — enough to say the same secret file was in place, nothing about the secret. |
 | native and runtime dependencies beyond the lockfiles | **no** | pyproject.toml and uv.lock fix the declared and resolved Python sets, and the meshroad binary is content-addressed. Shared libraries, the OS package set and the container's own contents are NOT pinned; the container image digest is recorded, which identifies the image but does not reconstruct it. |
 | live source state | measured, not pinned | a live database or API cannot be pinned by a pack — it is not ours and it moves. What the pack carries is MEASUREMENT of it at run time: row counts, aggregates, min/max bounds, session timezone, and the artifact's content address. Those values are already in this pack; they establish what the sou... |
+| concurrent local mutation of the store or of the pack itself | **no** | packs attest generation-time state; they are unsigned and do not defend against concurrent local mutation of the store or of the pack itself. An attacker with local write access can rewrite the pack more easily than the bytes it points at, so verification here establishes what was true when the p... |
 | the machine's wall clock and scheduling | **no** | no timing claim is made by any check in this battery, so clock and load are deliberately outside the boundary rather than silently assumed. |
 
 ## Provenance — what this pack ratifies
@@ -247,12 +248,14 @@ counter deltas from the server's own get_flight_info app_metadata
   "allow_dirty": false,
   "artifact": {
     "bytes": 149806522,
+    "manifest_sha256": "ecebc7fd82b4463a38fe70a16eec051be097d6228595b66bdf7118e7e3424e86",
     "note": "artifact is 149806522 bytes, over the 8388608-byte copy limit; the sha256 above is the content address and the bytes are not committed. The manifest is rewritten each run, so no stored bytes are reused and verify-on-reuse does not apply.",
     "path": "factory/evidence/artifacts/db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a.manifest.json",
     "produced_at": "/tmp/r64-factory-sweep/clickhouse-meshbench/arrow_out/perf_1m.arrow",
     "sha256": "db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a",
     "storage": "content-addressed manifest",
     "store_verified": true,
+    "store_verified_sha256": "ecebc7fd82b4463a38fe70a16eec051be097d6228595b66bdf7118e7e3424e86",
     "suffix": ".arrow"
   },
   "closure_boundary": [
@@ -273,6 +276,11 @@ counter deltas from the server's own get_flight_info app_metadata
       "why": "a live database or API cannot be pinned by a pack \u2014 it is not ours and it moves. What the pack carries is MEASUREMENT of it at run time: row counts, aggregates, min/max bounds, session timezone, and the artifact's content address. Those values are already in this pack; they establish what the source held during this run, not that it will hold it again."
     },
     {
+      "item": "concurrent local mutation of the store or of the pack itself",
+      "pinned": false,
+      "why": "packs attest generation-time state; they are unsigned and do not defend against concurrent local mutation of the store or of the pack itself. An attacker with local write access can rewrite the pack more easily than the bytes it points at, so verification here establishes what was true when the pack was written \u2014 not what is true when it is read."
+    },
+    {
       "item": "the machine's wall clock and scheduling",
       "pinned": false,
       "why": "no timing claim is made by any check in this battery, so clock and load are deliberately outside the boundary rather than silently assumed."
@@ -281,14 +289,14 @@ counter deltas from the server's own get_flight_info app_metadata
   "command": ".venv/bin/python -m factory.conformance --dialect clickhouse --config /home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml --ground-truth /home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json --table perf_1m --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence --work-dir /tmp/r64-factory-sweep/clickhouse-meshbench --serve-gate",
   "git": {
     "branch": "feat/meshforge-factory",
-    "commit": "7a007303a69b3a62b0b3ed4d179319ed16907316",
+    "commit": "49c01eddbbafb7ebba4c5284b6781f43a2b708eb",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"
   },
   "implementation": {
     "distribution_version": "0.1.0",
     "source_files": 46,
-    "source_sha256": "f73e5dd29174a4ad3c2fecae40c1af170002c5f0f13665453c6e7c1e1f1fb79b"
+    "source_sha256": "b04bf3bae6c5532448b5237dbf23a7e2d6547e15eb41795d479992b0704418ef"
   },
   "inputs": {
     "ground_truth": {
@@ -346,7 +354,7 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "7a007303a69b3a62b0b3ed4d179319ed16907316",
+    "commit": "49c01eddbbafb7ebba4c5284b6781f43a2b708eb",
     "branch": "feat/meshforge-factory",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"

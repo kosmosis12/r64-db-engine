@@ -10,7 +10,7 @@
   "dialect": "rest",
   "table": "open_meteo_berlin_hourly",
   "source": "open_meteo_berlin_hourly",
-  "generated_utc": "2026-08-17T12:55:31Z",
+  "generated_utc": "2026-08-17T14:11:25Z",
   "invocation": {
     "config": "/home/kos/builds/r64-db-engine/factory/targets/rest-openmeteo.yaml",
     "ground_truth": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-openmeteo.json",
@@ -22,7 +22,7 @@
   },
   "provenance": {
     "git": {
-      "commit": "7a007303a69b3a62b0b3ed4d179319ed16907316",
+      "commit": "49c01eddbbafb7ebba4c5284b6781f43a2b708eb",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -49,7 +49,7 @@
     },
     "implementation": {
       "distribution_version": "0.1.0",
-      "source_sha256": "f73e5dd29174a4ad3c2fecae40c1af170002c5f0f13665453c6e7c1e1f1fb79b",
+      "source_sha256": "b04bf3bae6c5532448b5237dbf23a7e2d6547e15eb41795d479992b0704418ef",
       "source_files": 46
     },
     "toolchain": {
@@ -80,6 +80,7 @@
       "produced_at": "/tmp/r64-factory-sweep/rest-openmeteo/arrow_out/open_meteo_berlin_hourly.arrow",
       "suffix": ".arrow",
       "store_verified": true,
+      "store_verified_sha256": "a16b8d2ed10a81a11ac9e7ddfb39e96d4afe0d6a22b8a1a3a4bcb61bf29870ca",
       "storage": "copied",
       "path": "factory/evidence/artifacts/a16b8d2ed10a81a11ac9e7ddfb39e96d4afe0d6a22b8a1a3a4bcb61bf29870ca.arrow"
     },
@@ -99,6 +100,11 @@
         "pinned": false,
         "measured": true,
         "why": "a live database or API cannot be pinned by a pack \u2014 it is not ours and it moves. What the pack carries is MEASUREMENT of it at run time: row counts, aggregates, min/max bounds, session timezone, and the artifact's content address. Those values are already in this pack; they establish what the source held during this run, not that it will hold it again."
+      },
+      {
+        "item": "concurrent local mutation of the store or of the pack itself",
+        "pinned": false,
+        "why": "packs attest generation-time state; they are unsigned and do not defend against concurrent local mutation of the store or of the pack itself. An attacker with local write access can rewrite the pack more easily than the bytes it points at, so verification here establishes what was true when the pack was written \u2014 not what is true when it is read."
       },
       {
         "item": "the machine's wall clock and scheduling",
@@ -128,7 +134,7 @@
       "httpx": "0.28.1"
     },
     "git": {
-      "commit": "7a007303a69b3a62b0b3ed4d179319ed16907316",
+      "commit": "49c01eddbbafb7ebba4c5284b6781f43a2b708eb",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -636,7 +642,7 @@
         },
         "sql": "SELECT count(*), min(time), max(time) FROM open_meteo_berlin_hourly",
         "addr": "127.0.0.1:8903",
-        "pid": 1085247,
+        "pid": 1196714,
         "baseline": {
           "cache_hits": 0,
           "cache_misses": 0,
