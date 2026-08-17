@@ -397,20 +397,44 @@ def record_artifact(
         if stored.exists():
             actual = sha256_file(stored)
             if actual == digest:
-                record["store_verified"] = True
+                pass
             elif repair_store:
+                # PRESERVE BEFORE OVERWRITE — crash consistency, no adversary
+                # required. The corrupted bytes are the only evidence that the
+                # archive went wrong, so they are copied aside FIRST, under a
+                # name that records what they actually hashed to. Then the
+                # repair happens.
+                #
+                # A crash at any point leaves one of two states and never a
+                # third: the original corruption still in place (preserve did
+                # not finish), or the preserved copy alongside a partial or
+                # complete repair. There is no ordering where the corrupted
+                # bytes are gone and nothing recorded them.
+                preserved = artifacts_dir / f"{digest}.corrupt-{actual}"
+                if not preserved.exists():
+                    shutil.copy2(stored, preserved)
+                    kept = sha256_file(preserved)
+                    if kept != actual:
+                        raise CorruptStoredEvidenceError(
+                            f"failed to preserve the corrupted bytes at {stored}: the copy "
+                            f"at {preserved} hashes to {kept}, not {actual}. Refusing to "
+                            f"repair, because the corruption would be destroyed unrecorded."
+                        )
                 shutil.copy2(artifact_path, stored)
                 repaired = sha256_file(stored)
                 if repaired != digest:
                     raise CorruptStoredEvidenceError(
                         f"--repair-store rewrote {stored} but it still hashes to {repaired}, "
                         f"not {digest}. The store is not writable as expected; refusing to "
-                        f"claim a content address that does not hold."
+                        f"claim a content address that does not hold. The corrupted original "
+                        f"is preserved at {preserved}."
                     )
-                record["store_verified"] = True
                 record["store_repaired"] = True
                 record["store_previous_sha256"] = actual
                 record["store_repaired_sha256"] = repaired
+                record["store_corrupt_preserved_path"] = str(
+                    preserved.relative_to(evidence_dir.parent.parent)
+                )
             else:
                 raise CorruptStoredEvidenceError(
                     f"stored evidence at {stored} does not match its own content address.\n"
@@ -424,23 +448,36 @@ def record_artifact(
                 )
         else:
             shutil.copy2(artifact_path, stored)
-            written = sha256_file(stored)
-            if written != digest:
-                raise CorruptStoredEvidenceError(
-                    f"just-written {stored} hashes to {written}, not {digest}"
-                )
-            record["store_verified"] = True
+
+        # HASH LATE. The digest the pack claims comes from THIS read — the last
+        # one before the record is emitted — rather than from an earlier check
+        # whose result is then asserted about a file that has been touched
+        # since. Verification and claim are the same observation.
+        final = sha256_file(stored)
+        if final != digest:
+            raise CorruptStoredEvidenceError(
+                f"stored evidence at {stored} hashes to {final}, not {digest}, at the moment "
+                f"the pack would claim it. Refusing to emit a content address that does not "
+                f"hold as of the read backing it."
+            )
+        record["store_verified"] = True
+        record["store_verified_sha256"] = final
         record["storage"] = "copied"
         record["path"] = str(stored.relative_to(evidence_dir.parent.parent))
     else:
         manifest = artifacts_dir / f"{digest}.manifest.json"
         manifest.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        # Hash-late for this route too: the manifest's OWN content address, read
+        # back after writing, so the pack pins the bytes of the file it points at
+        # rather than merely naming its path.
+        record["manifest_sha256"] = sha256_file(manifest)
+        record["store_verified"] = True
+        record["store_verified_sha256"] = record["manifest_sha256"]
         record["storage"] = "content-addressed manifest"
         record["path"] = str(manifest.relative_to(evidence_dir.parent.parent))
         # No verify-on-reuse here, and none is needed: the manifest is rewritten
         # from scratch every run, so there is no pre-existing content being
         # trusted. It describes the produced artifact, which was hashed above.
-        record["store_verified"] = True
         record["note"] = (
             f"artifact is {size} bytes, over the {ARTIFACT_COPY_LIMIT_BYTES}-byte copy "
             f"limit; the sha256 above is the content address and the bytes are not "
@@ -562,6 +599,17 @@ CLOSURE_BOUNDARY = [
             "aggregates, min/max bounds, session timezone, and the artifact's content "
             "address. Those values are already in this pack; they establish what the source "
             "held during this run, not that it will hold it again."
+        ),
+    },
+    {
+        "item": "concurrent local mutation of the store or of the pack itself",
+        "pinned": False,
+        "why": (
+            "packs attest generation-time state; they are unsigned and do not defend against "
+            "concurrent local mutation of the store or of the pack itself. An attacker with "
+            "local write access can rewrite the pack more easily than the bytes it points at, "
+            "so verification here establishes what was true when the pack was written — not "
+            "what is true when it is read."
         ),
     },
     {

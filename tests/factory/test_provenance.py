@@ -655,3 +655,173 @@ def test_the_committed_packs_record_a_verified_store(dialect: str) -> None:
         f"EVIDENCE-{dialect}-*.json"))
     record = json.loads(packs[-1].read_text())["provenance"]["artifact"]
     assert record["store_verified"] is True
+
+
+# ---------------------------------------------------------------------------
+# Round 4 Q1(a) — preserve corrupted bytes BEFORE overwriting them
+# ---------------------------------------------------------------------------
+
+
+def test_repair_preserves_the_corrupted_bytes_alongside(tmp_path: Path) -> None:
+    """The corrupted bytes are the only evidence the archive went wrong.
+
+    They are copied aside FIRST, under a name recording what they actually
+    hashed to, and only then is the entry repaired.
+    """
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+    stored.write_bytes(b"CORRUPTED")
+    corrupt_hash = hashlib.sha256(b"CORRUPTED").hexdigest()
+
+    record = evidence.record_artifact(artifact, evidence_dir, repair_store=True)
+
+    preserved = evidence_dir / "artifacts" / f"{first['sha256']}.corrupt-{corrupt_hash}"
+    assert preserved.exists(), "the corrupted bytes were destroyed"
+    assert preserved.read_bytes() == b"CORRUPTED"
+    assert stored.read_bytes() == artifact.read_bytes()
+
+    assert record["store_repaired"] is True
+    assert record["store_previous_sha256"] == corrupt_hash
+    assert record["store_repaired_sha256"] == first["sha256"]
+    assert record["store_corrupt_preserved_path"].endswith(f".corrupt-{corrupt_hash}")
+
+
+def test_the_preserved_name_records_what_the_bytes_ACTUALLY_hashed_to(tmp_path: Path) -> None:
+    """Named by the real digest, not by a counter: two different corruptions of
+    the same entry are distinguishable rather than overwriting each other."""
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+
+    for payload in (b"CORRUPTION-A", b"CORRUPTION-B"):
+        stored.write_bytes(payload)
+        evidence.record_artifact(artifact, evidence_dir, repair_store=True)
+
+    preserved = sorted((evidence_dir / "artifacts").glob("*.corrupt-*"))
+    assert len(preserved) == 2, "the second corruption overwrote the first"
+    for payload in (b"CORRUPTION-A", b"CORRUPTION-B"):
+        digest = hashlib.sha256(payload).hexdigest()
+        assert any(p.name.endswith(f".corrupt-{digest}") for p in preserved)
+
+
+def test_a_CRASH_MID_REPAIR_never_destroys_the_corrupted_bytes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Crash consistency — no adversary required.
+
+    The repair copy is made to fail AFTER preservation. Whatever happens, disk
+    holds either the original corruption or the preserved copy; there is no
+    ordering where the corrupted bytes are gone and nothing recorded them.
+    """
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+    stored.write_bytes(b"CORRUPTED")
+    corrupt_hash = hashlib.sha256(b"CORRUPTED").hexdigest()
+
+    real_copy = evidence.shutil.copy2
+    calls = {"n": 0}
+
+    def flaky(src, dst, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:  # 1 = preserve, 2 = the repair itself
+            raise OSError("disk full mid-repair")
+        return real_copy(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(evidence.shutil, "copy2", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        evidence.record_artifact(artifact, evidence_dir, repair_store=True)
+
+    assert stored.read_bytes() == b"CORRUPTED", "the corruption was destroyed by a failed repair"
+    preserved = evidence_dir / "artifacts" / f"{first['sha256']}.corrupt-{corrupt_hash}"
+    assert preserved.exists() and preserved.read_bytes() == b"CORRUPTED"
+
+
+def test_a_failure_to_PRESERVE_aborts_before_any_overwrite(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """If preservation itself cannot complete, the repair must not start."""
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+    stored.write_bytes(b"CORRUPTED")
+
+    def refuse(src, dst, *args, **kwargs):
+        raise OSError("cannot write the preserved copy")
+
+    monkeypatch.setattr(evidence.shutil, "copy2", refuse)
+    with pytest.raises(OSError):
+        evidence.record_artifact(artifact, evidence_dir, repair_store=True)
+    assert stored.read_bytes() == b"CORRUPTED"
+
+
+# ---------------------------------------------------------------------------
+# Round 4 Q1(b) — hash late: the claim comes from the read that backs it
+# ---------------------------------------------------------------------------
+
+
+def test_the_recorded_digest_comes_from_the_final_read(tmp_path: Path) -> None:
+    artifact, evidence_dir = _store(tmp_path)
+    record = evidence.record_artifact(artifact, evidence_dir)
+    assert record["store_verified_sha256"] == record["sha256"]
+
+
+def test_a_store_mutated_between_check_and_claim_is_caught(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Verification and claim are the SAME observation.
+
+    Simulated by letting the first read succeed and the last one see different
+    bytes — the record must refuse rather than assert a digest that no longer
+    holds as of the read backing it.
+    """
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+
+    real = evidence.sha256_file
+    seen = {"n": 0}
+
+    def drifting(path):
+        seen["n"] += 1
+        # 1 = produced artifact, 2 = existing-entry check, 3 = the final read
+        if seen["n"] == 3:
+            return "0" * 64
+        return real(path)
+
+    monkeypatch.setattr(evidence, "sha256_file", drifting)
+    with pytest.raises(evidence.CorruptStoredEvidenceError, match="at the moment"):
+        evidence.record_artifact(artifact, evidence_dir)
+    assert first["sha256"]
+
+
+def test_the_manifest_route_pins_the_manifest_bytes(tmp_path: Path) -> None:
+    """The pack points at a manifest file, so it pins that file's own content
+    address rather than merely naming its path."""
+    artifact = tmp_path / "big.arrow"
+    artifact.write_bytes(b"z" * (evidence.ARTIFACT_COPY_LIMIT_BYTES + 1))
+    evidence_dir = tmp_path / "evidence"
+
+    record = evidence.record_artifact(artifact, evidence_dir)
+    manifest = evidence_dir / "artifacts" / f"{record['sha256']}.manifest.json"
+
+    assert record["manifest_sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    assert record["store_verified_sha256"] == record["manifest_sha256"]
+
+
+# ---------------------------------------------------------------------------
+# Round 4 Q1(c) — the standing boundary line
+# ---------------------------------------------------------------------------
+
+
+def test_the_closure_boundary_states_packs_are_unsigned() -> None:
+    """The operator ruling, on the record in every pack: verification here
+    establishes what was true when the pack was WRITTEN."""
+    entry = next(
+        e for e in evidence.CLOSURE_BOUNDARY if "concurrent local mutation" in e["item"]
+    )
+    assert "unsigned" in entry["why"]
+    assert "generation-time state" in entry["why"]
+
+    md = evidence.render_markdown(_pack(dirty=False, allow_dirty=False))
+    assert "unsigned" in md
