@@ -104,7 +104,11 @@ def resolve_addresses(host: str) -> list[str]:
         infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
         raise RecipeSecurityError(f"could not resolve recipe host {host!r}: {exc}") from exc
-    return sorted({info[4][0] for info in infos})
+    # `sockaddr[0]` is typed `str | int` because the tuple shape differs across
+    # address families; for AF_INET/AF_INET6 it is always the address string.
+    # Coerced explicitly rather than left implicit, so `assert_public_address`
+    # receives what its signature promises.
+    return sorted({str(info[4][0]) for info in infos})
 
 
 def assert_public_address(address: str) -> None:

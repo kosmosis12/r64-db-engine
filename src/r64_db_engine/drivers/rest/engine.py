@@ -171,10 +171,20 @@ def _next_page_params(
     pagination = recipe.pagination
     if pagination.type == "none":
         return None
+    # `cursor_param` / `page_param` are Optional on the dataclass but REQUIRED
+    # for their own pagination type — `recipes.py` refuses a book that omits
+    # them at load. Narrowed explicitly here anyway rather than asserted away:
+    # a None slipping into a params dict would become the literal key "None" in
+    # a query string, which is the kind of defect that produces a confusing
+    # 400 from the provider rather than a clear failure here.
     if pagination.type == "cursor":
         cursor = dotted_get(payload, pagination.cursor_path or "")
-        return {pagination.cursor_param: cursor} if cursor else None
+        if not cursor or pagination.cursor_param is None:
+            return None
+        return {pagination.cursor_param: cursor}
     if pagination.type == "page":
+        if pagination.page_param is None:
+            return None
         params: dict[str, Any] = {pagination.page_param: page + 1}
         if pagination.size_param and pagination.page_size:
             params[pagination.size_param] = pagination.page_size

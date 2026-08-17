@@ -83,10 +83,13 @@ def ephemeral_serve(
     if not artifact.exists():
         raise ServeGateError(f"artifact not found: {artifact}")
 
-    log_handle = open(log_path, "wb") if log_path else subprocess.DEVNULL  # noqa: SIM115
+    # Kept as a distinct Optional handle rather than a `file | DEVNULL` union,
+    # so the `finally` closes exactly what was opened. The union form typed as
+    # `BufferedWriter | int` and invited a `.close()` on the DEVNULL sentinel.
+    log_file = open(log_path, "wb") if log_path else None  # noqa: SIM115
     proc = subprocess.Popen(
         [binary, "serve", "--file", str(artifact), "--table", table, "--addr", addr],
-        stdout=log_handle,
+        stdout=log_file if log_file is not None else subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
     )
     if pidfile is not None:
@@ -97,8 +100,8 @@ def ephemeral_serve(
         yield proc.pid
     finally:
         _terminate(proc)
-        if log_handle is not subprocess.DEVNULL:
-            log_handle.close()
+        if log_file is not None:
+            log_file.close()
         if pidfile is not None:
             pidfile.unlink(missing_ok=True)
 

@@ -1,6 +1,6 @@
 # EVIDENCE — clickhouse / perf_1m
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T03:36:39Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T08:53:33Z.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -212,7 +212,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
   "addr": "127.0.0.1:8903",
-  "pid": 273088,
+  "pid": 725472,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -245,7 +245,7 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "400121a763434b2d65248ad858d08bff2083ebbd",
+    "commit": "c4122fd8c6332257fcc039ba93d4152d7b78d9db",
     "branch": "feat/meshforge-factory",
     "dirty": true
   },

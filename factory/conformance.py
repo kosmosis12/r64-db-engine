@@ -133,34 +133,52 @@ def compute_aggregates(table: Any, specs: list[dict[str, Any]]) -> dict[str, Any
         op = spec["op"]
         key = spec["ground_truth_key"]
         column = spec.get("column")
-        col = table.column(column) if column else None
+
+        # All three loop variables are bound as defaults, not captured. A
+        # closure over the loop variable would report whichever spec entry
+        # happened to be last when it fired — naming the wrong entry in an
+        # error whose entire job is to say which entry is wrong.
+        def need_column(gt_key: str = key, op_name: str = op, name: Any = column) -> Any:
+            """The column this op operates on, or a loud refusal.
+
+            Every op except `row_count` needs one. Resolving it through a
+            guard rather than an Optional keeps a spec that omits `column`
+            from failing later as an opaque `NoneType has no attribute
+            null_count` — which says nothing about which spec entry is wrong.
+            """
+            if not name:
+                raise SystemExit(
+                    f"spec entry for {gt_key!r} uses op {op_name!r}, which requires a "
+                    f"'column', but none is declared."
+                )
+            return table.column(name)
 
         if op == "row_count":
             out[key] = table.num_rows
         elif op == "nunique":
-            out[key] = int(pc.count_distinct(_decoded(col)).as_py())
+            out[key] = int(pc.count_distinct(_decoded(need_column())).as_py())
         elif op == "count_equals":
-            out[key] = int(pc.sum(pc.equal(_decoded(col), spec["value"])).as_py() or 0)
+            out[key] = int(pc.sum(pc.equal(_decoded(need_column()), spec["value"])).as_py() or 0)
         elif op == "sum_int":
-            out[key] = int(pc.sum(col).as_py())
+            out[key] = int(pc.sum(need_column()).as_py())
         elif op == "max_int":
-            out[key] = int(pc.max(col).as_py())
+            out[key] = int(pc.max(need_column()).as_py())
         elif op == "null_count":
-            out[key] = int(col.null_count)
+            out[key] = int(need_column().null_count)
         elif op == "null_pct":
-            out[key] = 100.0 * col.null_count / table.num_rows if table.num_rows else 0.0
+            out[key] = 100.0 * need_column().null_count / table.num_rows if table.num_rows else 0.0
         elif op == "scaled_sum_exact_int":
             # THE AUTHORITY. Round each value to an integer number of minor
             # units first, then sum in int64. Integer addition is associative,
             # so this is order-independent and reproducible across any scan
             # order the source happens to use.
-            values = np.asarray(col.to_numpy(zero_copy_only=False), dtype="float64")
+            values = np.asarray(need_column().to_numpy(zero_copy_only=False), dtype="float64")
             out[key] = int(np.rint(values[~np.isnan(values)] * spec["scale"]).astype("int64").sum())
         elif op == "scaled_sum_float":
             # Corroborating only. Sums in float64 and scales at the end, which
             # is the order-SENSITIVE form the ground-truth file records
             # alongside the exact-int one.
-            values = np.asarray(col.to_numpy(zero_copy_only=False), dtype="float64")
+            values = np.asarray(need_column().to_numpy(zero_copy_only=False), dtype="float64")
             out[key] = int(round(float(np.nansum(values)) * spec["scale"]))
         else:
             raise SystemExit(
@@ -390,13 +408,19 @@ def apply_work_dir(doc: dict[str, Any], work_dir: Path | None) -> dict[str, Any]
 def run(args: argparse.Namespace) -> int:
     config_path = Path(args.config).resolve()
     doc = load_yaml(config_path)
-    dialect = args.dialect or doc.get("dialect")
-    if doc.get("dialect") != dialect:
+    declared = doc.get("dialect")
+    if args.dialect and declared != args.dialect:
         raise SystemExit(
-            f"--dialect {dialect!r} does not match the target's own dialect "
-            f"{doc.get('dialect')!r} in {config_path}. Refusing to run a battery whose "
+            f"--dialect {args.dialect!r} does not match the target's own dialect "
+            f"{declared!r} in {config_path}. Refusing to run a battery whose "
             f"label disagrees with what it is about to pull."
         )
+    if not isinstance(declared, str) or not declared:
+        raise SystemExit(f"{config_path}: `dialect` is missing or not a string")
+    # Narrowed to `str` here, once, so everything downstream — the registry
+    # check, the probe lookup, the evidence pack — takes the concrete type its
+    # signature declares instead of an Optional threaded through twelve calls.
+    dialect: str = declared
 
     spec = resolve_spec(config_path, dialect, Path(args.spec).resolve() if args.spec else None)
     ground_truth_doc = json.loads(Path(args.ground_truth).read_text())

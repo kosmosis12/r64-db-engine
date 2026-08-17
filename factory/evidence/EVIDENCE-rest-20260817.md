@@ -1,6 +1,6 @@
 # EVIDENCE — rest / open_meteo_berlin_hourly
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T03:36:45Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T08:53:39Z.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -195,7 +195,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT count(*), min(time), max(time) FROM open_meteo_berlin_hourly",
   "addr": "127.0.0.1:8903",
-  "pid": 273326,
+  "pid": 725716,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -228,7 +228,7 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "400121a763434b2d65248ad858d08bff2083ebbd",
+    "commit": "c4122fd8c6332257fcc039ba93d4152d7b78d9db",
     "branch": "feat/meshforge-factory",
     "dirty": true
   }

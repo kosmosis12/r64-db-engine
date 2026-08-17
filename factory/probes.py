@@ -151,9 +151,12 @@ class RestRecipeProbe:
     """
 
     def __init__(self, block: dict[str, Any]) -> None:
-        self._book_path = block.get("recipe_book")
-        if not self._book_path:
+        book_path = block.get("recipe_book")
+        if not book_path:
             raise ProbeError("rest probe requires `recipe_book` in the `rest:` config block")
+        # Narrowed to `str` at the boundary, once, rather than re-narrowed (or
+        # not) at each use site downstream.
+        self._book_path: str = str(book_path)
         self._issued: list[str] = []
         self._book: dict[str, Any] | None = None
         self._terminal: tuple[Any, dict[str, Any]] | None = None
@@ -222,7 +225,13 @@ class RestRecipeProbe:
 
         payload, recipe = self._run_thread()
         extract = recipe.get("extract")
-        node = _dotted(payload, extract["path"] if isinstance(extract, dict) else extract)
+        extract_path = extract["path"] if isinstance(extract, dict) else extract
+        if not isinstance(extract_path, str):
+            raise ProbeError(
+                f"recipe {recipe.get('name')!r} has no usable `extract` path; the probe cannot "
+                f"locate the records to take bounds from"
+            )
+        node = _dotted(payload, extract_path)
 
         if isinstance(node, dict):  # columnar
             values = [v for v in node.get(field, []) if v is not None]
