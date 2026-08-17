@@ -734,7 +734,7 @@ rebinding server from a static config file.
 | Suite (local) | **791 passed / 66 skipped** |
 | With `--integration` | see below |
 | `ruff check src tests factory` | clean |
-| `mypy src factory` | clean, 47 files |
+| `mypy src factory` | clean, 46 files |
 | Both greps | **0** · `core/` untouched |
 | Both packs | ratify `246911c`, clean tree, `ratifies_head: true`, 14 security mutations |
 
