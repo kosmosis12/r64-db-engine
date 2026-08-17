@@ -754,8 +754,19 @@ def write_pack(pack: EvidencePack, evidence_dir: Path, *, date: str | None = Non
     stem = f"EVIDENCE-{pack.dialect}-{stamp}"
     json_path = evidence_dir / f"{stem}.json"
     md_path = evidence_dir / f"{stem}.md"
-    json_path.write_text(json.dumps(pack.as_dict(), indent=2, sort_keys=False) + "\n")
-    md_path.write_text(render_markdown(pack))
+    # Atomic per file, same idiom as the manifest: `write_text` truncates before
+    # writing, so a crash between the two would leave a pack that is a fragment
+    # under the real name — read as evidence by anything that finds it.
+    #
+    # WHAT THIS DOES NOT GIVE: the PAIR is not atomic. A crash between the two
+    # calls leaves a complete `.json` and a stale or absent `.md`. Each file is
+    # individually whole, which is what matters for parsing, and the `.json` is
+    # the machine form the tooling reads — but the two can disagree by one run.
+    # Recorded as D-13 rather than papered over; genuine pair atomicity needs a
+    # staging directory and a single rename, which is more machinery than the
+    # failure justifies.
+    atomic_write_text(json_path, json.dumps(pack.as_dict(), indent=2, sort_keys=False) + "\n")
+    atomic_write_text(md_path, render_markdown(pack))
     return json_path, md_path
 
 

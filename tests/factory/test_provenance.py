@@ -22,6 +22,11 @@ import pytest
 from factory import conformance, evidence
 from factory.battery import PASS, CheckResult
 
+# Captured at import, before any test monkeypatches `conformance.REPO_ROOT`.
+# Read-only uses (reading committed targets, specs and ground truth) go through
+# this; nothing writes into it.
+REAL_REPO = Path(__file__).resolve().parents[2]
+
 # ---------------------------------------------------------------------------
 # The refusal
 # ---------------------------------------------------------------------------
@@ -322,40 +327,58 @@ def test_a_none_input_is_not_an_error(tmp_path: Path) -> None:
     evidence.assert_inputs_outside_evidence({"recipe_book": None}, tmp_path)
 
 
-def test_the_cli_refuses_a_laundered_target_and_writes_no_pack(tmp_path: Path) -> None:
+def test_the_cli_refuses_a_laundered_target_and_writes_no_pack(
+    tmp_path: Path, monkeypatch
+) -> None:
     """End to end through the real CLI: refusal, non-zero exit, no pack.
 
-    Requires a git checkout, because `assert_clean_tree` runs first and refuses
-    outright without one — skipped with a reason rather than failing for an
-    unrelated refusal, which is what happened when this ran from a copy with no
-    `.git`.
+    THE FIXTURE LIVES IN `tmp_path`, NEVER IN THE CHECKOUT. An earlier version
+    created `factory/evidence/_test_hostile/` inside the repository, which made
+    the test unrunnable against a read-only checkout — the F-10 class again: it
+    asserted something about the environment it happened to run in.
+
+    `conformance.REPO_ROOT` is monkeypatched to a throwaway tree, which is also
+    the honest shape: the laundering rule is *relative to a repository root*,
+    so the test should supply one rather than borrow the real one.
     """
     if not evidence._git_facts().get("commit"):
         pytest.skip("not a git checkout; the clean-tree refusal fires before this one")
 
-    hostile_dir = conformance.REPO_ROOT / "factory" / "evidence" / "_test_hostile"
-    hostile_dir.mkdir(parents=True, exist_ok=True)
-    hostile = hostile_dir / "rest-openmeteo.yaml"
-    try:
-        hostile.write_text(
-            (conformance.REPO_ROOT / "factory" / "targets" / "rest-openmeteo.yaml").read_text()
-        )
-        evidence_dir = tmp_path / "evidence"
-        with pytest.raises(SystemExit) as exc:
-            conformance.main([
-                "--dialect", "rest",
-                "--config", str(hostile),
-                "--ground-truth",
-                str(conformance.REPO_ROOT / "bench" / "GROUND-TRUTH-openmeteo.json"),
-                "--table", "open_meteo_berlin_hourly",
-                "--allow-dirty",
-                "--evidence-dir", str(evidence_dir),
-            ])
-        assert "inside" in str(exc.value)
-        assert not evidence_dir.exists(), "a pack was written despite the refusal"
-    finally:
-        hostile.unlink(missing_ok=True)
-        hostile_dir.rmdir()
+    fake_root = tmp_path / "repo"
+    (fake_root / "factory" / "evidence").mkdir(parents=True)
+    (fake_root / "factory" / "targets").mkdir(parents=True)
+
+    hostile = fake_root / "factory" / "evidence" / "rest-openmeteo.yaml"
+    hostile.write_text(
+        (conformance.REPO_ROOT / "factory" / "targets" / "rest-openmeteo.yaml").read_text()
+    )
+    monkeypatch.setattr(conformance, "REPO_ROOT", fake_root)
+
+    evidence_dir = tmp_path / "evidence"
+    with pytest.raises(SystemExit) as exc:
+        conformance.main([
+            "--dialect", "rest",
+            "--config", str(hostile),
+            "--ground-truth", str(REAL_REPO / "bench" / "GROUND-TRUTH-openmeteo.json"),
+            "--table", "open_meteo_berlin_hourly",
+            "--allow-dirty",
+            "--spec", str(REAL_REPO / "factory" / "specs" / "openmeteo-schema.json"),
+            "--evidence-dir", str(evidence_dir),
+        ])
+
+    assert "inside" in str(exc.value)
+    assert not evidence_dir.exists(), "a pack was written despite the refusal"
+
+
+def test_the_laundering_test_writes_nothing_into_the_checkout() -> None:
+    """Guard on the guard: no test fixture may be created inside the repo.
+
+    The off-host replay did not catch the earlier version because it copied the
+    tree to a WRITABLE location — it varied the path but not the writability, so
+    creating a directory in the "checkout" simply worked. This asserts the
+    property directly instead of hoping a replay environment exposes it.
+    """
+    assert not (conformance.REPO_ROOT / "factory" / "evidence" / "_test_hostile").exists()
 
 
 # ---------------------------------------------------------------------------
