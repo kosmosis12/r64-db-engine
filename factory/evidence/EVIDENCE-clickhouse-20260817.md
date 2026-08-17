@@ -1,8 +1,8 @@
 # EVIDENCE — clickhouse / perf_1m
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T12:09:09Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T12:55:25Z.
 
-> Ratifies `246911cc1dba` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
+> Ratifies `7a007303a69b` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -214,7 +214,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
   "addr": "127.0.0.1:8903",
-  "pid": 1014831,
+  "pid": 1084913,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -247,11 +247,12 @@ counter deltas from the server's own get_flight_info app_metadata
   "allow_dirty": false,
   "artifact": {
     "bytes": 149806522,
-    "note": "artifact is 149806522 bytes, over the 8388608-byte copy limit; the sha256 above is the content address and the bytes are not committed",
+    "note": "artifact is 149806522 bytes, over the 8388608-byte copy limit; the sha256 above is the content address and the bytes are not committed. The manifest is rewritten each run, so no stored bytes are reused and verify-on-reuse does not apply.",
     "path": "factory/evidence/artifacts/db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a.manifest.json",
     "produced_at": "/tmp/r64-factory-sweep/clickhouse-meshbench/arrow_out/perf_1m.arrow",
     "sha256": "db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a",
     "storage": "content-addressed manifest",
+    "store_verified": true,
     "suffix": ".arrow"
   },
   "closure_boundary": [
@@ -280,14 +281,14 @@ counter deltas from the server's own get_flight_info app_metadata
   "command": ".venv/bin/python -m factory.conformance --dialect clickhouse --config /home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml --ground-truth /home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json --table perf_1m --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence --work-dir /tmp/r64-factory-sweep/clickhouse-meshbench --serve-gate",
   "git": {
     "branch": "feat/meshforge-factory",
-    "commit": "246911cc1dbaf80a5f597f6c8022d27f811d84cf",
+    "commit": "7a007303a69b3a62b0b3ed4d179319ed16907316",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"
   },
   "implementation": {
     "distribution_version": "0.1.0",
     "source_files": 46,
-    "source_sha256": "a7d75c3929f4e441720461b3f9585b554e47266fa4c4bdb1a609f0019a8f338b"
+    "source_sha256": "f73e5dd29174a4ad3c2fecae40c1af170002c5f0f13665453c6e7c1e1f1fb79b"
   },
   "inputs": {
     "ground_truth": {
@@ -345,7 +346,7 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "246911cc1dbaf80a5f597f6c8022d27f811d84cf",
+    "commit": "7a007303a69b3a62b0b3ed4d179319ed16907316",
     "branch": "feat/meshforge-factory",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"

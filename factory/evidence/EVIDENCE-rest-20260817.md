@@ -1,8 +1,8 @@
 # EVIDENCE — rest / open_meteo_berlin_hourly
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T12:09:15Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T12:55:31Z.
 
-> Ratifies `246911cc1dba` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
+> Ratifies `7a007303a69b` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -205,7 +205,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT count(*), min(time), max(time) FROM open_meteo_berlin_hourly",
   "addr": "127.0.0.1:8903",
-  "pid": 1015086,
+  "pid": 1085247,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -242,6 +242,7 @@ counter deltas from the server's own get_flight_info app_metadata
     "produced_at": "/tmp/r64-factory-sweep/rest-openmeteo/arrow_out/open_meteo_berlin_hourly.arrow",
     "sha256": "a16b8d2ed10a81a11ac9e7ddfb39e96d4afe0d6a22b8a1a3a4bcb61bf29870ca",
     "storage": "copied",
+    "store_verified": true,
     "suffix": ".arrow"
   },
   "closure_boundary": [
@@ -270,14 +271,14 @@ counter deltas from the server's own get_flight_info app_metadata
   "command": ".venv/bin/python -m factory.conformance --dialect rest --config /home/kos/builds/r64-db-engine/factory/targets/rest-openmeteo.yaml --ground-truth /home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-openmeteo.json --table open_meteo_berlin_hourly --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence --work-dir /tmp/r64-factory-sweep/rest-openmeteo --serve-gate",
   "git": {
     "branch": "feat/meshforge-factory",
-    "commit": "246911cc1dbaf80a5f597f6c8022d27f811d84cf",
+    "commit": "7a007303a69b3a62b0b3ed4d179319ed16907316",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"
   },
   "implementation": {
     "distribution_version": "0.1.0",
     "source_files": 46,
-    "source_sha256": "a7d75c3929f4e441720461b3f9585b554e47266fa4c4bdb1a609f0019a8f338b"
+    "source_sha256": "f73e5dd29174a4ad3c2fecae40c1af170002c5f0f13665453c6e7c1e1f1fb79b"
   },
   "inputs": {
     "ground_truth": {
@@ -338,7 +339,7 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "246911cc1dbaf80a5f597f6c8022d27f811d84cf",
+    "commit": "7a007303a69b3a62b0b3ed4d179319ed16907316",
     "branch": "feat/meshforge-factory",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"

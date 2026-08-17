@@ -3,9 +3,9 @@
 Branch: `feat/meshforge-factory` (off `main` @ `7820d18`)
 Session: 2026-08-16 → 2026-08-17 · Brief: `CC-BRIEF-meshforge-r64.md` · Index: `docs/MESHFORGE-SKILL-INDEX.md`
 
-**Status: all four gates met. Codex rounds 1 (§9) and 2 (§10) remediated.
-Round 2: Q2 CLEAN, Q1/Q3/Q4 BLOCK — all addressed. Re-pushed for round 3.
-NOT merged: merge remains blocked on the audit verdict per Law 2.**
+**Status: all four gates met. Codex rounds 1 (§9), 2 (§10) and 3 (§11)
+remediated. Round 3: Q1 CLEAN, Q2/Q3 BLOCK — both addressed. Re-pushed for
+round 4. NOT merged: merge remains blocked on the audit verdict per Law 2.**
 
 ---
 
@@ -752,4 +752,125 @@ Remediation commits:
 5991539 Q3(provenance): close the laundering path, state the closure boundary
 29b4b1e Q1(oracle): deny the stubs metadata, assert the full verdict vector
 981ec53 docs(closeout): record 369 with --integration after remediation
+```
+
+---
+
+## 11. Codex round 3 — verdicts and remediation
+
+Audit received 2026-08-17. **Q1 CLEAN · Q2 and Q3 BLOCK**, both accepted as
+within the bar. Addressed; branch re-pushed for round 4.
+
+| # | Question | Verdict | Remediation | SHA |
+|---|---|---|---|---|
+| **Q1** | Memorize-stub against the meta-harness | **CLEAN** | none — correctly ruled outside the frame | — |
+| **Q2** | Stored evidence reused without verification | **BLOCK** | verify-on-reuse, hard refusal, `--repair-store` | `f01843b` |
+| **Q3** | Credentials escaping at the error boundary | **BLOCK** | scrubber + claim rescope + NOTE cleanup | `7a00730` |
+
+### Q1 — CLEAN, and why the ruling is right
+
+Codex probed the meta-harness with a **memorize stub**: an adversary that
+records the verdict vectors it is shown and replays them on a later run. It
+ruled this outside the frame, and that is the correct call — a stub with
+persistent memory across invocations is not modelling a defective battery, it
+is modelling an attacker with write access to the test process. The fixtures
+defend against an oracle that *checks nothing*; they do not, and should not,
+claim to defend against one that has already been compromised.
+
+Recorded because a clean verdict on an adversarial probe is evidence, and the
+*reasoning* about scope is the part worth keeping — the next round should not
+have to re-derive why memorization is out of frame.
+
+### Q2 — a content-addressed name is a claim, not a guarantee
+
+`record_artifact` reused an existing store entry whenever the FILENAME matched,
+without ever reading it. A stored artifact that had been corrupted, truncated or
+edited kept its name, and the pack went on asserting that content address — an
+affirmative claim about bytes nobody had hashed.
+
+Now the destination is hashed before reuse: match → `store_verified: true`;
+mismatch → **hard refusal** naming the path and both hashes. Corrupted stored
+evidence is a provenance **finding**, not a cache miss, so the corrupted bytes
+are left in place — overwriting them silently would destroy the only trace that
+something had gone wrong with the archive. `--repair-store` re-copies from the
+freshly-hashed produced artifact and records `store_repaired` with both hashes,
+because a repair that left no trace would be indistinguishable from a run that
+never hit corruption.
+
+Ordering is explicit: the artifact is content-addressed **before** the pack is
+built, so a corrupt store refuses before any affirmative claim is assembled.
+
+**The large-artifact manifest route is structurally unaffected** — stated in the
+code and asserted in a test rather than left to inference. It rewrites its
+manifest from scratch every run, so no pre-existing content is ever trusted; it
+describes the produced artifact, which was hashed this run. A tampered manifest
+is simply overwritten and the record still verifies.
+
+Mutation-checked: with the hash bypassed the way the pre-fix code behaved, the
+corrupted entry is accepted silently — confirming the corruption tests measure
+the real check.
+
+### Q3 — the credential could come back out through an exception
+
+A secret is read at call time and placed in a header or query parameter, and
+then, on failure, came straight back out inside an exception message. For query
+auth this is acute: httpx renders the full request URL in transport errors, and
+that URL contains the key.
+
+A `Scrubber` now sits at every point the engine surfaces a transport or HTTP
+exception, a drift event, or a repair signal — using **both** literal
+replacement (including URL-encoded forms) **and** redaction by parameter name,
+since a client may re-serialize the value while the name stays stable.
+
+**The drift event is the one that matters.** Drift events and repair briefs are
+**agent-read**: the next agent opens the repair record in order to fix the
+connector, so a credential landing there is a credential in model context. The
+scrubber is Law 3 enforcement, not cosmetics.
+
+Every scrubbed re-raise uses `from None`. Chaining with `from exc` would print
+the original unscrubbed exception in the traceback and undo the scrubbing
+entirely — that is the way this fix could have been written and still leaked, so
+a test asserts the chain is severed. Mutation-proven: neuter `scrub` and the
+secret appears.
+
+**The claim, rescoped.** The old clause said secrets are "never in a log line,
+an error message, a recorded request" — false on two counts: nothing scrubbed
+errors, and "recorded request" reads as a claim about the wire. It is now an
+enumerated, individually tested list, and it states plainly that **the wire
+request necessarily carries the credential — that is what authentication is.**
+The guarantee is about where the secret can be OBSERVED afterwards.
+
+**NOTE cleanup, worse than a word.** The `r64-conformance` skill said "nine
+checks" and its table *listed* only nine: `recipe_security_invariants` had never
+been added when the battery grew to ten. Fixed, along with three staleness items
+found alongside — the missing `--allow-dirty` and `--repair-store` flags, a
+pack-reading guide that predated ALLOW-DIRTY/provenance/`store_verified`, and
+extend-the-battery instructions still describing the deleted
+`test_every_check_ran` rather than the registry-derived guards.
+
+### Verification after round 3
+
+| | result |
+|---|---|
+| Suite (local) | **812 passed / 66 skipped** |
+| `ruff check src tests factory` | clean |
+| `mypy src factory` | clean |
+| Both greps | **0** · `core/` untouched |
+| Both packs | ratify `7a00730`, clean tree, `ratifies_head: true`, `store_verified: true` |
+
+Both storage routes are exercised across the two packs: the rest artifact is
+**copied** and verified, the clickhouse artifact is a **content-addressed
+manifest**.
+
+### Claims after round 3
+
+**MF-01** and **MF-03** stand as rescoped in rounds 1–2; Q3's rescope tightened
+the recipe-engine credential clause behind MF-03 rather than the claim text.
+**MF-02** unchanged. All three remain **FENCED** pending round 4.
+
+Remediation commits:
+
+```
+7a00730 Q3(secrets): scrub credentials at the error boundary; rescope the claim
+f01843b Q2(evidence): verify a stored artifact before reusing its content address
 ```
