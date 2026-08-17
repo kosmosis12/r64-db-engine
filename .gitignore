@@ -27,6 +27,14 @@ htmlcov/
 # state / artifacts
 state.db
 *.ramdb
+# ...EXCEPT the golden byte-identity fixtures. `tests/core/test_ramdb_golden.py`
+# compares against these four files and calls them the no-behaviour-change
+# contract for customer-facing `.ramdb` output, so a failure there is
+# release-blocking. The blanket rule above meant they were never committed and
+# CI could not run that guard at all (red since 2026-08-14). ~1.9 KB total.
+# The single `*` does not cross `/`, so generated output under
+# tests/golden/ramdb/loading/ stays ignored.
+!tests/golden/ramdb/*.ramdb
 .r64-db-engine/
 
 .DS_Store
