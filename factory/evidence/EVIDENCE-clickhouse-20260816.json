@@ -3,12 +3,12 @@
   "tally": {
     "PASS": 9,
     "FAIL": 0,
-    "SKIPPED": 0
+    "SKIPPED": 1
   },
   "dialect": "clickhouse",
   "table": "perf_1m",
   "source": "SELECT * FROM meshbench.perf_1m ORDER BY row_id",
-  "generated_utc": "2026-08-17T02:41:33Z",
+  "generated_utc": "2026-08-17T03:02:10Z",
   "invocation": {
     "config": "/home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml",
     "ground_truth": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json",
@@ -34,12 +34,12 @@
       "pandas": "3.0.5",
       "pydantic": "2.13.4",
       "clickhouse_connect": "1.6.0",
-      "row64tools": "<no __version__>",
-      "jsonschema": "<not installed>",
-      "httpx": "<not installed>"
+      "row64tools": "1.0.11",
+      "jsonschema": "4.26.0",
+      "httpx": "0.28.1"
     },
     "git": {
-      "commit": "7820d1827e77b7a6d6f0200676698099b74fd06e",
+      "commit": "b6ca849b5b56d5011fea4dbf0b6e473362717a65",
       "branch": "feat/meshforge-factory",
       "dirty": true
     },
@@ -54,7 +54,7 @@
     {
       "name": "registry_admission",
       "status": "PASS",
-      "detail": "dialect 'clickhouse' against registry ['clickhouse', 'postgres']",
+      "detail": "dialect 'clickhouse' against registry ['clickhouse', 'postgres', 'rest']",
       "comparisons": [
         {
           "label": "resolved driver dialect_name()",
@@ -67,7 +67,8 @@
           "label": "dialect present in registry listing",
           "actual": [
             "clickhouse",
-            "postgres"
+            "postgres",
+            "rest"
           ],
           "expected": "contains 'clickhouse'",
           "ok": true,
@@ -84,14 +85,16 @@
           "label": "drivers.resolve: refusal lists registered dialects",
           "actual": [
             "clickhouse",
-            "postgres"
+            "postgres",
+            "rest"
           ],
           "expected": [
             "clickhouse",
-            "postgres"
+            "postgres",
+            "rest"
           ],
           "ok": true,
-          "note": "message: unknown dialect 'definitely-not-a-registered-dialect' (available: clickhouse, postgres)"
+          "note": "message: unknown dialect 'definitely-not-a-registered-dialect' (available: clickhouse, postgres, rest)"
         },
         {
           "label": "Config validation: refuses unregistered dialect",
@@ -104,14 +107,16 @@
           "label": "Config validation: refusal lists registered dialects",
           "actual": [
             "clickhouse",
-            "postgres"
+            "postgres",
+            "rest"
           ],
           "expected": [
             "clickhouse",
-            "postgres"
+            "postgres",
+            "rest"
           ],
           "ok": true,
-          "note": "message: 1 validation error for Config\n  Value error, unknown dialect 'definitely-not-a-registered-dialect' (registered: clickhouse, postgres) [type=value_error, input_value={'dialect': 'definitely-n...: 0, 'metrics_port': 0}}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error"
+          "note": "message: 1 validation error for Config\n  Value error, unknown dialect 'definitely-not-a-registered-dialect' (registered: clickhouse, postgres, rest) [type=value_error, input_value={'dialect': 'definitely-n...: 0, 'metrics_port': 0}}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error"
         }
       ],
       "queries": [],
@@ -532,6 +537,14 @@
       }
     },
     {
+      "name": "recipe_security_invariants",
+      "status": "SKIPPED",
+      "detail": "not a recipe-lane dialect; no recipe book to mutate",
+      "comparisons": [],
+      "queries": [],
+      "observations": {}
+    },
+    {
       "name": "zero_copy_serve_gate",
       "status": "PASS",
       "detail": "counter deltas from the server's own get_flight_info app_metadata",
@@ -603,7 +616,7 @@
         },
         "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
         "addr": "127.0.0.1:8903",
-        "pid": 188451,
+        "pid": 220005,
         "baseline": {
           "cache_hits": 0,
           "cache_misses": 0,

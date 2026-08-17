@@ -1,0 +1,455 @@
+{
+  "verdict": "PASS",
+  "tally": {
+    "PASS": 9,
+    "FAIL": 0,
+    "SKIPPED": 1
+  },
+  "dialect": "rest",
+  "table": "open_meteo_berlin_hourly",
+  "source": "open_meteo_berlin_hourly",
+  "generated_utc": "2026-08-17T03:02:16Z",
+  "invocation": {
+    "config": "/home/kos/builds/r64-db-engine/factory/targets/rest-openmeteo.yaml",
+    "ground_truth": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-openmeteo.json",
+    "spec": "/home/kos/builds/r64-db-engine/factory/specs/openmeteo-schema.json",
+    "serve_gate": true,
+    "source_endpoint": "recipe book open-meteo.yaml over geocoding-api.open-meteo.com, archive-api.open-meteo.com",
+    "source_timezone": "GMT",
+    "note": "data checks read pull 1; the serve gate, when run, reads the file as it stands after pull 2 (identical when the checksum check passes)"
+  },
+  "artifact": {
+    "path": "/tmp/r64-factory/rest-openmeteo/arrow_out/open_meteo_berlin_hourly.arrow",
+    "sha256_pull1": "a16b8d2ed10a81a11ac9e7ddfb39e96d4afe0d6a22b8a1a3a4bcb61bf29870ca",
+    "sha256_pull2": "a16b8d2ed10a81a11ac9e7ddfb39e96d4afe0d6a22b8a1a3a4bcb61bf29870ca",
+    "bytes": 36090,
+    "rows": 2160,
+    "blocks": 1
+  },
+  "environment": {
+    "python": "3.13.12",
+    "platform": "Linux-7.1.5-1-cachyos-x86_64-with-glibc2.44",
+    "packages": {
+      "pyarrow": "25.0.0",
+      "pandas": "3.0.5",
+      "pydantic": "2.13.4",
+      "clickhouse_connect": "1.6.0",
+      "row64tools": "1.0.11",
+      "jsonschema": "4.26.0",
+      "httpx": "0.28.1"
+    },
+    "git": {
+      "commit": "b6ca849b5b56d5011fea4dbf0b6e473362717a65",
+      "branch": "feat/meshforge-factory",
+      "dirty": true
+    }
+  },
+  "checks": [
+    {
+      "name": "registry_admission",
+      "status": "PASS",
+      "detail": "dialect 'rest' against registry ['clickhouse', 'postgres', 'rest']",
+      "comparisons": [
+        {
+          "label": "resolved driver dialect_name()",
+          "actual": "rest",
+          "expected": "rest",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "dialect present in registry listing",
+          "actual": [
+            "clickhouse",
+            "postgres",
+            "rest"
+          ],
+          "expected": "contains 'rest'",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "drivers.resolve: refuses unregistered dialect",
+          "actual": "raised",
+          "expected": "raised",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "drivers.resolve: refusal lists registered dialects",
+          "actual": [
+            "clickhouse",
+            "postgres",
+            "rest"
+          ],
+          "expected": [
+            "clickhouse",
+            "postgres",
+            "rest"
+          ],
+          "ok": true,
+          "note": "message: unknown dialect 'definitely-not-a-registered-dialect' (available: clickhouse, postgres, rest)"
+        },
+        {
+          "label": "Config validation: refuses unregistered dialect",
+          "actual": "raised",
+          "expected": "raised",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "Config validation: refusal lists registered dialects",
+          "actual": [
+            "clickhouse",
+            "postgres",
+            "rest"
+          ],
+          "expected": [
+            "clickhouse",
+            "postgres",
+            "rest"
+          ],
+          "ok": true,
+          "note": "message: 1 validation error for Config\n  Value error, unknown dialect 'definitely-not-a-registered-dialect' (registered: clickhouse, postgres, rest) [type=value_error, input_value={'dialect': 'definitely-n...: 0, 'metrics_port': 0}}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error"
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "schema_exactness",
+      "status": "PASS",
+      "detail": "2 columns, string-width tolerance ON (B-3)",
+      "comparisons": [
+        {
+          "label": "column count",
+          "actual": 2,
+          "expected": 2,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "column names and order",
+          "actual": [
+            "time",
+            "temperature_2m"
+          ],
+          "expected": [
+            "time",
+            "temperature_2m"
+          ],
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[time]",
+          "actual": "timestamp[us]",
+          "expected": "timestamp[us]",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "type[temperature_2m]",
+          "actual": "double",
+          "expected": "double",
+          "ok": true,
+          "note": ""
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "aggregate_parity",
+      "status": "PASS",
+      "detail": "5 aggregates vs ground truth",
+      "comparisons": [
+        {
+          "label": "count",
+          "actual": 2160,
+          "expected": 2160,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "count_temp_null",
+          "actual": 0,
+          "expected": 0,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "pct_temp_null",
+          "actual": 0.0,
+          "expected": 0.0,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "scaled_temp_sum_exact_int",
+          "actual": 41712,
+          "expected": 41712,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "scaled_temp_sum",
+          "actual": 41712,
+          "expected": 41712,
+          "ok": true,
+          "note": "corroborating only \u2014 does not gate (float-order sensitivity)"
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "rf002_null_discriminator",
+      "status": "SKIPPED",
+      "detail": "no nullable column to discriminate on: the open-meteo archive window 2026-01-01..2026-03-31 for Berlin returns 2160 hourly readings with zero nulls in temperature_2m (verified at the source), so no column can discriminate count(col) from count(*)",
+      "comparisons": [],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "b2_boundary",
+      "status": "PASS",
+      "detail": "boundary columns ['time'] vs live source (source session timezone: GMT)",
+      "comparisons": [
+        {
+          "label": "time: min",
+          "actual": "2026-01-01 00:00:00.000000",
+          "expected": "2026-01-01 00:00:00.000000",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "time: max",
+          "actual": "2026-03-31 23:00:00.000000",
+          "expected": "2026-03-31 23:00:00.000000",
+          "ok": true,
+          "note": ""
+        }
+      ],
+      "queries": [
+        "GET https://geocoding-api.open-meteo.com/v1/search?name=Berlin&count=1&format=json",
+        "GET https://archive-api.open-meteo.com/v1/archive?start_date=2026-01-01&end_date=2026-03-31&hourly=temperature_2m&timezone=UTC&latitude=52.52437&longitude=13.41053"
+      ],
+      "observations": {
+        "source_timezone": "GMT"
+      }
+    },
+    {
+      "name": "pg011_refusal",
+      "status": "PASS",
+      "detail": "refused with: sink 'arrow_ipc' cannot serve incremental mode (its output format is not appendable in place), but these tables request it: open_meteo_berlin_hourly. Use mode: full_refresh.",
+      "comparisons": [
+        {
+          "label": "incremental on non-appendable sink",
+          "actual": "raised",
+          "expected": "raised",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "refusal names the cause",
+          "actual": "sink 'arrow_ipc' cannot serve incremental mode (its output format is not appendable in place), but these tables request it: open_meteo_berlin_hourly. Use mode: full_refresh.",
+          "expected": "cannot serve incremental mode",
+          "ok": true,
+          "note": ""
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "block_structure",
+      "status": "PASS",
+      "detail": "1 blocks expected for 2160 rows at 65536/block",
+      "comparisons": [
+        {
+          "label": "block count",
+          "actual": 1,
+          "expected": 1,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "rows across blocks",
+          "actual": 2160,
+          "expected": 2160,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "block layout",
+          "actual": [
+            2160
+          ],
+          "expected": [
+            2160
+          ],
+          "ok": true,
+          "note": "65536-row blocks, final block carries the remainder"
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "checksum",
+      "status": "PASS",
+      "detail": "two consecutive same-lane pulls are byte-identical (sha256 a16b8d2ed10a81a1\u2026)",
+      "comparisons": [
+        {
+          "label": "sha256 (pull 1 vs pull 2)",
+          "actual": "a16b8d2ed10a81a11ac9e7ddfb39e96d4afe0d6a22b8a1a3a4bcb61bf29870ca",
+          "expected": "a16b8d2ed10a81a11ac9e7ddfb39e96d4afe0d6a22b8a1a3a4bcb61bf29870ca",
+          "ok": true,
+          "note": ""
+        }
+      ],
+      "queries": [],
+      "observations": {
+        "lane_scope": "byte-identity asserted WITHIN this lane only; cross-lane comparison uses data + schema-minus-metadata + block structure, with string-width tolerance"
+      }
+    },
+    {
+      "name": "recipe_security_invariants",
+      "status": "PASS",
+      "detail": "6 destination-pinning mutations, all of which must be refused",
+      "comparisons": [
+        {
+          "label": "https->http downgrade in recipe[0].url",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: recipe URL must use https, got http:// in 'http://geocoding-api.open-meteo.com/v1/search'. Plaintext is refused outright rather than warned about: a recipe carries an API key, and there is no configuration under which sending it in the clear is the intended behaviour."
+        },
+        {
+          "label": "lookalike host evil-geocoding-api.open-meteo.com against pinned geocoding-api.open-meteo.com",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: recipe host 'evil-geocoding-api.open-meteo.com' is not 'geocoding-api.open-meteo.com' nor a subdomain of it. The URL is pinned at recipe creation and runtime inputs may populate declared body/query parameters only \u2014 never the host or the path."
+        },
+        {
+          "label": "lookalike host evil-archive-api.open-meteo.com against pinned archive-api.open-meteo.com",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: recipe host 'evil-archive-api.open-meteo.com' is not 'archive-api.open-meteo.com' nor a subdomain of it. The URL is pinned at recipe creation and runtime inputs may populate declared body/query parameters only \u2014 never the host or the path."
+        },
+        {
+          "label": "templated url (host/path substitution)",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: recipes[geocode].url contains a template placeholder: 'https://geocoding-api.open-meteo.com/v1/search/{path}'. The URL is PINNED at recipe creation \u2014 runtime inputs may populate declared body/query parameters only, never the host or the path. A substitutable URL is a destination"
+        },
+        {
+          "label": "undeclared threading input",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeBookError: threading[1] supplies input(s) ['not_a_declared_param'] that recipe 'archive' does not declare in params_schema.properties (declared: ['end_date', 'hourly', 'latitude', 'longitude', 'start_date', 'timezone']). Runtime inputs may only populate DECLARED parameters."
+        },
+        {
+          "label": "loopback destination (SSRF)",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: recipe host resolves to 127.0.0.1 (loopback address space), which is refused. Reaching an internal service through a config-described call is the SSRF shape this fence exists to prevent."
+        }
+      ],
+      "queries": [],
+      "observations": {}
+    },
+    {
+      "name": "zero_copy_serve_gate",
+      "status": "PASS",
+      "detail": "counter deltas from the server's own get_flight_info app_metadata",
+      "comparisons": [
+        {
+          "label": "cold: copied_columns",
+          "actual": 0,
+          "expected": 0,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "warm: copied_columns",
+          "actual": 0,
+          "expected": 0,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "cold: zero_copy_columns == columns_decoded",
+          "actual": "1 vs 1",
+          "expected": "equal",
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "cold: columns actually decoded",
+          "actual": 1,
+          "expected": "> 0",
+          "ok": true,
+          "note": "a cold pass that decodes nothing did not exercise the reader"
+        },
+        {
+          "label": "warm: miss_rate %",
+          "actual": 0.0,
+          "expected": 0.0,
+          "ok": true,
+          "note": ""
+        },
+        {
+          "label": "warm: columns_decoded",
+          "actual": 0,
+          "expected": 0,
+          "ok": true,
+          "note": "stronger than miss_rate: a warm pass must decode nothing at all"
+        }
+      ],
+      "queries": [],
+      "observations": {
+        "cold_delta": {
+          "cache_hits": 0,
+          "cache_misses": 1,
+          "columns_decoded": 1,
+          "blocks_assembled": 1,
+          "zero_copy_columns": 1,
+          "copied_columns": 0,
+          "bytes_read": 17280,
+          "bytes_served_cached": 0
+        },
+        "warm_delta": {
+          "cache_hits": 1,
+          "cache_misses": 0,
+          "columns_decoded": 0,
+          "blocks_assembled": 1,
+          "zero_copy_columns": 0,
+          "copied_columns": 0,
+          "bytes_read": 0,
+          "bytes_served_cached": 17280
+        },
+        "sql": "SELECT count(*), min(time), max(time) FROM open_meteo_berlin_hourly",
+        "addr": "127.0.0.1:8903",
+        "pid": 220303,
+        "baseline": {
+          "cache_hits": 0,
+          "cache_misses": 0,
+          "columns_decoded": 0,
+          "blocks_assembled": 0,
+          "zero_copy_columns": 0,
+          "copied_columns": 0,
+          "bytes_read": 0,
+          "bytes_served_cached": 0
+        },
+        "rows": 1
+      }
+    }
+  ]
+}

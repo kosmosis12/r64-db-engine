@@ -104,12 +104,20 @@ def collect_environment(container: str | None = None) -> dict[str, Any]:
     return env
 
 
+# Distribution names differ from import names for some packages, and the
+# version is read from installed metadata rather than from a `__version__`
+# attribute: `jsonschema` deprecated its attribute, and reading metadata does
+# not require importing the package at all.
+_DISTRIBUTION_NAMES = {"clickhouse_connect": "clickhouse-connect"}
+
+
 def _package_version(name: str) -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
     try:
-        module = __import__(name)
-    except ImportError:
+        return version(_DISTRIBUTION_NAMES.get(name, name))
+    except PackageNotFoundError:
         return "<not installed>"
-    return str(getattr(module, "__version__", "<no __version__>"))
 
 
 def _git_facts() -> dict[str, Any]:

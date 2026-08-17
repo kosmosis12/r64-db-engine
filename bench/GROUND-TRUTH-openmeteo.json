@@ -1,0 +1,58 @@
+{
+  "_comment": [
+    "Ground truth for the open-meteo recipe-lane dataset, captured AT THE SOURCE",
+    "with raw urllib \u2014 no engine, no httpx, no recipe machinery. A pipeline",
+    "checked against its own output proves only that it is self-consistent.",
+    "",
+    "STABILITY IS WHY THIS SOURCE WAS CHOSEN. open-meteo's ARCHIVE endpoint is a",
+    "reanalysis of a PAST window, so a fixed lat/lon and a fixed date range",
+    "return the same bytes on every call \u2014 verified by hashing two consecutive",
+    "responses before this file was written. The FORECAST endpoint could not be",
+    "used: it is recomputed continuously and its allowed date range moves with",
+    "the current date, so no committed expectation could survive.",
+    "",
+    "scaled_temp_sum_exact_int is the AUTHORITY: temperatures carry one decimal,",
+    "so round(t*10) is exact per value and integer addition is associative.",
+    "scaled_temp_sum corroborates only \u2014 summing float64 first is order-sensitive.",
+    "",
+    "count_temp_null is 0 on this window. That is a real observation, not an",
+    "omission: it is why the conformance spec declares zero RF-002",
+    "discriminators WITH a stated reason, which yields SKIPPED-with-reason",
+    "rather than a silent pass."
+  ],
+  "source": {
+    "dialect": "rest",
+    "recipe_book": "factory/recipes/open-meteo.yaml",
+    "endpoints": [
+      "geocoding-api.open-meteo.com/v1/search",
+      "archive-api.open-meteo.com/v1/archive"
+    ],
+    "auth": "none (public, unauthenticated)",
+    "geocoded": {
+      "place": "Berlin",
+      "latitude": 52.52437,
+      "longitude": 13.41053
+    },
+    "window_utc": [
+      "2026-01-01",
+      "2026-03-31"
+    ],
+    "provider_timezone": "GMT",
+    "captured_utc": "2026-08-17"
+  },
+  "schema": {
+    "time": "timestamp[us] (UTC)",
+    "temperature_2m": "double"
+  },
+  "tables": {
+    "open_meteo_berlin_hourly": {
+      "count": 2160,
+      "count_temp_null": 0,
+      "pct_temp_null": 0.0,
+      "scaled_temp_sum_exact_int": 41712,
+      "scaled_temp_sum": 41712,
+      "min_time_utc": "2026-01-01T00:00",
+      "max_time_utc": "2026-03-31T23:00"
+    }
+  }
+}

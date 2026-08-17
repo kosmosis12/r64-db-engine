@@ -1,0 +1,44 @@
+# Conformance target: open-meteo recipe book -> ArrowIpcSink.
+#
+# A normal engine config, exactly like the clickhouse target: it validates
+# through `core.config.Config` untouched and would run under the daemon as-is.
+#
+# The `rest:` block names a BOOK BY PATH. The book is the compiled output of a
+# research phase — reviewed on its own, versioned on its own, and reusable
+# across deployments. Inlining it here would make every environment a separate
+# copy of the one thing that must not diverge.
+#
+# CREDENTIALS: none. Both open-meteo endpoints are public, so this target needs
+# no secret at all.
+#
+# No `dictionary_columns` and no `timestamp_unit`: the book declares
+# `timestamp[us]` and the engine produces `datetime64[us]` directly, so there is
+# no ns->us cast to configure. One fewer knob between source and artifact.
+
+dialect: rest
+
+rest:
+  recipe_book: factory/recipes/open-meteo.yaml
+
+row64:
+  loading_dir: /tmp/r64-factory/rest-openmeteo/loading
+  group: REST
+
+sink:
+  type: arrow_ipc
+  output_dir: /tmp/r64-factory/rest-openmeteo/arrow_out
+
+tables:
+  # `source` names the book's `dataset`. A config pointing at the wrong book is
+  # refused rather than quietly pulling something else.
+  - source: open_meteo_berlin_hourly
+    target: open_meteo_berlin_hourly
+    mode: full_refresh
+    cadence: 1h
+
+runtime:
+  state_dir: /tmp/r64-factory/rest-openmeteo/state
+
+telemetry:
+  health_port: 0
+  metrics_port: 0

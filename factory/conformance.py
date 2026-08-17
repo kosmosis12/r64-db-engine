@@ -231,6 +231,120 @@ def _sha256(path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+def recipe_security_outcomes(
+    doc: dict[str, Any], dialect: str
+) -> list[tuple[str, bool, str]] | None:
+    """Apply destination-pinning mutations to the ACTUAL shipped recipe book.
+
+    Returns `(mutation, refused, message)` per attempt, or None when the target
+    is not a recipe-lane dialect.
+
+    Mutating the shipped book rather than a fixture is the point. A fence that
+    is correct in `security.py` but never wired into the loader would pass
+    every unit test and admit every malicious book; this runs the mutations
+    through the real load path, against the real hosts this target ships.
+    """
+    if dialect != "rest":
+        return None
+    book_path = (doc.get("rest") or {}).get("recipe_book")
+    if not book_path:
+        return None
+
+    import yaml
+
+    from r64_db_engine.drivers.rest.recipes import parse_book
+    from r64_db_engine.drivers.rest.security import (
+        assert_host_allowed,
+        assert_public_host,
+        host_of,
+    )
+
+    path = Path(book_path)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    raw = yaml.safe_load(path.read_text())
+
+    def attempt(label: str, fn: Any) -> tuple[str, bool, str]:
+        """Refused == passed. Any exception is a refusal; returning is not."""
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - the refusal is the pass condition
+            return (label, True, f"{type(exc).__name__}: {exc}")
+        return (label, False, "accepted without error")
+
+    def mutated(fn: Any) -> dict[str, Any]:
+        book = json.loads(json.dumps(raw))
+        fn(book)
+        return book
+
+    outcomes: list[tuple[str, bool, str]] = []
+
+    # 1. https -> http. A downgrade must be refused at LOAD, not at call time.
+    outcomes.append(
+        attempt(
+            "https->http downgrade in recipe[0].url",
+            lambda: parse_book(
+                mutated(lambda b: b["recipes"][0].__setitem__(
+                    "url", b["recipes"][0]["url"].replace("https://", "http://", 1)
+                ))
+            ),
+        )
+    )
+
+    # 2. The literal evil-<host> case, against every host this book actually
+    #    pins. `endswith("checkr.com")` is TRUE for "evil-checkr.com", so a
+    #    suffix-matching implementation passes here and a boundary-matching one
+    #    does not.
+    for recipe in raw["recipes"]:
+        allowed = host_of(recipe["url"])
+        lookalike = f"evil-{allowed}"
+        outcomes.append(
+            attempt(
+                f"lookalike host {lookalike} against pinned {allowed}",
+                lambda a=allowed, lk=lookalike: assert_host_allowed(f"https://{lk}/v1/x", a),
+            )
+        )
+
+    # 3. A URL template placeholder — a destination an input could steer.
+    outcomes.append(
+        attempt(
+            "templated url (host/path substitution)",
+            lambda: parse_book(
+                mutated(lambda b: b["recipes"][0].__setitem__(
+                    "url", b["recipes"][0]["url"] + "/{path}"
+                ))
+            ),
+        )
+    )
+
+    # 4. A threading input the target recipe does not declare.
+    outcomes.append(
+        attempt(
+            "undeclared threading input",
+            lambda: parse_book(
+                mutated(lambda b: b["threading"][-1].setdefault("params", {}).__setitem__(
+                    "not_a_declared_param", 1
+                ))
+            ),
+        )
+    )
+
+    # 5. Private address space — the SSRF fence, checked on RESOLUTION rather
+    #    than on spelling.
+    outcomes.append(
+        attempt("loopback destination (SSRF)", lambda: assert_public_host("https://localhost/"))
+    )
+
+    # No "the shipped book still loads" control is recorded here. A loader that
+    # refused EVERYTHING would score a perfect result on the mutations above,
+    # so that control matters — but it has already been supplied, and more
+    # strongly, by the run itself: this check executes after two successful
+    # pulls of the real book, so if it did not load, every preceding check
+    # would already have failed. Recording it again as a pseudo-mutation would
+    # render as "REFUSED / REFUSED" in the pack and read as its own opposite.
+    return outcomes
+
+
 def build_config(doc: dict[str, Any]) -> Any:
     from r64_db_engine.core.config import Config
 
@@ -440,7 +554,10 @@ def run(args: argparse.Namespace) -> int:
         )
     )
 
-    # --- 9. Zero-copy serve gate (optional) --------------------------------
+    # --- 9. Recipe-lane security invariants --------------------------------
+    checks.append(battery.check_recipe_security(recipe_security_outcomes(doc, dialect)))
+
+    # --- 10. Zero-copy serve gate (optional) -------------------------------
     if args.serve_gate:
         sql_template = spec.get("serve_gate_sql")
         if not sql_template:

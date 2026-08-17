@@ -30,8 +30,12 @@ authenticate. It must never place one in a returned query string, an
 
 from __future__ import annotations
 
+import json
 import urllib.request
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlencode, urlsplit
 
 
 class ProbeError(RuntimeError):
@@ -130,8 +134,156 @@ class ClickHouseHttpProbe:
         return list(self._issued)
 
 
+class RestRecipeProbe:
+    """Probe an API described by a recipe book, WITHOUT the recipe engine.
+
+    Independence is the whole point of a probe, and it is sharper here than on
+    a database. The thing under test is the engine: its threading, its columnar
+    extraction, its UTC parsing. So this probe reimplements the minimum needed
+    to fetch the same data by a different route — raw `urllib`, `json`, and
+    hand-rolled binding — importing neither `httpx`, nor `jsonschema`, nor a
+    single function from `drivers/rest/engine.py`.
+
+    If both sides shared the parsing, a timezone bug would shift the artifact
+    and the "source truth" by the same eight hours and B-2 would pass while the
+    artifact was wrong. That is precisely the failure this check exists to
+    catch, so the duplication is deliberate and must not be refactored away.
+    """
+
+    def __init__(self, block: dict[str, Any]) -> None:
+        self._book_path = block.get("recipe_book")
+        if not self._book_path:
+            raise ProbeError("rest probe requires `recipe_book` in the `rest:` config block")
+        self._issued: list[str] = []
+        self._book: dict[str, Any] | None = None
+        self._terminal: tuple[Any, dict[str, Any]] | None = None
+
+    def _load(self) -> dict[str, Any]:
+        import yaml
+
+        if self._book is None:
+            path = Path(self._book_path).expanduser()
+            if not path.is_absolute():
+                path = Path(__file__).resolve().parents[1] / path
+            self._book = yaml.safe_load(path.read_text())
+        return self._book
+
+    def describe(self) -> str:
+        book = self._load()
+        hosts = [urlsplit(r["url"]).hostname for r in book.get("recipes", [])]
+        return f"recipe book {Path(self._book_path).name} over {', '.join(h or '?' for h in hosts)}"
+
+    def _get(self, url: str, params: dict[str, Any]) -> Any:
+        query = urlencode({k: v for k, v in params.items() if v is not None})
+        full = f"{url}?{query}" if query else url
+        if urlsplit(full).scheme != "https":
+            raise ProbeError(f"probe refuses a non-https URL: {full!r}")
+        self._issued.append(f"GET {full}")
+        try:
+            with urllib.request.urlopen(full, timeout=60) as resp:  # noqa: S310 - https asserted
+                return json.loads(resp.read().decode())
+        except Exception as exc:  # noqa: BLE001
+            raise ProbeError(f"rest probe failed for {full}: {exc}") from exc
+
+    def _run_thread(self) -> tuple[Any, dict[str, Any]]:
+        """Re-run the book's thread by hand. Returns (terminal payload, recipe).
+
+        Memoized: the boundary check and the timezone read both need the same
+        terminal payload, and a live API should be called once per run rather
+        than once per question.
+        """
+        if self._terminal is not None:
+            return self._terminal
+
+        book = self._load()
+        recipes = {r["name"]: r for r in book["recipes"]}
+        payloads: dict[str, Any] = {}
+        payload: Any = None
+        recipe: dict[str, Any] = {}
+
+        for step in book["threading"]:
+            recipe = recipes[step["recipe"]]
+            params = dict(recipe.get("static_params") or {})
+            params.update(step.get("params") or {})
+            for target, expression in (step.get("bind") or {}).items():
+                producer, _, rest = expression.partition(".")
+                params[target] = _dotted(payloads[producer], rest)
+            payload = self._get(recipe["url"], params)
+            payloads[recipe["name"]] = payload
+
+        self._terminal = (payload, recipe)
+        return self._terminal
+
+    def bounds(self, source: str, column: str) -> tuple[str, str]:
+        """min/max of a mapped output column, computed from the raw response."""
+        book = self._load()
+        mapping = {c["name"]: c["from"] for c in book["output"]["columns"]}
+        field = mapping.get(column, column)
+
+        payload, recipe = self._run_thread()
+        extract = recipe.get("extract")
+        node = _dotted(payload, extract["path"] if isinstance(extract, dict) else extract)
+
+        if isinstance(node, dict):  # columnar
+            values = [v for v in node.get(field, []) if v is not None]
+        else:  # records
+            values = [row.get(field) for row in node if row.get(field) is not None]
+        if not values:
+            raise ProbeError(f"rest probe found no values for column {column!r}")
+        return _canon(min(values)), _canon(max(values))
+
+    def session_timezone(self) -> str:
+        """What the PROVIDER says it answered in — the B-2 fact for an API.
+
+        A database reports a session timezone; an API reports one in its
+        payload. Recording it is what makes a matching pair of bounds mean
+        something: bounds that agree under a provider which quietly switched to
+        local time would agree and both be wrong.
+        """
+        payload, _ = self._run_thread()
+        if isinstance(payload, dict):
+            for key in ("timezone", "timezone_abbreviation"):
+                if isinstance(payload.get(key), str):
+                    return payload[key]
+        return ""
+
+    def queries(self) -> list[str]:
+        return list(self._issued)
+
+
+def _dotted(doc: Any, path: str) -> Any:
+    current = doc
+    for raw in path.split("."):
+        segment, _, rest = raw.partition("[")
+        if segment:
+            current = current[segment]
+        while rest:
+            index, _, rest = rest.partition("]")
+            rest = rest.lstrip("[")
+            current = current[int(index)]
+    return current
+
+
+def _canon(value: Any) -> str:
+    """Render a bound the way the battery canonicalizes artifact bounds.
+
+    open-meteo emits `2026-01-01T00:00` (no seconds). The artifact side renders
+    `%Y-%m-%d %H:%M:%S.%f`, so both are normalized to that here rather than
+    compared as the strings each side happens to produce.
+    """
+    text = str(value)
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S.%f",
+                "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d %H:%M:%S.%f")
+        except ValueError:
+            continue
+    return text
+
+
 PROBES: dict[str, type] = {
     "clickhouse": ClickHouseHttpProbe,
+    "rest": RestRecipeProbe,
 }
 
 

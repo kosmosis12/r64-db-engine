@@ -907,6 +907,60 @@ def check_serve_gate(
     )
 
 
+# ---------------------------------------------------------------------------
+# 10. Recipe-lane security invariants
+# ---------------------------------------------------------------------------
+
+
+def check_recipe_security(
+    outcomes: list[tuple[str, bool, str]] | None,
+    *,
+    skipped_reason: str = "",
+) -> CheckResult:
+    """Every destination-pinning mutation must be REFUSED.
+
+    Each outcome is `(mutation, refused, message)`. The check passes only if
+    every mutation was refused — which is the point: these are the only checks
+    in the battery whose pass condition is that something FAILED to happen.
+
+    A security invariant asserted only in the positive direction ("the benign
+    recipe works") tests nothing an absent fence would fail. So the battery
+    applies the malicious shapes to the ACTUAL SHIPPED BOOK — its real hosts,
+    its real URLs — rather than to a toy fixture, because a fence that holds in
+    a unit test and was never wired into the loader is exactly the gap this
+    catches.
+    """
+    if outcomes is None:
+        return CheckResult(
+            name="recipe_security_invariants",
+            status=SKIPPED,
+            detail=skipped_reason or "not a recipe-lane dialect; no recipe book to mutate",
+        )
+    if not outcomes:
+        return CheckResult(
+            name="recipe_security_invariants",
+            status=FAIL,
+            detail="a recipe book was present but no security mutation was attempted",
+        )
+
+    comparisons = [
+        Comparison(
+            mutation,
+            "REFUSED" if refused else "ACCEPTED",
+            "REFUSED",
+            refused,
+            note=message[:300],
+        )
+        for mutation, refused, message in outcomes
+    ]
+    return CheckResult(
+        name="recipe_security_invariants",
+        status=_verdict(comparisons),
+        detail=f"{len(outcomes)} destination-pinning mutations, all of which must be refused",
+        comparisons=comparisons,
+    )
+
+
 __all__ = [
     "BLOCK_ROWS",
     "FAIL",
@@ -920,6 +974,7 @@ __all__ = [
     "check_block_structure",
     "check_checksum",
     "check_pg011_refusal",
+    "check_recipe_security",
     "check_registry_admission",
     "check_rf002_discriminator",
     "check_schema_exactness",

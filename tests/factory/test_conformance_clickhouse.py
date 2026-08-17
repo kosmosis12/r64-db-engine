@@ -62,7 +62,7 @@ def test_battery_is_green_end_to_end(green_run) -> None:
 
 
 def test_every_check_ran(green_run) -> None:
-    """The battery must not quietly shrink. Nine named checks, in order."""
+    """The battery must not quietly shrink. Ten named checks, in order."""
     _, pack = green_run
     assert [c["name"] for c in pack["checks"]] == [
         "registry_admission",
@@ -73,14 +73,22 @@ def test_every_check_ran(green_run) -> None:
         "pg011_refusal",
         "block_structure",
         "checksum",
+        "recipe_security_invariants",
         "zero_copy_serve_gate",
     ]
 
 
-def test_only_the_serve_gate_is_skipped_without_the_flag(green_run) -> None:
+def test_only_the_serve_gate_and_recipe_security_are_skipped_without_the_flag(green_run) -> None:
+    """`recipe_security_invariants` is skipped here with a reason — clickhouse
+    is not a recipe-lane dialect, so there is no book to mutate. The battery is
+    kept uniform across dialects rather than shorter for some, so a missing
+    check reads as a shrunken battery instead of as a different lane."""
     _, pack = green_run
-    skipped = [c["name"] for c in pack["checks"] if c["status"] == "SKIPPED"]
-    assert skipped == ["zero_copy_serve_gate"]
+    skipped = {c["name"] for c in pack["checks"] if c["status"] == "SKIPPED"}
+    assert skipped == {"zero_copy_serve_gate", "recipe_security_invariants"}
+    for check in pack["checks"]:
+        if check["status"] == "SKIPPED":
+            assert check["detail"], f"{check['name']} skipped without a reason"
 
 
 def test_the_run_actually_moved_a_million_rows(green_run) -> None:

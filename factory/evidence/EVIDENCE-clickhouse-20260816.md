@@ -1,6 +1,6 @@
 # EVIDENCE — clickhouse / perf_1m
 
-**VERDICT: PASS** — 9 passed, 0 failed, 0 skipped. Generated 2026-08-17T02:41:33Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T03:02:10Z.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -29,7 +29,7 @@
 
 | # | check | verdict | detail |
 |---|---|---|---|
-| 1 | `registry_admission` | PASS | dialect 'clickhouse' against registry ['clickhouse', 'postgres'] |
+| 1 | `registry_admission` | PASS | dialect 'clickhouse' against registry ['clickhouse', 'postgres', 'rest'] |
 | 2 | `schema_exactness` | PASS | 14 columns, string-width tolerance ON (B-3) |
 | 3 | `aggregate_parity` | PASS | 12 aggregates vs ground truth |
 | 4 | `rf002_null_discriminator` | PASS | 1 declared discriminator(s) on perf_1m: score |
@@ -37,20 +37,21 @@
 | 6 | `pg011_refusal` | PASS | refused with: sink 'arrow_ipc' cannot serve incremental mode (its output format is not appendable in place), but these tables request it: perf_1m. Use mode: full_refresh. |
 | 7 | `block_structure` | PASS | 16 blocks expected for 1000000 rows at 65536/block |
 | 8 | `checksum` | PASS | two consecutive same-lane pulls are byte-identical (sha256 db2912dfbd6a4233…) |
-| 9 | `zero_copy_serve_gate` | PASS | counter deltas from the server's own get_flight_info app_metadata |
+| 9 | `recipe_security_invariants` | SKIPPED | not a recipe-lane dialect; no recipe book to mutate |
+| 10 | `zero_copy_serve_gate` | PASS | counter deltas from the server's own get_flight_info app_metadata |
 
 ## 1. `registry_admission` — PASS
 
-dialect 'clickhouse' against registry ['clickhouse', 'postgres']
+dialect 'clickhouse' against registry ['clickhouse', 'postgres', 'rest']
 
 | comparison | actual | expected | ok | note |
 |---|---|---|:--:|---|
 | resolved driver dialect_name() | `clickhouse` | `clickhouse` | ok |  |
-| dialect present in registry listing | `["clickhouse", "postgres"]` | `contains 'clickhouse'` | ok |  |
+| dialect present in registry listing | `["clickhouse", "postgres", "rest"]` | `contains 'clickhouse'` | ok |  |
 | drivers.resolve: refuses unregistered dialect | `raised` | `raised` | ok |  |
-| drivers.resolve: refusal lists registered dialects | `["clickhouse", "postgres"]` | `["clickhouse", "postgres"]` | ok | message: unknown dialect 'definitely-not-a-registered-dialect' (available: clickhouse, postgres) |
+| drivers.resolve: refusal lists registered dialects | `["clickhouse", "postgres", "rest"]` | `["clickhouse", "postgres", "rest"]` | ok | message: unknown dialect 'definitely-not-a-registered-dialect' (available: clickhouse, postgres, rest) |
 | Config validation: refuses unregistered dialect | `raised` | `raised` | ok |  |
-| Config validation: refusal lists registered dialects | `["clickhouse", "postgres"]` | `["clickhouse", "postgres"]` | ok | message: 1 validation error for Config   Value error, unknown dialect 'definitely-not-a-registered-dialect' (registered: clickhouse, postgres) [type=value_error, input_value={'dialect': 'definitely-n...: 0, 'metrics_port': 0}}, input_type=dict]     For further information visit https://errors.pyd... |
+| Config validation: refusal lists registered dialects | `["clickhouse", "postgres", "rest"]` | `["clickhouse", "postgres", "rest"]` | ok | message: 1 validation error for Config   Value error, unknown dialect 'definitely-not-a-registered-dialect' (registered: clickhouse, postgres, rest) [type=value_error, input_value={'dialect': 'definitely-n...: 0, 'metrics_port': 0}}, input_type=dict]     For further information visit https://erro... |
 
 ## 2. `schema_exactness` — PASS
 
@@ -168,7 +169,11 @@ two consecutive same-lane pulls are byte-identical (sha256 db2912dfbd6a4233…)
 
 </details>
 
-## 9. `zero_copy_serve_gate` — PASS
+## 9. `recipe_security_invariants` — SKIPPED
+
+not a recipe-lane dialect; no recipe book to mutate
+
+## 10. `zero_copy_serve_gate` — PASS
 
 counter deltas from the server's own get_flight_info app_metadata
 
@@ -207,7 +212,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
   "addr": "127.0.0.1:8903",
-  "pid": 188451,
+  "pid": 220005,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -235,12 +240,12 @@ counter deltas from the server's own get_flight_info app_metadata
     "pandas": "3.0.5",
     "pydantic": "2.13.4",
     "clickhouse_connect": "1.6.0",
-    "row64tools": "<no __version__>",
-    "jsonschema": "<not installed>",
-    "httpx": "<not installed>"
+    "row64tools": "1.0.11",
+    "jsonschema": "4.26.0",
+    "httpx": "0.28.1"
   },
   "git": {
-    "commit": "7820d1827e77b7a6d6f0200676698099b74fd06e",
+    "commit": "b6ca849b5b56d5011fea4dbf0b6e473362717a65",
     "branch": "feat/meshforge-factory",
     "dirty": true
   },
