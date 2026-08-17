@@ -719,19 +719,35 @@ def test_a_redirect_is_refused_and_the_body_is_never_read(status: int) -> None:
     assert client.responses[0].closed
 
 
-def test_the_redirect_refusal_names_the_location_it_declined() -> None:
-    """A refusal that does not say WHERE it was being sent is not actionable."""
+def test_the_redirect_refusal_does_NOT_name_the_location() -> None:
+    """Inverted in round 6. The Location header is PROVIDER-CONTROLLED.
+
+    An earlier version asserted the refusal names where it was being sent, on
+    the reasoning that a refusal without a destination is not actionable. That
+    was wrong: a redirect target is chosen freely by the remote end and is under
+    no obligation to be a URL at all, so it is exactly the kind of value that
+    can carry a credential. Recipe + page + status identify the request without
+    it.
+    """
     book = make_book()
 
     class RedirectingClient(FakeClient):
         def send(self, request, stream=False):
             response = FakeResponse(
-                {}, status=302, headers={"location": "https://attacker.test/steal"})
+                {}, status=302,
+                headers={"location": f"https://attacker.test/steal?k={SECRET}"})
             self.responses.append(response)
             return response
 
-    with pytest.raises(engine.RecipeSecurityError, match="attacker.test"):
+    with pytest.raises(engine.RecipeSecurityError) as exc:
         engine.run_recipe(RedirectingClient([{}]), book.recipes["one"], {}, book)
+
+    text = str(exc.value)
+    assert "attacker.test" not in text
+    assert SECRET not in text
+    assert "Location is not reported" in text
+    # Still actionable without it.
+    assert "page 1" in text and "302" in text
 
 
 def test_the_engine_client_disables_redirect_following() -> None:
@@ -1289,8 +1305,10 @@ def test_the_refusal_names_the_rule_and_the_component_category_only() -> None:
 
     with pytest.raises(engine.RecipeSecurityError) as exc:
         confine_next_url("https://evil.example.com/v1/items?t=abc", pinned, [])
-    assert "host outside pinned set: evil.example.com" in str(exc.value)
-    assert "t=abc" not in str(exc.value)
+    text = str(exc.value)
+    assert "pinned: api.example.com" in text, "the PINNED value must be named"
+    assert "evil.example.com" not in text, "the candidate host was rendered"
+    assert "t=abc" not in text
 
     with pytest.raises(engine.RecipeSecurityError) as exc:
         confine_next_url("https://api.example.com/v1/secret-token-path?t=abc", pinned, [])
@@ -1388,3 +1406,181 @@ def test_a_clean_structural_refusal_keeps_its_original_traceback(query_auth_book
         engine.run_recipe(client, paged.recipes["one"], {}, paged)
     _assert_clean(str(exc.value))
     assert hostile not in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Round 6 Q2(c) — host-carried secret material, and same-host permitted params
+# ---------------------------------------------------------------------------
+
+# A marker that is unmistakably provider-controlled. If it appears in an
+# exception, a drift event or an artifact, provider bytes escaped.
+FOREIGN = "PROVIDERCHOSENMARKER"
+
+
+@pytest.mark.parametrize(
+    "label,hostile_host",
+    [
+        # The families §13's audit missed: the secret is in the HOST, which the
+        # round-5 message rendered in full.
+        ("secret prefix as a hostname label", f"{SECRET[:12]}.api.example.com"),
+        ("whole secret as a subdomain", f"{SECRET}.api.example.com"),
+        ("8-char prefix inside a label", f"{SECRET[:8]}-node.api.example.com"),
+        ("secret as the registrable name", f"{SECRET.replace('-', '')}.com"),
+    ],
+)
+def test_a_secret_CARRIED_IN_THE_HOST_never_reaches_any_sink(
+    query_auth_book, label: str, hostile_host: str
+) -> None:
+    """Round 5 rendered the canonicalized candidate host. That was the hole.
+
+    Being compared against a pinned value justifies the COMPARISON, not
+    PRINTING the thing compared. A host is provider-chosen: a label can carry a
+    secret prefix and a whole credential can be a subdomain — and DNS labels
+    survive canonicalization untouched.
+    """
+    paged = _query_auth_book_with_pagination(query_auth_book)
+    hostile = f"https://{hostile_host}/v1/items?p=2"
+    client = FakeClient(
+        [{"items": [{"id": 1}]}], headers=[{"link": f'<{hostile}>; rel="next"'}]
+    )
+
+    with pytest.raises(engine.RecipeSecurityError) as exc:
+        engine.run_recipe(client, paged.recipes["one"], {}, paged)
+
+    text = str(exc.value)
+    _assert_clean(text)
+    assert hostile_host not in text, "the candidate host was rendered"
+    assert hostile not in text
+    # BOTH DIRECTIONS: the pinned value MUST appear, so the assertion above
+    # cannot be satisfied by an empty or generic message.
+    assert "pinned: api.example.com" in text
+
+    artifacts = _repair_artifacts()
+    _assert_clean(artifacts)
+    assert hostile_host not in artifacts
+
+
+def test_a_FOREIGN_marker_in_the_candidate_host_never_appears(query_auth_book) -> None:
+    """Mutation-proof in the positive direction, per §13's lesson.
+
+    A marker that could only have come from the provider must be absent, AND
+    the pinned rendering must be present — an assertion that only checked
+    absence would be satisfied by a message that said nothing at all.
+    """
+    paged = _query_auth_book_with_pagination(query_auth_book)
+    client = FakeClient(
+        [{"items": [{"id": 1}]}],
+        headers=[{"link": f'<https://{FOREIGN}.example.com/v1/items>; rel="next"'}],
+    )
+    with pytest.raises(engine.RecipeSecurityError) as exc:
+        engine.run_recipe(client, paged.recipes["one"], {}, paged)
+    text = str(exc.value)
+    assert FOREIGN not in text
+    assert "pinned: api.example.com" in text
+
+
+def test_a_same_host_permitted_param_secret_is_absent_from_a_LATER_http_error(
+    query_auth_book,
+) -> None:
+    """The case scrubbing alone cannot cover.
+
+    A same-host `Link` passes confinement — it is the pinned endpoint — but its
+    QUERY is provider-chosen, and it can place secret material in any permitted
+    parameter, not just the registered auth one. If the next page then errors
+    and the message renders the URL, that material escapes. Redacting only the
+    auth parameter is the round-1 substring game: the guarantee has to be that
+    no URL is rendered at all.
+    """
+    paged = _query_auth_book_with_pagination(query_auth_book)
+    # Same host, same path — permitted. Secret smuggled into a NON-auth param.
+    smuggling = f"https://api.example.com/v1/items?cursor={SECRET}&{FOREIGN}=1"
+
+    class SecondPageErrors(FakeClient):
+        def send(self, request, stream=False):
+            response = FakeResponse(
+                {"items": [{"id": 1}]},
+                status=200 if not self.calls else 500,
+                headers={"link": f'<{smuggling}>; rel="next"'} if not self.calls else {},
+            )
+            self.calls.append((request.url, dict(request.params or {}), {}))
+            self.responses.append(response)
+            return response
+
+    with pytest.raises(engine.RecipeExecutionError) as exc:
+        engine.run_recipe(SecondPageErrors([{}, {}]), paged.recipes["one"], {}, paged)
+
+    text = str(exc.value)
+    assert SECRET not in text
+    assert FOREIGN not in text, "a permitted, non-auth query parameter escaped"
+    assert smuggling not in text
+    # Both directions: still identifies the request structurally.
+    assert "page 2" in text and "500" in text
+
+    artifacts = _repair_artifacts()
+    assert SECRET not in artifacts
+    assert FOREIGN not in artifacts
+
+
+def test_MUTATION_rendering_the_url_in_the_http_error_leaks_permitted_params(
+    query_auth_book, monkeypatch
+) -> None:
+    """Restore the round-5 message shape and the non-auth parameter escapes.
+
+    Confirms the tests above measure the no-URL rule rather than the scrubber:
+    the scrubber redacts the registered auth value, and the smuggled marker in a
+    different permitted parameter rides straight out.
+    """
+    scrubbed = engine.Scrubber.scrub
+
+    def leaky_http_error(self, text):
+        return scrubbed(self, text)
+
+    monkeypatch.setattr(engine.Scrubber, "scrub", leaky_http_error)
+
+    # Simulate the old behaviour directly: the URL interpolated into the message.
+    url = f"https://api.example.com/v1/items?cursor={SECRET}&{FOREIGN}=1"
+    scrubber = engine.Scrubber()
+    scrubber.register_secret(SECRET)
+    scrubber.register_auth_key("api_key")
+    old_style = scrubber.scrub(f"recipe 'one' returned HTTP 500 for {url}")
+
+    assert SECRET not in old_style, "the scrubber does catch the literal"
+    assert FOREIGN in old_style, (
+        "the marker in a permitted non-auth parameter survives scrubbing — which is "
+        "why no URL may be rendered at all"
+    )
+
+
+def test_no_raise_site_in_the_rest_driver_interpolates_a_url() -> None:
+    """A structural audit, so a future raise cannot quietly reintroduce one.
+
+    Greps the driver package for the interpolation shapes that carry
+    provider-controlled content into a message.
+    """
+    import re
+    from pathlib import Path as _P
+
+    package = _P(engine.__file__).parent
+    banned = re.compile(r"\{url\}|\{url!r\}|\{next_url|\{location|\{candidate_host|candidate\.path\}")
+    offenders: list[str] = []
+    for path in sorted(package.glob("*.py")):
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if banned.search(line):
+                offenders.append(f"{path.name}:{number}: {stripped[:90]}")
+    assert not offenders, "provider-controlled interpolation reintroduced:\n" + "\n".join(offenders)
+
+
+def test_drift_events_carry_no_query_string(query_auth_book) -> None:
+    """Drift events record structurally; the only URL field is the AUTHORED
+    recipe URL, which has no query and no provider bytes."""
+    paged = _query_auth_book_with_pagination(query_auth_book)
+    client = FakeClient([{"wrong": []}])
+    with pytest.raises(engine.ResponseValidationError):
+        engine.run_recipe(client, paged.recipes["one"], {}, paged)
+
+    for event in drift.read_events("demo"):
+        assert "?" not in event["url"], "a drift event carried a query string"
+        assert event["url"] == paged.recipes["one"].url

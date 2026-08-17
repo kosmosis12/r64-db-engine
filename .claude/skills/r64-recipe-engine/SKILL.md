@@ -162,27 +162,40 @@ the benign one.
    - **Read at call time from a 0600 path.** A group- or world-readable file is
      refused before any call is made.
    - **Header auth never reaches the query string** (and vice versa).
-   - **Every engine-raised error that can carry provider-controlled content is
-     STRUCTURAL — this is the primary defence.** It reports the violated rule
-     and the offending component CATEGORY, never the content. Literal scrubbing
-     is the backstop, never the guarantee. Two families, one rule:
+   - **THE GUARANTEE:** *engine-raised errors, drift events, and repair
+     artifacts contain no provider-controlled bytes. Refusals name
+     pinned/authored values only. Scrubbing is defense-in-depth behind that
+     guarantee, not the guarantee.*
 
-     - *Validation errors.* A schema violation reports the instance PATH, the
-       violated CONSTRAINT and the schema path — never the failing VALUE.
-       jsonschema's own message embeds the instance and is never propagated.
-     - *Security refusals.* A refusal about a provider-controlled URL names the
-       rule and the category — `non-https scheme`, `userinfo present`,
-       `host outside pinned set: <canonicalized-host>`, `path outside the
-       declared set` — and never the candidate URL, its query, its path or its
-       userinfo. The candidate is not recorded anywhere. The canonicalized host
-       is the single permitted exception, because it is compared against
-       pinned-known values: naming it identifies which allowlist decision fired
-       without disclosing anything the provider chose freely.
+     Concretely, and with **no exceptions**:
+
+     - *Validation errors* report the instance PATH, the violated CONSTRAINT
+       and the schema path — never the failing VALUE. jsonschema's own message
+       embeds the instance and is never propagated.
+     - *Security refusals* name the rule and the PINNED side: `non-https
+       scheme`, `userinfo present`, `host outside pinned set (pinned: <authored
+       host>)`, `path outside the declared set (declared: [...])`. The
+       candidate host, port, path, query and userinfo are never rendered.
+     - *No URLs anywhere.* A request is identified structurally — recipe name,
+       page ordinal, violated rule, HTTP status. Not even for an HTTP error on
+       a page whose URL passed confinement: a same-host `Link` can place secret
+       material in any PERMITTED query parameter, and redacting only the
+       registered auth parameter is a substring game the provider chooses the
+       inputs to.
+
+     An earlier version of this clause allowed the canonicalized candidate host
+     to be printed, on the reasoning that it was compared against pinned-known
+     values. That was wrong, and the correction is the general lesson: **being
+     compared against a pinned value justifies the COMPARISON, not PRINTING the
+     thing compared.** A DNS label survives canonicalization untouched, so a
+     secret prefix — or a whole credential as a subdomain — passes straight
+     through it.
 
      This kills the credential-echo class outright. A provider echoing a
-     submitted key back — in a response body, or in a `Link: rel="next"` header
-     — is REMOTE behaviour the engine cannot control, so the engine simply never
-     puts provider-controlled content into messages.
+     submitted key back — in a response body, in a `Link: rel="next"` header, in
+     a `Location`, in a hostname — is REMOTE behaviour the engine cannot
+     control, so the engine never puts provider-controlled content into a
+     message at all.
    - **Scrubbing is the BACKSTOP, for everything the structural rule does not
      already cover.** A single boundary encloses the whole post-secret-load
      path — build_request, send, peer-check, read, decode, validate, **plus

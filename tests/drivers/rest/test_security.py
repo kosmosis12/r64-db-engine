@@ -79,8 +79,10 @@ def test_evil_checkr_com_is_refused() -> None:
     An attacker only has to register the lookalike. Suffix matching hands them
     the allowlist; matching on the dot-delimited label boundary does not.
     """
-    with pytest.raises(RecipeSecurityError, match="not 'checkr.com'"):
+    with pytest.raises(RecipeSecurityError, match="not the allowed host 'checkr.com'") as exc:
         assert_host_allowed("https://evil-checkr.com/v1/x", "checkr.com")
+    # The ALLOWED host is named; the candidate never is.
+    assert "evil-checkr.com" not in str(exc.value)
 
 
 @pytest.mark.parametrize(
@@ -222,10 +224,14 @@ def test_a_subdomain_next_url_is_refused_even_though_the_host_rule_allows_it() -
     # ...and the pagination rule does not.
     with pytest.raises(RecipeSecurityError, match="host outside pinned set") as exc:
         confine_next_url(steered, PINNED, [])
-    # Structural: the canonicalized host is named (it is compared against a
-    # pinned-known value), the candidate URL is not.
-    assert "attacker.api.example.com" in str(exc.value)
-    assert steered not in str(exc.value)
+    text = str(exc.value)
+    # TERMINAL FORM: the PINNED host is named, the candidate never is. Being
+    # compared against a pinned value justifies the comparison, not printing
+    # the thing compared — a host label can carry a secret prefix, and a whole
+    # credential can be a subdomain.
+    assert "pinned: api.example.com" in text
+    assert "attacker" not in text
+    assert steered not in text
 
 
 def test_a_different_path_is_refused_by_default() -> None:

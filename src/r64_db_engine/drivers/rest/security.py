@@ -27,13 +27,20 @@ accepted. A security check with no failing fixture is decoration.
    rebuilding the URL from vetted parts so the candidate never reaches the
    client. Cross-path pagination requires an explicit `allowed_next_paths`
    declaration in the recipe book; absent it, refused.
-8. **Refusals about provider-controlled URLs are STRUCTURAL.** They name the
-   violated rule and the offending component CATEGORY, never the content — the
-   candidate URL, its query, its path and its userinfo are not reported and not
-   recorded. The canonicalized host is the one exception, because it is compared
-   against pinned-known values. This is the same principle as value-free
-   validation errors, generalized: literal scrubbing is the backstop, never the
-   guarantee.
+8. **ZERO PROVIDER-CONTROLLED BYTES in engine-raised errors — no exceptions.**
+   Refusals name the violated rule and the PINNED/AUTHORED side only: the
+   candidate host, port, path, query and userinfo are never rendered, and no URL
+   appears in any message anywhere in this package. A request is identified
+   structurally — recipe name, page ordinal, violated rule, status.
+
+   An earlier version printed the canonicalized candidate host, reasoning that
+   it was compared against pinned-known values. That was wrong: being compared
+   against a pinned value justifies the COMPARISON, not PRINTING the thing
+   compared. DNS labels survive canonicalization untouched, so a secret prefix —
+   or an entire credential as a subdomain — passes straight through.
+
+   Drift events and repair artifacts are held to the same rule; scrubbing is
+   defense-in-depth behind the guarantee, never the guarantee itself.
 6. **No redirects.** A 302 is a destination change chosen by the remote end.
 7. **Rebinding closed at response time.** `engine._assert_connected_peer_was_vetted`
    reads the real peer off the live connection and requires it to be public AND
@@ -80,18 +87,21 @@ def assert_https(url: str) -> None:
     """
     scheme = urlsplit(url).scheme.lower()
     if scheme != "https":
+        # The URL is not rendered. This runs on authored URLs at load AND on
+        # request URLs whose query is provider-derived, and one rule for both is
+        # simpler to keep than a rule that depends on the caller.
         raise RecipeSecurityError(
-            f"recipe URL must use https, got {scheme or '<none>'}:// in {url!r}. "
-            f"Plaintext is refused outright rather than warned about: a recipe "
-            f"carries an API key, and there is no configuration under which "
-            f"sending it in the clear is the intended behaviour."
+            f"URL must use https, got scheme {scheme or '<none>'!r}. Plaintext is refused "
+            f"outright rather than warned about: a recipe carries an API key, and there is "
+            f"no configuration under which sending it in the clear is the intended "
+            f"behaviour. The URL is not reported."
         )
 
 
 def host_of(url: str) -> str:
     host = urlsplit(url).hostname
     if not host:
-        raise RecipeSecurityError(f"recipe URL has no hostname: {url!r}")
+        raise RecipeSecurityError("URL has no hostname (the URL is not reported)")
     return host.lower().rstrip(".")
 
 
@@ -118,9 +128,10 @@ def assert_host_allowed(url: str, allowed_host: str) -> None:
     if host.endswith("." + allowed):
         return
     raise RecipeSecurityError(
-        f"recipe host {host!r} is not {allowed!r} nor a subdomain of it. "
-        f"The URL is pinned at recipe creation and runtime inputs may populate "
-        f"declared body/query parameters only — never the host or the path."
+        f"host is not the allowed host {allowed!r} nor a subdomain of it. The URL is "
+        f"pinned at recipe creation and runtime inputs may populate declared body/query "
+        f"parameters only — never the host or the path. The candidate host is not "
+        f"reported: it can carry provider-chosen content."
     )
 
 
@@ -128,7 +139,10 @@ def resolve_addresses(host: str) -> list[str]:
     try:
         infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
-        raise RecipeSecurityError(f"could not resolve recipe host {host!r}: {exc}") from exc
+        # `exc` from getaddrinfo embeds the host; the category is reported instead.
+        raise RecipeSecurityError(
+            f"could not resolve host (DNS error {exc.errno}). The host is not reported."
+        ) from None
     # `sockaddr[0]` is typed `str | int` because the tuple shape differs across
     # address families; for AF_INET/AF_INET6 it is always the address string.
     # Coerced explicitly rather than left implicit, so `assert_public_address`
@@ -190,7 +204,7 @@ def assert_public_host(url: str) -> list[str]:
     host = host_of(url)
     addresses = resolve_addresses(host)
     if not addresses:
-        raise RecipeSecurityError(f"recipe host {host!r} resolved to no addresses")
+        raise RecipeSecurityError("host resolved to no addresses (the host is not reported)")
     for address in addresses:
         assert_public_address(address)
     return addresses
@@ -278,27 +292,35 @@ def confine_next_url(next_url: str, pinned_url: str, allowed_next_paths: list[st
     if not candidate_host:
         raise RecipeSecurityError("pagination next-URL rejected: no host in authority")
     if candidate_host != pinned_host:
-        # The canonicalized host is reportable: it is checked against a
-        # pinned-known value, so naming it identifies the decision without
-        # disclosing anything freely chosen.
+        # NAMES THE PINNED VALUE, NEVER THE CANDIDATE. An earlier version
+        # rendered the canonicalized candidate host on the argument that it was
+        # "compared against pinned-known values" — but being compared against a
+        # pinned value justifies the COMPARISON, not PRINTING the thing
+        # compared. A host is provider-chosen: labels can carry a secret prefix,
+        # a whole credential can be a subdomain. Zero provider-controlled bytes,
+        # no exceptions.
         raise RecipeSecurityError(
-            f"pagination next-URL rejected: host outside pinned set: {candidate_host}. "
-            f"Subdomain latitude is deliberately unavailable here — this URL came from the "
-            f"provider, not the recipe author."
+            f"pagination next-URL rejected: host outside pinned set "
+            f"(pinned: {pinned_host}). Subdomain latitude is deliberately unavailable "
+            f"here — this URL came from the provider, not the recipe author. The "
+            f"candidate host is not reported."
         )
     if candidate.port != pinned.port:
         raise RecipeSecurityError(
-            f"pagination next-URL rejected: port outside pinned set: {candidate.port}"
+            f"pagination next-URL rejected: port outside pinned set "
+            f"(pinned: {pinned.port if pinned.port is not None else 'default'}). "
+            f"The candidate port is not reported."
         )
 
     if candidate.path != pinned.path and candidate.path not in allowed_next_paths:
-        # The path itself is NOT reported: a provider can put a token in it.
+        # Names the DECLARED set — all authored values, all ours. The candidate
+        # path is never reported: a provider can place a token in it.
+        declared = [pinned.path, *sorted(allowed_next_paths)]
         raise RecipeSecurityError(
             f"pagination next-URL rejected: path outside the declared set "
-            f"({1 + len(allowed_next_paths)} permitted). Cross-path pagination must be "
-            f"declared at authoring time via allowed_next_paths; it is never inferred from "
-            f"what a provider sends. The candidate path is not reported — it is "
-            f"provider-controlled."
+            f"(declared: {declared}). Cross-path pagination must be declared at authoring "
+            f"time via allowed_next_paths; it is never inferred from what a provider "
+            f"sends. The candidate path is not reported."
         )
 
     return urlunsplit((pinned.scheme, pinned.netloc, candidate.path, candidate.query, ""))

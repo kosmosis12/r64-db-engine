@@ -261,11 +261,15 @@ def _parse_recipe(doc: dict[str, Any], index: int) -> Recipe:
     assert_https(url)
     allowed_host = host_of(url)
     if "{" in url or "}" in url:
+        # `{where}` already names the recipe, so the URL adds nothing an author
+        # cannot look up in their own book. One rule everywhere beats a rule
+        # that depends on whether the caller happens to be handling authored or
+        # provider content — the second kind is the kind that drifts.
         raise RecipeSecurityError(
-            f"{where}.url contains a template placeholder: {url!r}. The URL is PINNED at "
-            f"recipe creation — runtime inputs may populate declared body/query parameters "
-            f"only, never the host or the path. A substitutable URL is a destination an "
-            f"input can steer."
+            f"{where}.url contains a template placeholder. The URL is PINNED at recipe "
+            f"creation — runtime inputs may populate declared body/query parameters only, "
+            f"never the host or the path. A substitutable URL is a destination an input "
+            f"can steer. The URL is not reported."
         )
     assert_host_allowed(url, allowed_host)
 

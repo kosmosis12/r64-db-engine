@@ -397,7 +397,7 @@ def _parse_link_header(value: str, rel: str) -> str | None:
 
 
 def _assert_connected_peer_was_vetted(
-    response: Any, vetted: list[str], recipe: Recipe, url: str
+    response: Any, vetted: list[str], recipe: Recipe, page: int
 ) -> None:
     """The address we CONNECTED to must be the address we VALIDATED.
 
@@ -435,9 +435,10 @@ def _assert_connected_peer_was_vetted(
 
     if not peer:
         raise RecipeSecurityError(
-            f"recipe {recipe.name!r}: could not determine the connected peer address for "
-            f"{url}, so the validated-address check cannot be made. Refusing fail-closed — "
-            f"an unverifiable connection is treated as an unvetted one."
+            f"recipe {recipe.name!r} page {page}: could not determine the connected peer "
+            f"address, so the validated-address check cannot be made. Refusing fail-closed — "
+            f"an unverifiable connection is treated as an unvetted one. The URL is not "
+            f"reported."
         )
 
     # Re-checked independently of the vetted set: if the set were ever computed
@@ -460,6 +461,7 @@ def _request(
     params: dict[str, Any],
     book: RecipeBook,
     scrubber: Scrubber,
+    page: int,
 ) -> tuple[Any, Any]:
     """One HTTP call, with every destination invariant re-asserted first."""
     # Re-asserted per call rather than trusted from load: the URL being
@@ -500,12 +502,18 @@ def _request(
         # URL in transport errors, and for query auth that URL contains the key.
         # `from None` because chaining would put the unscrubbed original back in
         # the traceback.
+        # Structural identification only: recipe + page. The URL of a
+        # post-confinement page carries a PROVIDER-CHOSEN query, and scrubbing
+        # just the registered auth parameter is the round-1 substring game —
+        # a same-host Link can place secret prefixes in any permitted param.
         raise RecipeExecutionError(
-            scrubber.scrub(f"recipe {recipe.name!r} transport failure for {url}: ")
+            scrubber.scrub(
+                f"recipe {recipe.name!r} page {page} transport failure: "
+            )
             + scrubber.scrubbed(exc)
         ) from None
     try:
-        _assert_connected_peer_was_vetted(response, addresses, recipe, url)
+        _assert_connected_peer_was_vetted(response, addresses, recipe, page)
 
         # A 3xx is a DESTINATION CHANGE chosen by the remote end. Redirects are
         # disabled on the client, so httpx hands the 3xx back rather than
@@ -514,20 +522,21 @@ def _request(
         # which would report the wrong cause. Fail-closed and unread: nothing
         # from a redirecting response is parsed.
         if 300 <= response.status_code < 400:
-            location = response.headers.get("location", "<none>")
+            # The Location header is PROVIDER-CONTROLLED and is not reported —
+            # it is exactly the sort of value an attacker chooses freely, and a
+            # redirect target is under no obligation to be a URL at all.
             raise RecipeSecurityError(
-                scrubber.scrub(
-                    f"recipe {recipe.name!r} received HTTP {response.status_code} redirecting "
-                    f"to {location!r}. Redirects are refused: following one would move the "
-                    f"request to a destination the recipe never pinned, routing around the "
-                    f"https, host and private-address checks in a single hop."
-                )
+                f"recipe {recipe.name!r} page {page} received HTTP {response.status_code} "
+                f"(a redirect). Redirects are refused: following one would move the request "
+                f"to a destination the recipe never pinned, routing around the https, host "
+                f"and private-address checks in a single hop. The Location is not reported."
             )
         if response.status_code >= 400:
             raise RecipeExecutionError(
-                scrubber.scrub(
-                    f"recipe {recipe.name!r} returned HTTP {response.status_code} for {url}"
-                )
+                f"recipe {recipe.name!r} page {page} returned HTTP {response.status_code}. "
+                f"The request URL is not reported: after confinement its query is "
+                f"provider-chosen, and redacting only the auth parameter would leave every "
+                f"other permitted parameter free to carry credential material."
             )
         response.read()
         body = response.content
@@ -587,7 +596,9 @@ def run_recipe(
         # header value and the candidate URL can each carry credential
         # material, so neither is processed after the boundary closes.
         with scrub_boundary(scrubber, f"recipe {recipe.name!r} page {page}"):
-            payload, response = _request(client, recipe, url, page_params, book, scrubber)
+            payload, response = _request(
+                client, recipe, url, page_params, book, scrubber, page
+            )
             validate_response(recipe, payload, book, page, scrubber)
             if first_payload is None:
                 first_payload = payload
