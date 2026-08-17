@@ -230,11 +230,12 @@ def render_markdown(pack: EvidencePack) -> str:
 
     lines.append("## Summary")
     lines.append("")
-    lines.append("| # | check | verdict | detail |")
-    lines.append("|---|---|---|---|")
+    lines.append("| # | check | verdict | reason | detail |")
+    lines.append("|---|---|---|---|---|")
     for i, check in enumerate(pack.checks, 1):
         lines.append(
             f"| {i} | `{check.name}` | {_STATUS_MARK.get(check.status, check.status)} | "
+            f"{('`' + check.reason_code + '`') if check.reason_code else ''} | "
             f"{_cell(check.detail)} |"
         )
     lines.append("")
@@ -242,16 +243,23 @@ def render_markdown(pack: EvidencePack) -> str:
     for i, check in enumerate(pack.checks, 1):
         lines.append(f"## {i}. `{check.name}` — {_STATUS_MARK.get(check.status, check.status)}")
         lines.append("")
+        if check.reason_code:
+            # The machine-checkable reason the check failed. Fixtures assert on
+            # this exact string, so a reviewer reading the pack and a test
+            # asserting the mechanism are looking at the same identifier.
+            lines.append(f"**Reason code:** `{check.reason_code}`")
+            lines.append("")
         if check.detail:
             lines.append(check.detail)
             lines.append("")
         if check.comparisons:
-            lines.append("| comparison | actual | expected | ok | note |")
-            lines.append("|---|---|---|:--:|---|")
+            lines.append("| comparison | actual | expected | ok | code | note |")
+            lines.append("|---|---|---|:--:|---|---|")
             for c in check.comparisons:
+                code = f"`{c.code}`" if (c.code and not c.ok) else ""
                 lines.append(
                     f"| {_cell(c.label)} | `{_cell(c.actual)}` | `{_cell(c.expected)}` | "
-                    f"{'ok' if c.ok else '**MISMATCH**'} | {_cell(c.note)} |"
+                    f"{'ok' if c.ok else '**MISMATCH**'} | {code} | {_cell(c.note)} |"
                 )
             lines.append("")
         if check.queries:

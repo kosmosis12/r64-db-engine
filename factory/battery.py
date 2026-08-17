@@ -61,6 +61,9 @@ class Comparison:
     expected: Any
     ok: bool
     note: str = ""
+    # Machine-checkable reason this comparison exists, e.g. "b2.bounds_diverged".
+    # Only meaningful when `ok` is False. See `CheckResult.reason_code`.
+    code: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -69,20 +72,41 @@ class Comparison:
             "expected": _jsonable(self.expected),
             "ok": self.ok,
             "note": self.note,
+            "code": self.code,
         }
 
 
 @dataclass
 class CheckResult:
+    """A check's verdict.
+
+    # Why a FAIL carries a machine-checkable `reason_code`
+
+    A negative test that asserts only `status == FAIL` is satisfied by an
+    oracle that fails for the wrong reason — or by one that fails at
+    everything. That is not a hypothetical: an oracle stub returning FAIL
+    unconditionally would pass a whole suite of `assert status == FAIL`
+    fixtures while checking nothing at all, and the suite would look exactly as
+    green as a correct one.
+
+    So every FAIL names WHICH mechanism fired, as a stable dotted code
+    (`b2.bounds_diverged`, `rf002.nan_as_value`). Fixtures assert the triple
+    (FAIL, check name, reason code), and
+    `tests/factory/test_battery.py::test_a_catch_all_failing_oracle_does_not_pass_the_fixture_suite`
+    proves that triple is strong enough to reject the catch-all stub. MF-01's
+    claim rests on that meta-fixture, not on the count of negative tests.
+    """
+
     name: str
     status: str
     detail: str = ""
     comparisons: list[Comparison] = field(default_factory=list)
     queries: list[str] = field(default_factory=list)
     observations: dict[str, Any] = field(default_factory=dict)
+    reason_code: str = ""
 
     def __post_init__(self) -> None:
-        """On FAIL, name the comparisons that moved, in the detail line.
+        """On FAIL, name the reason and the comparisons that moved.
 
         Done once here rather than at each check's construction site so it can
         never be forgotten by a new check. Without it a failing
@@ -93,9 +117,15 @@ class CheckResult:
         """
         if self.status != FAIL:
             return
-        failed = [c.label for c in self.comparisons if not c.ok]
-        if failed and "FAILED:" not in self.detail:
-            joined = ", ".join(failed)
+        failing = [c for c in self.comparisons if not c.ok]
+        # An explicitly-passed reason_code wins (the early-return branches set
+        # one before any comparison exists); otherwise the first failing
+        # comparison that carries a code names the mechanism.
+        if not self.reason_code:
+            self.reason_code = next((c.code for c in failing if c.code), "")
+        labels = [c.label for c in failing]
+        if labels and "FAILED:" not in self.detail:
+            joined = ", ".join(labels)
             self.detail = f"{self.detail} | FAILED: {joined}" if self.detail else f"FAILED: {joined}"
 
     @property
@@ -106,6 +136,7 @@ class CheckResult:
         return {
             "name": self.name,
             "status": self.status,
+            "reason_code": self.reason_code,
             "detail": self.detail,
             "comparisons": [c.as_dict() for c in self.comparisons],
             "queries": list(self.queries),
@@ -217,12 +248,17 @@ def check_registry_admission(
         return CheckResult(
             name="registry_admission",
             status=FAIL,
+            reason_code="registry.dialect_unresolvable",
             detail=f"registry refused the configured dialect {dialect!r}: {exc}",
-            comparisons=[Comparison("resolve(dialect)", f"raised {exc!r}", dialect, False)],
+            comparisons=[
+                Comparison("resolve(dialect)", f"raised {exc!r}", dialect, False,
+                           code="registry.dialect_unresolvable")
+            ],
         )
 
     comparisons.append(
-        Comparison("resolved driver dialect_name()", resolved, dialect, resolved == dialect)
+        Comparison("resolved driver dialect_name()", resolved, dialect, resolved == dialect,
+                   code="registry.dialect_name_mismatch")
     )
     comparisons.append(
         Comparison(
@@ -230,6 +266,7 @@ def check_registry_admission(
             sorted(registered),
             f"contains {dialect!r}",
             dialect in registered,
+            code="registry.dialect_absent_from_listing",
         )
     )
 
@@ -249,6 +286,7 @@ def check_registry_admission(
                     sorted(registered),
                     sorted(listed) == sorted(registered),
                     note=f"message: {message[:400]}",
+                    code="registry.refusal_omits_registry",
                 )
             )
         else:
@@ -259,6 +297,7 @@ def check_registry_admission(
                     "raised",
                     False,
                     note=f"{bogus_dialect!r} was not refused",
+                    code="registry.unregistered_accepted",
                 )
             )
 
@@ -310,6 +349,7 @@ def check_schema_exactness(
         return CheckResult(
             name="schema_exactness",
             status=FAIL,
+            reason_code="schema.empty_spec",
             detail="spec declares no columns; a schema spec with no columns cannot gate anything",
         )
 
@@ -319,9 +359,11 @@ def check_schema_exactness(
 
     comparisons = [
         Comparison("column count", len(actual_names), len(expected_names),
-                   len(actual_names) == len(expected_names)),
+                   len(actual_names) == len(expected_names),
+                   code="schema.column_count"),
         Comparison("column names and order", actual_names, expected_names,
-                   actual_names == expected_names),
+                   actual_names == expected_names,
+                   code="schema.column_set_or_order"),
     ]
 
     for col in spec_columns:
@@ -332,7 +374,9 @@ def check_schema_exactness(
         note = ""
         if ok and got != want:
             note = f"string-width fence applied (B-3): {got} accepted for {want}"
-        comparisons.append(Comparison(f"type[{name}]", got, want, ok, note=note))
+        comparisons.append(
+            Comparison(f"type[{name}]", got, want, ok, note=note, code="schema.type_mismatch")
+        )
 
     return CheckResult(
         name="schema_exactness",
@@ -382,6 +426,7 @@ def check_aggregate_parity(
         return CheckResult(
             name="aggregate_parity",
             status=FAIL,
+            reason_code="aggregate.empty_spec",
             detail="spec declares no aggregates; parity cannot be gated on an empty set",
         )
 
@@ -397,14 +442,16 @@ def check_aggregate_parity(
         if key not in ground_truth:
             comparisons.append(
                 Comparison(f"{key}", "<not in ground truth>", "<declared by spec>", False,
-                           note="spec names a ground-truth key the ground-truth file lacks")
+                           note="spec names a ground-truth key the ground-truth file lacks",
+                           code="aggregate.missing_ground_truth_key")
             )
             gating_ok = False
             continue
         if key not in computed:
             comparisons.append(
                 Comparison(f"{key}", "<not computed>", ground_truth[key], False,
-                           note=f"op {spec.get('op')!r} produced no value")
+                           note=f"op {spec.get('op')!r} produced no value",
+                           code="aggregate.not_computed")
             )
             gating_ok = False
             continue
@@ -427,15 +474,29 @@ def check_aggregate_parity(
         elif not ok:
             gating_ok = False
 
-        comparisons.append(Comparison(key, actual, expected, ok, note=note))
+        comparisons.append(
+            Comparison(
+                key, actual, expected, ok, note=note,
+                code="aggregate.corroborating_mismatch" if corroborating else "aggregate.mismatch",
+            )
+        )
 
     detail = f"{len(aggregate_specs)} aggregates vs ground truth"
     if corroboration_notes:
         detail += " | " + "; ".join(corroboration_notes)
 
+    # The reason code must name a GATING failure. Left to the default
+    # first-failing-comparison rule, a run where a corroborating aggregate also
+    # disagreed could be labelled `aggregate.corroborating_mismatch` — reporting
+    # the one difference that explicitly does NOT gate as the cause of the FAIL.
+    gating_codes = [
+        c.code for c in comparisons
+        if not c.ok and c.code and c.code != "aggregate.corroborating_mismatch"
+    ]
     return CheckResult(
         name="aggregate_parity",
         status=PASS if gating_ok else FAIL,
+        reason_code=gating_codes[0] if (not gating_ok and gating_codes) else "",
         detail=detail,
         comparisons=comparisons,
     )
@@ -488,6 +549,7 @@ def check_rf002_discriminator(
         return CheckResult(
             name="rf002_null_discriminator",
             status=FAIL,
+            reason_code="rf002.no_declaration",
             detail=(
                 "spec has no 'discriminators' key. RF-002 requires the dataset to declare "
                 "its expected discriminating columns (floor: 1), or to declare "
@@ -502,6 +564,7 @@ def check_rf002_discriminator(
             return CheckResult(
                 name="rf002_null_discriminator",
                 status=FAIL,
+                reason_code="rf002.empty_without_reason",
                 detail=(
                     "spec declares zero discriminators without "
                     "'discriminators_absent_reason'. A silent zero is not a skip."
@@ -522,7 +585,8 @@ def check_rf002_discriminator(
         if expected is None:
             comparisons.append(
                 Comparison(f"{col}: declared for table {table}", "<absent>", "<an integer>", False,
-                           note="spec declares this discriminator but not for this table")
+                           note="spec declares this discriminator but not for this table",
+                           code="rf002.table_not_declared")
             )
             continue
 
@@ -535,6 +599,7 @@ def check_rf002_discriminator(
                     expected,
                     gt_value,
                     expected == gt_value,
+                    code="rf002.spec_ground_truth_disagree",
                     note=(
                         "two independent records of the same number; disagreement means one "
                         "of the two files is stale"
@@ -544,7 +609,8 @@ def check_rf002_discriminator(
 
         actual_nulls = null_counts.get(col)
         comparisons.append(
-            Comparison(f"{col}: artifact null_count", actual_nulls, expected, actual_nulls == expected)
+            Comparison(f"{col}: artifact null_count", actual_nulls, expected,
+                       actual_nulls == expected, code="rf002.null_count_mismatch")
         )
 
         count_col = row_count - (actual_nulls or 0)
@@ -554,6 +620,7 @@ def check_rf002_discriminator(
                 f"{count_col} vs {row_count}",
                 "must differ",
                 count_col != row_count,
+                code="rf002.not_discriminating",
                 note="if equal, nulls were filled in transit",
             )
         )
@@ -565,6 +632,7 @@ def check_rf002_discriminator(
                 nan_values,
                 0,
                 nan_values == 0,
+                code="rf002.nan_as_value",
                 note="a literal NaN sets null_count=0 and poisons every downstream sum()",
             )
         )
@@ -618,6 +686,7 @@ def check_b2_boundary(
         return CheckResult(
             name="b2_boundary",
             status=FAIL,
+            reason_code="b2.no_boundary_columns",
             detail=(
                 "spec declares no boundary columns. The transfer doctrine requires at least "
                 "one timezone- or order-sensitive column; aggregate parity is blind to "
@@ -630,19 +699,23 @@ def check_b2_boundary(
         if col not in source_bounds:
             comparisons.append(
                 Comparison(f"{col}: source bounds", "<not probed>", "<min,max from source>", False,
-                           note="the live source was not queried for this column")
+                           note="the live source was not queried for this column",
+                           code="b2.source_not_probed")
             )
             continue
         if col not in artifact_bounds:
             comparisons.append(
-                Comparison(f"{col}: artifact bounds", "<column absent>", source_bounds[col], False)
+                Comparison(f"{col}: artifact bounds", "<column absent>", source_bounds[col], False,
+                           code="b2.column_absent")
             )
             continue
 
         a_min, a_max = artifact_bounds[col]
         s_min, s_max = source_bounds[col]
-        comparisons.append(Comparison(f"{col}: min", a_min, s_min, str(a_min) == str(s_min)))
-        comparisons.append(Comparison(f"{col}: max", a_max, s_max, str(a_max) == str(s_max)))
+        comparisons.append(Comparison(f"{col}: min", a_min, s_min, str(a_min) == str(s_min),
+                                     code="b2.bounds_diverged"))
+        comparisons.append(Comparison(f"{col}: max", a_max, s_max, str(a_max) == str(s_max),
+                                     code="b2.bounds_diverged"))
 
     return CheckResult(
         name="b2_boundary",
@@ -694,21 +767,25 @@ def check_pg011_refusal(
         return CheckResult(
             name="pg011_refusal",
             status=PASS if matched else FAIL,
+            reason_code="" if matched else "pg011.wrong_error",
             detail=f"refused with: {message[:400]}",
             comparisons=[
                 Comparison("incremental on non-appendable sink", "raised", "raised", True),
-                Comparison("refusal names the cause", message[:400], expected_substring, matched),
+                Comparison("refusal names the cause", message[:400], expected_substring, matched,
+                           code="pg011.wrong_error"),
             ],
         )
     return CheckResult(
         name="pg011_refusal",
         status=FAIL,
+        reason_code="pg011.accepted",
         detail=(
             "incremental mode was ACCEPTED on a non-appendable sink. Either the guard is "
             "gone or the mode was silently downgraded to full_refresh."
         ),
         comparisons=[
-            Comparison("incremental on non-appendable sink", "accepted", "raised", False)
+            Comparison("incremental on non-appendable sink", "accepted", "raised", False,
+                       code="pg011.accepted")
         ],
     )
 
@@ -753,10 +830,11 @@ def check_block_structure(
     expected = expected_block_rows(row_count, block_rows)
     comparisons = [
         Comparison("block count", len(observed_blocks), len(expected),
-                   len(observed_blocks) == len(expected)),
+                   len(observed_blocks) == len(expected), code="blocks.count_mismatch"),
         Comparison("rows across blocks", sum(observed_blocks), row_count,
-                   sum(observed_blocks) == row_count),
+                   sum(observed_blocks) == row_count, code="blocks.rows_missing"),
         Comparison("block layout", observed_blocks, expected, observed_blocks == expected,
+                   code="blocks.layout_mismatch",
                    note=f"{block_rows}-row blocks, final block carries the remainder"),
     ]
     return CheckResult(
@@ -821,13 +899,17 @@ def check_checksum(
         )
 
     layers = [
-        Comparison("row count", first_rows, second_rows, first_rows == second_rows),
+        Comparison("row count", first_rows, second_rows, first_rows == second_rows,
+                   code="checksum.data_layer_differs"),
         Comparison("schema", first_schema or {}, second_schema or {},
-                   (first_schema or {}) == (second_schema or {})),
+                   (first_schema or {}) == (second_schema or {}),
+                   code="checksum.data_layer_differs"),
         Comparison("block layout", first_blocks or [], second_blocks or [],
-                   (first_blocks or []) == (second_blocks or [])),
+                   (first_blocks or []) == (second_blocks or []),
+                   code="checksum.data_layer_differs"),
         Comparison("aggregates", first_aggregates or {}, second_aggregates or {},
-                   (first_aggregates or {}) == (second_aggregates or {})),
+                   (first_aggregates or {}) == (second_aggregates or {}),
+                   code="checksum.data_layer_differs"),
     ]
     differing = [c.label for c in layers if not c.ok]
     if differing:
@@ -848,8 +930,13 @@ def check_checksum(
     return CheckResult(
         name="checksum",
         status=FAIL,
+        reason_code="checksum.data_layer_differs" if differing else "checksum.bytes_only",
         detail=residual,
-        comparisons=[Comparison("sha256 (pull 1 vs pull 2)", first_sha, second_sha, False), *layers],
+        comparisons=[
+            Comparison("sha256 (pull 1 vs pull 2)", first_sha, second_sha, False,
+                       code="checksum.bytes_only"),
+            *layers,
+        ],
     )
 
 
@@ -898,20 +985,23 @@ def check_serve_gate(
 
     comparisons = [
         Comparison("cold: copied_columns", cold.get("copied_columns"), 0,
-                   cold.get("copied_columns") == 0),
+                   cold.get("copied_columns") == 0, code="serve.copied_columns_cold"),
         Comparison("warm: copied_columns", warm.get("copied_columns"), 0,
-                   warm.get("copied_columns") == 0),
+                   warm.get("copied_columns") == 0, code="serve.copied_columns_warm"),
         Comparison("cold: zero_copy_columns == columns_decoded",
                    f"{cold.get('zero_copy_columns')} vs {cold.get('columns_decoded')}",
                    "equal",
-                   cold.get("zero_copy_columns") == cold.get("columns_decoded")),
+                   cold.get("zero_copy_columns") == cold.get("columns_decoded"),
+                   code="serve.cold_zero_copy_mismatch"),
         Comparison("cold: columns actually decoded", cold.get("columns_decoded"), "> 0",
                    (cold.get("columns_decoded") or 0) > 0,
+                   code="serve.cold_no_decode",
                    note="a cold pass that decodes nothing did not exercise the reader"),
         Comparison("warm: miss_rate %", round(miss_rate(warm), 2), 0.0,
-                   miss_rate(warm) == 0.0),
+                   miss_rate(warm) == 0.0, code="serve.warm_miss"),
         Comparison("warm: columns_decoded", warm.get("columns_decoded"), 0,
                    warm.get("columns_decoded") == 0,
+                   code="serve.warm_decoded",
                    note="stronger than miss_rate: a warm pass must decode nothing at all"),
     ]
 
@@ -957,6 +1047,7 @@ def check_recipe_security(
         return CheckResult(
             name="recipe_security_invariants",
             status=FAIL,
+            reason_code="recipe_security.no_mutations",
             detail="a recipe book was present but no security mutation was attempted",
         )
 
@@ -967,6 +1058,7 @@ def check_recipe_security(
             "REFUSED",
             refused,
             note=message[:300],
+            code="recipe_security.mutation_accepted",
         )
         for mutation, refused, message in outcomes
     ]

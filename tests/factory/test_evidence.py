@@ -96,10 +96,13 @@ def test_markdown_cells_cannot_break_the_table() -> None:
     # so the label alone matches the summary row too.
     row = next(line for line in md.splitlines() if "a\\|b" in line and line.startswith("|"))
     # The embedded pipes must be escaped and the newline flattened, so the row
-    # still has exactly the five cells the header declares (six delimiters).
+    # still has exactly the cells the header declares. Derived from the header
+    # rather than hardcoded — a column added to the comparison table should not
+    # break a test about ESCAPING.
+    header = next(line for line in md.splitlines() if line.startswith("| comparison |"))
     assert "\\|" in row
     assert "\n" not in row
-    assert row.replace("\\|", "").count("|") == 6
+    assert row.replace("\\|", "").count("|") == header.count("|")
 
 
 def test_write_pack_emits_both_forms_with_the_same_stem(tmp_path: Path) -> None:
