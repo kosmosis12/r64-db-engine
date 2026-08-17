@@ -680,3 +680,67 @@ def test_the_loader_makes_those_invariants_unreachable() -> None:
         make_book(pagination={"type": "cursor", "cursor_path": "next"})
     with pytest.raises(RecipeBookError, match="page_param"):
         make_book(pagination={"type": "page"})
+
+
+# ---------------------------------------------------------------------------
+# Q4(c) — redirects fail closed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_a_redirect_is_refused_and_the_body_is_never_read(status: int) -> None:
+    """The invariant the docs claimed and no fixture covered.
+
+    A 3xx is a destination change chosen by the remote end. Following one would
+    move the request somewhere the recipe never pinned, routing around the
+    https, host-allowlist and private-address checks in a single hop.
+
+    Two assertions, and the second is the one with teeth: the redirect is
+    refused by NAME (not as an incidental JSON parse failure on an empty body),
+    and `body_reads == 0` — nothing from a redirecting response is parsed.
+    """
+    book = make_book()
+
+    class RedirectingClient(FakeClient):
+        def send(self, request, stream=False):
+            response = FakeResponse(
+                {"items": []}, status=status,
+                headers={"location": "https://evil.example.com/v1/items"},
+            )
+            self.responses.append(response)
+            return response
+
+    client = RedirectingClient([{}])
+    with pytest.raises(engine.RecipeSecurityError, match="Redirects are refused"):
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+
+    assert client.responses[0].body_reads == 0
+    assert client.responses[0].closed
+
+
+def test_the_redirect_refusal_names_the_location_it_declined() -> None:
+    """A refusal that does not say WHERE it was being sent is not actionable."""
+    book = make_book()
+
+    class RedirectingClient(FakeClient):
+        def send(self, request, stream=False):
+            response = FakeResponse(
+                {}, status=302, headers={"location": "https://attacker.test/steal"})
+            self.responses.append(response)
+            return response
+
+    with pytest.raises(engine.RecipeSecurityError, match="attacker.test"):
+        engine.run_recipe(RedirectingClient([{}]), book.recipes["one"], {}, book)
+
+
+def test_the_engine_client_disables_redirect_following() -> None:
+    """The refusal above only ever fires because httpx was told not to follow.
+
+    Asserted on the real client the engine builds, not on a fake: if
+    `follow_redirects` were ever flipped to True, httpx would transparently
+    chase the Location and the 3xx would never reach the check.
+    """
+    import inspect
+
+    source = inspect.getsource(engine.run_book)
+    assert "follow_redirects=False" in source

@@ -449,7 +449,30 @@ conversation.
 > property the tests establish and nothing beyond it: **no stronger wording
 > anywhere.**
 | **MF-02** | *Zero-core-edit `rest` dialect.* The registry pattern holds on a non-database source class: adding a whole new class of source cost **six lines** in `drivers/__init__.py` and nothing else outside the driver's own directory. | `git grep -rniE "\brest\b" src/r64_db_engine/core/` → 0; `git diff --stat main..HEAD -- src/` |
-| **MF-03** *(rescoped after Codex round 1)* | *Destination fixed at authoring; every request re-validated (HTTPS, host rule, public address); pagination confined to the pinned endpoint, query-only by default; rebinding closed by a pre-body peer-vs-vetted-set assertion, with the residual window being that the request has already reached the socket.* Label-boundary host matching (`evil-checkr.com` ≠ `checkr.com`, tested literally), resolution-time private/loopback/link-local rejection, no redirects, closed parameter vocabulary — each with a failing fixture, and re-asserted against the shipped book's real hosts as a battery check. | `tests/drivers/rest/test_security.py`; `tests/drivers/rest/test_engine.py`; `recipe_security_invariants` in `EVIDENCE-rest-*.md` |
+| **MF-03** *(rescoped rounds 1 and 2)* | *Destination fixed at authoring; every request re-validated (HTTPS, host rule, public address); pagination confined to the pinned endpoint — scheme, port and canonicalized host must match exactly, the candidate URL never reaches the client, requests are rebuilt from pinned parts; redirects refused unread; rebinding closed by a pre-body peer-vs-vetted-set assertion whose residual window is that the request has already reached the socket.* Each with a failing fixture. | `tests/drivers/rest/test_security.py`; `tests/drivers/rest/test_engine.py`; `recipe_security_invariants` in `EVIDENCE-rest-*.md` |
+
+**Which behaviours are battery-level vs unit-level — precision over reach.**
+The `recipe_security_invariants` battery check runs **14 mutations against the
+shipped book's real pinned URLs**, and covers exactly the statically-checkable
+behaviours:
+
+| behaviour | battery | unit | why |
+|---|:--:|:--:|---|
+| https→http downgrade refused | ✅ | ✅ | pure function of the book |
+| lookalike / subdomain host on the AUTHORED url | ✅ | ✅ | pure function of the book |
+| templated URL refused | ✅ | ✅ | pure function of the book |
+| undeclared threading input refused | ✅ | ✅ | pure function of the book |
+| private/loopback destination refused | ✅ | ✅ | resolution only, no server needed |
+| **cross-path / undeclared-path / subdomain next-URL confinement** | ✅ | ✅ | `confine_next_url` is pure over (crafted Link, pinned URL) |
+| **`allowed_next_paths` omitted vs explicitly empty** | ✅ | ✅ | book-level, decided by the loader |
+| redirect (3xx) refused unread | ❌ | ✅ | needs a response, so it is fixture-driven |
+| **live DNS rebinding / peer-vs-vetted under attack** | ❌ | ✅ | needs a HOSTILE SERVER answering one address to validation and another to connect — not constructible from a static book |
+
+The last two are **unit-level only, and deliberately so**: a battery mutation
+cannot manufacture a redirecting or rebinding server from a config file. They
+are covered by fixtures that assert the property rather than the exception type
+(`body_reads == 0` on every refused response). Claiming battery coverage for
+them would be reach without precision.
 
 > **Why the wording changed.** The original read "destination-pinning security
 > invariants" with an unqualified *pinned*. Codex was right that this overclaimed
@@ -527,10 +550,11 @@ meta-fixture rather than on the count of negative tests.
 *(a)* A `Link: rel="next"` URL is chosen by the remote end, and it was going
 through the host rule written for the *authored* URL — which deliberately
 permits proper subdomains. A provider, or a header injector, could move the
-request to any subdomain of the pinned host. Now `confine_next_url` requires
-scheme, host **and port** byte-equal, adopts **only** the query string, rebuilds
-the URL from vetted parts, and requires an authored `allowed_next_paths`
-declaration for any cross-path move.
+request to any subdomain of the pinned host. Now: **scheme, port, and
+canonicalized host (case + trailing-dot normalized) must match exactly; the
+candidate URL never reaches the client — requests are rebuilt from pinned
+parts.** Only the query string is carried over, and any cross-path move
+requires an authored `allowed_next_paths` declaration.
 *(b)* The address validated was not the address connected to. Requests are now
 sent streaming and the real peer is asserted public **and** in the vetted set
 **before any body is read**, fail-closed. Tests assert `body_reads == 0` on a

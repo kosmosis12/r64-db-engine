@@ -274,6 +274,7 @@ def recipe_security_outcomes(
     from r64_db_engine.drivers.rest.security import (
         assert_host_allowed,
         assert_public_host,
+        confine_next_url,
         host_of,
     )
 
@@ -352,6 +353,50 @@ def recipe_security_outcomes(
     outcomes.append(
         attempt("loopback destination (SSRF)", lambda: assert_public_host("https://localhost/"))
     )
+
+    # 6. Pagination steering, against the SHIPPED book's own pinned URLs. These
+    #    are statically checkable — `confine_next_url` is a pure function of the
+    #    crafted Link value and the recipe's pinned URL — so they belong at
+    #    battery level rather than only in unit tests.
+    for recipe in raw["recipes"]:
+        pinned = recipe["url"]
+        host = host_of(pinned)
+        for label, crafted in (
+            ("cross-path next-URL", f"https://{host}/v1/../admin?page=2"),
+            ("undeclared path next-URL", f"https://{host}/definitely-not-the-pinned-path?p=2"),
+            ("subdomain next-URL", f"https://attacker.{host}/x?p=2"),
+        ):
+            outcomes.append(
+                attempt(
+                    f"{label} against pinned {pinned}",
+                    lambda c=crafted, u=pinned: confine_next_url(c, u, []),
+                )
+            )
+
+    # 7. `allowed_next_paths` OMITTED vs EXPLICITLY EMPTY must behave
+    #    identically — both refuse. A default-deny rule that only denies when
+    #    someone remembered to write `[]` is not default-deny.
+    #
+    #    The distinction is made at the BOOK level, where it actually lives: two
+    #    variants are parsed through the real loader and the confinement is run
+    #    with whatever each produced. Passing `[]` twice at the call site would
+    #    have tested nothing about how an omitted key is loaded.
+    first_url = raw["recipes"][0]["url"]
+    elsewhere = f"https://{host_of(first_url)}/somewhere-else"
+    for label, book_mutation in (
+        ("OMITTED", lambda b: b["recipes"][0].__setitem__(
+            "pagination", {"type": "link-header"})),
+        ("EXPLICITLY EMPTY", lambda b: b["recipes"][0].__setitem__(
+            "pagination", {"type": "link-header", "allowed_next_paths": []})),
+    ):
+        parsed = parse_book(mutated(book_mutation))
+        declared = parsed.recipes[raw["recipes"][0]["name"]].pagination.allowed_next_paths
+        outcomes.append(
+            attempt(
+                f"cross-path next-URL with allowed_next_paths {label}",
+                lambda d=declared: confine_next_url(elsewhere, first_url, d),
+            )
+        )
 
     # No "the shipped book still loads" control is recorded here. A loader that
     # refused EVERYTHING would score a perfect result on the mutations above,

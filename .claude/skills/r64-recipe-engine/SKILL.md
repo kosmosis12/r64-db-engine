@@ -124,13 +124,14 @@ the benign one.
    private ranges, unique-local and unspecified addresses are refused. This is
    the SSRF fence; resolution-time checking is what makes it real rather than
    cosmetic.
-3b. **Pagination is confined, default-deny.** A provider-supplied next-URL must
-   match the pinned scheme, host AND port EXACTLY — the subdomain latitude of
-   rule 2 is deliberately unavailable here, because this URL comes from the
-   server, not the author — and only its QUERY STRING is adopted, with the URL
-   rebuilt from vetted parts. Cross-path pagination requires
-   `allowed_next_paths`. Test the subdomain case explicitly: it is the one a
-   reasonable implementation gets wrong by reusing rule 2.
+3b. **Pagination is confined, default-deny.** For a provider-supplied
+   next-URL: **scheme, port, and canonicalized host (case + trailing-dot
+   normalized) must match exactly; the candidate URL never reaches the client —
+   requests are rebuilt from pinned parts.** The subdomain latitude of rule 2 is
+   deliberately unavailable here, because this URL comes from the server, not
+   the author. Only the query string is carried over. Cross-path pagination
+   requires `allowed_next_paths`. Test the subdomain case explicitly: it is the
+   one a reasonable implementation gets wrong by reusing rule 2.
 3c. **DNS rebinding closed at response time.** The peer actually connected to
    must be public AND in the set validated moments earlier, asserted
    fail-closed BEFORE any body is read. Residual window: the request has
@@ -144,7 +145,13 @@ the benign one.
    ntfy alert via the fleet's existing `ntfy-fail@` conventions, and a
    **non-zero exit**. **No auto-retry-with-reinterpretation** — that is a Law 1
    violation and would turn a provider change into silent data corruption.
-   Retry the REQUEST on transport failure; never retry the MEANING.
+
+   **No retry of any kind is implemented today.** The engine makes one attempt
+   per page and fails. An earlier version of this document said "retry the
+   REQUEST on transport failure; never retry the MEANING" — the second half is
+   doctrine and holds, but the first half described code that does not exist.
+   Bounded transport retry is future work; the claim returns when the code
+   does.
 6. **Response size and time caps**, configurable, defaulted sanely. An
    unbounded read is a memory bug waiting for a bad day.
 7. **Credentials.** `env_file` is a path the engine reads at call time. Never

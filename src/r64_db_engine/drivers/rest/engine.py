@@ -328,6 +328,20 @@ def _request(
     try:
         _assert_connected_peer_was_vetted(response, addresses, recipe, url)
 
+        # A 3xx is a DESTINATION CHANGE chosen by the remote end. Redirects are
+        # disabled on the client, so httpx hands the 3xx back rather than
+        # following it — and it is refused here explicitly rather than being
+        # allowed to fall through into a JSON parse error on an empty body,
+        # which would report the wrong cause. Fail-closed and unread: nothing
+        # from a redirecting response is parsed.
+        if 300 <= response.status_code < 400:
+            location = response.headers.get("location", "<none>")
+            raise RecipeSecurityError(
+                f"recipe {recipe.name!r} received HTTP {response.status_code} redirecting to "
+                f"{location!r}. Redirects are refused: following one would move the request "
+                f"to a destination the recipe never pinned, routing around the https, host "
+                f"and private-address checks in a single hop."
+            )
         if response.status_code >= 400:
             raise RecipeExecutionError(
                 f"recipe {recipe.name!r} returned HTTP {response.status_code} for {url}"
