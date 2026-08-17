@@ -27,6 +27,24 @@ dependencies = [
     # 65536-row block chunking that meshroad's per-block column cache is keyed
     # on. Floating this pin would silently change block layout.
     "pyarrow==25.0.0",
+    # Runtime dependencies of the `rest` driver (the recipe lane), placed in the
+    # BASE dependency set rather than behind an extra. That follows the coupling
+    # this project already documents in `core/config.py::_registered_dialects`:
+    # validating any config imports the whole driver registry, so every
+    # registered dialect's third-party deps must be importable. psycopg and
+    # clickhouse-connect are here for exactly that reason, and an extra would
+    # turn `dialect: postgres` into an ImportError on a machine that never
+    # intended to use `rest`.
+    #
+    # httpx: the HTTP client. Chosen over leaning on the transitively-present
+    # `requests` because an undeclared transitive dependency is not a
+    # dependency, and because redirect-following must be OFF by default — a
+    # followed redirect is an SSRF bypass around the destination-pinning
+    # invariant.
+    "httpx>=0.27",
+    # jsonschema: the per-pull `response_schema` validator. Validation failure
+    # is a repair signal, so this is load-bearing rather than a nicety.
+    "jsonschema>=4.20",
 ]
 
 [project.optional-dependencies]

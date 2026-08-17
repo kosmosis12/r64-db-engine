@@ -19,9 +19,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+      # `factory/` is repo tooling that lives outside the installed package
+      # (deliberately — core must not be able to import its own oracle), so it
+      # is not reached by a bare `src` path and has to be named explicitly.
+      # Without this it was linted and type-checked only on a developer's
+      # machine, which is the same as not at all.
       - name: Ruff
-        run: ruff check src tests
+        run: ruff check src tests factory
       - name: Mypy
-        run: mypy src
+        run: mypy src factory
+      # `testpaths = ["tests"]` in pyproject already covers `tests/factory`.
+      # Integration-marked tests stay skipped without `--integration`; they need
+      # a live ClickHouse container and outbound HTTPS, neither of which CI has.
       - name: Unit tests
         run: pytest -v

@@ -1,0 +1,156 @@
+# RECIPE BOOK — open-meteo hourly temperature, Berlin, fixed historical window.
+#
+# Compiled once, at authoring time, from the provider's documented behaviour and
+# a live probe. At pull time nothing here is inferred: the engine executes this
+# document and refuses anything it does not describe (Law 1 — model at build
+# time, never runtime).
+#
+# ZERO CREDENTIALS BY DESIGN. Both endpoints are public and unauthenticated, so
+# `auth: {type: none}` throughout and no secret exists to leak. That is the
+# whole reason this source was chosen to prove the lane.
+#
+# TWO RECIPES, TWO DIFFERENT HOSTS, REAL THREADING. `geocode` resolves a place
+# name to coordinates on geocoding-api.open-meteo.com; `archive` reads the
+# hourly series for those coordinates on archive-api.open-meteo.com. Each URL is
+# pinned to its own host, and the host allowlist is per-recipe rather than
+# per-book — so the binding crosses a host boundary the way a real threaded
+# integration does, and neither recipe can reach the other's host.
+#
+# WHY THE ARCHIVE ENDPOINT AND NOT THE FORECAST ENDPOINT. The conformance
+# battery asserts that two consecutive pulls are byte-identical. A forecast is
+# re-computed continuously and its allowed date range MOVES with the current
+# date, so it can never satisfy that; the archive reanalysis for a past window
+# is stable. Verified before committing: two pulls of this exact window hashed
+# identically. A source that cannot be pulled twice with the same answer cannot
+# be checksum-gated, and picking one that can is part of authoring a book.
+#
+# WHY A FIXED PAST WINDOW AND NOT "the last 90 days". A relative window would
+# make the artifact a function of the wall clock, so the checksum check would
+# fail for a reason that has nothing to do with the pipeline.
+
+dataset: open_meteo_berlin_hourly
+
+recipes:
+  - name: geocode
+    method: GET
+    # PINNED. No placeholder appears in this URL, and the engine refuses a URL
+    # containing one: runtime inputs may populate declared query/body
+    # parameters only, never the host and never the path.
+    url: https://geocoding-api.open-meteo.com/v1/search
+    auth:
+      type: none
+    params_schema:
+      type: object
+      properties:
+        name:   { type: string }
+        count:  { type: integer }
+        format: { type: string }
+      required: [name]
+    response_schema:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [latitude, longitude]
+            properties:
+              latitude:  { type: number }
+              longitude: { type: number }
+    pagination:
+      type: none
+    extract:
+      path: results
+      shape: records
+
+  - name: archive
+    method: GET
+    url: https://archive-api.open-meteo.com/v1/archive
+    auth:
+      type: none
+    # Fixed inputs that are part of the book rather than of any deployment.
+    # The date window and the requested variable define WHAT this dataset IS,
+    # so they belong to the book; a deployment that wanted a different window
+    # would be a different dataset.
+    static_params:
+      start_date: "2026-01-01"
+      end_date: "2026-03-31"
+      hourly: temperature_2m
+      # Ask the provider for UTC explicitly. B-2 applies to APIs exactly as it
+      # does to databases: a server-local default would shift every timestamp
+      # uniformly, and count/sum/null-count/cardinality are all blind to that.
+      # The engine ALSO parses as UTC, so the two are belt and braces rather
+      # than one relying on the other.
+      timezone: UTC
+    params_schema:
+      type: object
+      properties:
+        latitude:   { type: number }
+        longitude:  { type: number }
+        start_date: { type: string }
+        end_date:   { type: string }
+        hourly:     { type: string }
+        timezone:   { type: string }
+      required: [latitude, longitude]
+    # The per-pull validator. Deliberately tight enough to NOTICE a provider
+    # change: it is not enough that `hourly` exists, it must still carry the
+    # two parallel arrays this book reads. A loose schema would let a shape
+    # change through to become a confusing extract failure later.
+    response_schema:
+      type: object
+      required: [hourly, hourly_units, timezone]
+      properties:
+        timezone: { type: string }
+        hourly:
+          type: object
+          required: [time, temperature_2m]
+          properties:
+            time:
+              type: array
+              minItems: 1
+              items: { type: string }
+            temperature_2m:
+              type: array
+              minItems: 1
+              items:
+                type: [number, "null"]
+    pagination:
+      type: none
+    extract:
+      # COLUMNAR, not records: open-meteo returns `hourly` as an object of
+      # equal-length parallel arrays rather than a list of objects. The engine
+      # checks the lengths agree instead of zipping them, because zip would
+      # silently truncate to the shortest column and hand back a short table
+      # that looks entirely healthy.
+      path: hourly
+      shape: columnar
+
+threading:
+  - recipe: geocode
+    params:
+      name: Berlin
+      count: 1
+      format: json
+  - recipe: archive
+    # Output -> input. The expression addresses the geocode RESPONSE document,
+    # and every bound name must be declared in `archive`'s params_schema — the
+    # engine refuses an undeclared one rather than forwarding it.
+    bind:
+      latitude: geocode.results[0].latitude
+      longitude: geocode.results[0].longitude
+
+output:
+  columns:
+    - name: time
+      from: time
+      type: timestamp[us]
+      tz: UTC
+    - name: temperature_2m
+      from: temperature_2m
+      type: double
+
+limits:
+  max_response_bytes: 8388608
+  timeout_s: 30

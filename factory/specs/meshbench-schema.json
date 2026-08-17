@@ -1,0 +1,103 @@
+{
+  "_comment": [
+    "Conformance spec for the meshbench dataset. This file is the DECLARED",
+    "expectation the battery gates on; bench/GROUND-TRUTH-clickhouse.json is the",
+    "source-captured expectation it gates aggregates against. They are two",
+    "independently maintained records and the battery cross-checks them where",
+    "they overlap (RF-002 null counts), so a stale file is itself a finding",
+    "rather than a silent weakening.",
+    "",
+    "Derived, not guessed: the column types below were read off a real",
+    "clickhouse -> ArrowIpcSink artifact of meshbench.perf_1m pulled on the",
+    "ground-truth-era pipeline, and they match the field-for-field schema pinned",
+    "in tests/e2e/test_clickhouse_to_arrow.py::EXPECTED_SCHEMA.",
+    "",
+    "string_width_tolerant applies the B-3 cross-lane fence: `string` and",
+    "`large_string` are both valid Arrow strings, meshroad reads both, and which",
+    "one appears is a property of the LANE (pandas 3.0's string dtype yields",
+    "large_string; DuckDB's native Arrow export yields plain utf8), not of",
+    "fidelity."
+  ],
+  "dataset": "meshbench",
+  "string_width_tolerant": true,
+
+  "columns": [
+    { "name": "row_id",       "type": "int64" },
+    { "name": "account_id",   "type": "int64" },
+    { "name": "user_id",      "type": "int64" },
+    { "name": "region",       "type": "large_string" },
+    { "name": "city",         "type": "large_string" },
+    { "name": "category",     "type": "large_string" },
+    { "name": "segment",      "type": "large_string" },
+    { "name": "product_name", "type": "large_string" },
+    { "name": "status",       "type": "dictionary<values=string, indices=int32, ordered=0>" },
+    { "name": "amount",       "type": "double" },
+    { "name": "quantity",     "type": "int64" },
+    { "name": "price",        "type": "double" },
+    { "name": "score",        "type": "double" },
+    { "name": "event_time",   "type": "timestamp[us]" }
+  ],
+
+  "_discriminators_comment": [
+    "RF-002. The floor is one DECLARED discriminator, not a generic count of",
+    "nullable columns: a bare '>= N nullable columns' rule is vacuous on a wide",
+    "dataset and unsatisfiable on a narrow one. meshbench has exactly one",
+    "nullable column, so the gate here is that `score` discriminates with an",
+    "EXACT null count, cross-checked against the ground-truth file's own",
+    "count_score_null."
+  ],
+  "discriminators": [
+    {
+      "column": "score",
+      "ground_truth_key": "count_score_null",
+      "expected_null_count": {
+        "perf_1m": 20039,
+        "perf_10m": 200407
+      }
+    }
+  ],
+
+  "_boundary_comment": [
+    "B-2 / transfer doctrine. Aggregate parity is blind to a uniform shift: move",
+    "every timestamp by eight hours and count, sum, null count and cardinality",
+    "all still match. min/max is the cheapest check that is NOT invariant under",
+    "that shift, which is exactly why it is mandatory."
+  ],
+  "boundary_columns": ["event_time"],
+
+  "aggregates": [
+    { "ground_truth_key": "count",               "op": "row_count" },
+    { "ground_truth_key": "uniq_status",         "op": "nunique",      "column": "status" },
+    { "ground_truth_key": "uniq_region",         "op": "nunique",      "column": "region" },
+    { "ground_truth_key": "uniq_product_name",   "op": "nunique",      "column": "product_name" },
+    { "ground_truth_key": "count_status_active", "op": "count_equals", "column": "status", "value": "active" },
+    { "ground_truth_key": "count_region_west",   "op": "count_equals", "column": "region", "value": "West" },
+    { "ground_truth_key": "sum_quantity",        "op": "sum_int",      "column": "quantity" },
+    { "ground_truth_key": "max_account_id",      "op": "max_int",      "column": "account_id" },
+    {
+      "ground_truth_key": "scaled_amount_sum_exact_int",
+      "op": "scaled_sum_exact_int",
+      "column": "amount",
+      "scale": 100,
+      "_note": "AUTHORITY. Order-independent integer arithmetic; this one gates."
+    },
+    {
+      "ground_truth_key": "scaled_amount_sum",
+      "op": "scaled_sum_float",
+      "column": "amount",
+      "scale": 100,
+      "corroborating": true,
+      "_note": "Corroborates only. round(sum(float)) is order-sensitive because the source sums float64 in parallel and float addition is not associative."
+    },
+    { "ground_truth_key": "count_score_null",    "op": "null_count",   "column": "score" },
+    { "ground_truth_key": "pct_score_null",      "op": "null_pct",     "column": "score", "tolerance": 1e-9 }
+  ],
+
+  "_serve_gate_comment": [
+    "The workload the zero-copy gate runs, twice, against the artifact. It must",
+    "touch at least one column so the cold pass actually decodes something; it",
+    "deliberately does NOT touch all 14, because projection pushdown skipping",
+    "the untouched ones is correct behaviour and the counters should show it."
+  ],
+  "serve_gate_sql": "SELECT status, sum(amount), count(*) FROM {table} GROUP BY status"
+}

@@ -1,0 +1,37 @@
+[Unit]
+Description=Weekly MESHFORGE conformance sweep
+Documentation=file:///home/kos/builds/r64-db-engine/.claude/skills/r64-factory-maintenance/SKILL.md
+
+# ============================================================================
+# THIS TIMER MUST NOT FIRE DURING A BENCH WINDOW.
+#
+# A sweep pulls a million rows twice per target and spins an ephemeral Arrow
+# Flight server. A bench series measuring an otherwise-idle machine would pick
+# that up and report it as a LANE EFFECT — a number that looks like a finding
+# and is actually this timer.
+#
+# Stopping it therefore belongs on the root-quiesce checklist, alongside the
+# foreign-contention gate:
+#
+#     sudo systemctl stop  r64-factory-conformance.timer   # before a series
+#     sudo systemctl start r64-factory-conformance.timer   # after
+#
+# Persistent=true means a sweep missed while the timer was stopped runs once
+# on the next start rather than being lost — so quiescing for a bench costs a
+# delayed sweep, never a skipped one. Note the flip side: it will fire shortly
+# after you re-enable it, so re-enable AFTER the series, not between reps.
+# ============================================================================
+
+[Timer]
+OnCalendar=Sun 04:00
+Persistent=true
+
+# Jitter, so a fleet of machines running this does not stampede a third-party
+# API at exactly 04:00 on the same second. The recipe lane calls public
+# endpoints, and being a well-behaved client of them is part of the contract.
+RandomizedDelaySec=300
+
+Unit=r64-factory-conformance.service
+
+[Install]
+WantedBy=timers.target

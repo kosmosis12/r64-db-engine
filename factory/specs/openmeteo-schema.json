@@ -1,0 +1,82 @@
+{
+  "_comment": [
+    "Conformance spec for the open-meteo recipe-lane dataset. Same contract as",
+    "the meshbench spec: this file DECLARES what the battery gates on, and",
+    "bench/GROUND-TRUTH-openmeteo.json holds the source-captured values.",
+    "",
+    "Derived from a real artifact, not guessed: the two column types below were",
+    "read off an actual pull of factory/recipes/open-meteo.yaml through the",
+    "rest driver into ArrowIpcSink.",
+    "",
+    "Note there is no `timestamp_unit` knob anywhere in this lane. The recipe",
+    "book declares `timestamp[us]` and the engine produces datetime64[us]",
+    "directly, so unlike the pandas-mediated database lanes there is no ns->us",
+    "cast to configure — one fewer place a lossy conversion could hide."
+  ],
+  "dataset": "openmeteo",
+  "string_width_tolerant": true,
+
+  "columns": [
+    { "name": "time",           "type": "timestamp[us]" },
+    { "name": "temperature_2m", "type": "double" }
+  ],
+
+  "_discriminators_comment": [
+    "RF-002 legitimately does not apply to this dataset. The 90-day Berlin",
+    "archive window contains 2160 hourly readings and ZERO nulls — checked at",
+    "the source, not assumed — so there is no column that can discriminate",
+    "count(col) from count(*).",
+    "",
+    "This is exactly the case the declaration rule exists to distinguish: an",
+    "empty `discriminators` list WITH a stated reason yields SKIPPED-with-reason,",
+    "while omitting the key entirely is a FAIL. 'There is nothing nullable here'",
+    "and 'nobody thought about it' must never produce the same verdict.",
+    "",
+    "If a future window includes a gap (the reanalysis does occasionally have",
+    "them), declare temperature_2m here with its exact count and the check",
+    "upgrades itself from SKIPPED to a real gate."
+  ],
+  "discriminators": [],
+  "discriminators_absent_reason": "the open-meteo archive window 2026-01-01..2026-03-31 for Berlin returns 2160 hourly readings with zero nulls in temperature_2m (verified at the source), so no column can discriminate count(col) from count(*)",
+
+  "_boundary_comment": [
+    "B-2 applies to APIs exactly as it does to databases. A provider that",
+    "silently answered in local time instead of UTC would shift every timestamp",
+    "uniformly, and count, null count and both scaled sums would all still",
+    "match. min/max is the only declared check here that moves.",
+    "",
+    "The probe records the provider's own declared timezone (`GMT`) alongside",
+    "the bounds, because agreeing bounds mean something different when the",
+    "provider says GMT than when it says something else."
+  ],
+  "boundary_columns": ["time"],
+
+  "aggregates": [
+    { "ground_truth_key": "count",            "op": "row_count" },
+    { "ground_truth_key": "count_temp_null",  "op": "null_count", "column": "temperature_2m" },
+    { "ground_truth_key": "pct_temp_null",    "op": "null_pct",   "column": "temperature_2m", "tolerance": 1e-9 },
+    {
+      "ground_truth_key": "scaled_temp_sum_exact_int",
+      "op": "scaled_sum_exact_int",
+      "column": "temperature_2m",
+      "scale": 10,
+      "_note": "AUTHORITY. Temperatures carry one decimal, so round(t*10) is exact per value and integer addition is associative."
+    },
+    {
+      "ground_truth_key": "scaled_temp_sum",
+      "op": "scaled_sum_float",
+      "column": "temperature_2m",
+      "scale": 10,
+      "corroborating": true,
+      "_note": "Corroborates only. Summing float64 first is order-sensitive."
+    }
+  ],
+
+  "_serve_gate_comment": [
+    "The recipe lane produces a small single-block artifact (2160 rows), which",
+    "is a legitimate shape rather than a defect — 2160 < 65536. The serve gate",
+    "still applies: copied_columns must be 0 whether the file has one block or",
+    "sixteen."
+  ],
+  "serve_gate_sql": "SELECT count(*), min(time), max(time) FROM {table}"
+}

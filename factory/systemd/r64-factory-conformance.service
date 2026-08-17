@@ -1,0 +1,53 @@
+[Unit]
+Description=MESHFORGE factory — conformance sweep across every registered target
+Documentation=file:///home/kos/builds/r64-db-engine/.claude/skills/r64-factory-maintenance/SKILL.md
+# The sweep talks to a local ClickHouse container and to public HTTPS APIs, so
+# it wants both docker and the network actually up rather than merely requested.
+After=network-online.target docker.service
+Wants=network-online.target
+# ntfy on failure, matching the fleet convention used by every other unit here.
+OnFailure=ntfy-fail@%n.service
+
+[Service]
+Type=oneshot
+User=kos
+Group=kos
+WorkingDirectory=/home/kos/builds/r64-db-engine
+
+# PYTHONNOUSERSITE is standing discipline, not decoration: a stray package in
+# ~/.local must never shadow the pinned one. pyarrow in particular is
+# exact-pinned because it owns the Arrow IPC block layout the consumer's cache
+# is keyed on, and a shadowing copy would change artifacts silently.
+Environment=PYTHONNOUSERSITE=1
+
+# The venv interpreter explicitly. The sweep re-execs itself under it if
+# invoked otherwise, but naming it here means the unit does not depend on that
+# fallback behaving.
+ExecStart=/home/kos/builds/r64-db-engine/.venv/bin/python \
+    /home/kos/builds/r64-db-engine/factory/bin/factory-conformance-sweep \
+    --serve-gate \
+    --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence \
+    --brief-dir /home/kos/builds/r64-db-engine
+
+# A sweep pulls a million rows twice per target and spins an ephemeral Flight
+# server. It should never run for an hour; if it does, something is hung and a
+# hung timer is worse than a failed one because nothing alerts.
+TimeoutStartSec=45min
+
+# NOT Restart=on-failure. A conformance failure is a REAL SIGNAL about a source
+# that changed, and retrying it would either mask a transient or hammer a
+# third-party API. The repair brief and the ntfy alert are the response.
+Restart=no
+
+# Modest hardening. Deliberately NOT ProtectHome or a strict ReadWritePaths
+# set: the sweep writes evidence packs and repair briefs into the repo under
+# /home/kos, which is the whole point of the run.
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
