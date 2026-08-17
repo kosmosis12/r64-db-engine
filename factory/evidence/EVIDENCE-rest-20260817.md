@@ -1,8 +1,8 @@
 # EVIDENCE — rest / open_meteo_berlin_hourly
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T11:27:19Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T12:09:15Z.
 
-> Ratifies `deb1710b6892` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
+> Ratifies `246911cc1dba` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -39,7 +39,7 @@
 | 6 | `pg011_refusal` | PASS |  | refused with: sink 'arrow_ipc' cannot serve incremental mode (its output format is not appendable in place), but these tables request it: open_meteo_berlin_hourly. Use mode: full_refresh. |
 | 7 | `block_structure` | PASS |  | 1 blocks expected for 2160 rows at 65536/block |
 | 8 | `checksum` | PASS |  | two consecutive same-lane pulls are byte-identical (sha256 a16b8d2ed10a81a1…) |
-| 9 | `recipe_security_invariants` | PASS |  | 6 destination-pinning mutations, all of which must be refused |
+| 9 | `recipe_security_invariants` | PASS |  | 14 destination-pinning mutations, all of which must be refused |
 | 10 | `zero_copy_serve_gate` | PASS |  | counter deltas from the server's own get_flight_info app_metadata |
 
 ## 1. `registry_admission` — PASS
@@ -147,7 +147,7 @@ two consecutive same-lane pulls are byte-identical (sha256 a16b8d2ed10a81a1…)
 
 ## 9. `recipe_security_invariants` — PASS
 
-6 destination-pinning mutations, all of which must be refused
+14 destination-pinning mutations, all of which must be refused
 
 | comparison | actual | expected | ok | code | note |
 |---|---|---|:--:|---|---|
@@ -157,6 +157,14 @@ two consecutive same-lane pulls are byte-identical (sha256 a16b8d2ed10a81a1…)
 | templated url (host/path substitution) | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: recipes[geocode].url contains a template placeholder: 'https://geocoding-api.open-meteo.com/v1/search/{path}'. The URL is PINNED at recipe creation — runtime inputs may populate declared body/query parameters only, never the host or the path. A substitutable URL is a destination |
 | undeclared threading input | `REFUSED` | `REFUSED` | ok |  | RecipeBookError: threading[1] supplies input(s) ['not_a_declared_param'] that recipe 'archive' does not declare in params_schema.properties (declared: ['end_date', 'hourly', 'latitude', 'longitude', 'start_date', 'timezone']). Runtime inputs may only populate DECLARED parameters. |
 | loopback destination (SSRF) | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: recipe host resolves to 127.0.0.1 (loopback address space), which is refused. Reaching an internal service through a config-described call is the SSRF shape this fence exists to prevent. |
+| cross-path next-URL against pinned https://geocoding-api.open-meteo.com/v1/search | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/v1/../admin' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
+| undeclared path next-URL against pinned https://geocoding-api.open-meteo.com/v1/search | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/definitely-not-the-pinned-path' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
+| subdomain next-URL against pinned https://geocoding-api.open-meteo.com/v1/search | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL host 'attacker.geocoding-api.open-meteo.com' does not EXACTLY match the recipe's pinned host 'geocoding-api.open-meteo.com'. Subdomain latitude is deliberately not available on the pagination path: this URL came from the provider, not from the recipe author. |
+| cross-path next-URL against pinned https://archive-api.open-meteo.com/v1/archive | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/v1/../admin' is neither the recipe's pinned path '/v1/archive' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
+| undeclared path next-URL against pinned https://archive-api.open-meteo.com/v1/archive | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/definitely-not-the-pinned-path' is neither the recipe's pinned path '/v1/archive' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
+| subdomain next-URL against pinned https://archive-api.open-meteo.com/v1/archive | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL host 'attacker.archive-api.open-meteo.com' does not EXACTLY match the recipe's pinned host 'archive-api.open-meteo.com'. Subdomain latitude is deliberately not available on the pagination path: this URL came from the provider, not from the recipe author. |
+| cross-path next-URL with allowed_next_paths OMITTED | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/somewhere-else' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
+| cross-path next-URL with allowed_next_paths EXPLICITLY EMPTY | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/somewhere-else' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
 
 ## 10. `zero_copy_serve_gate` — PASS
 
@@ -197,7 +205,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT count(*), min(time), max(time) FROM open_meteo_berlin_hourly",
   "addr": "127.0.0.1:8903",
-  "pid": 951041,
+  "pid": 1015086,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -214,6 +222,15 @@ counter deltas from the server's own get_flight_info app_metadata
 
 </details>
 
+## CLOSURE BOUNDARY — what this pack does NOT establish
+
+| item | pinned | why |
+|---|---|---|
+| secret contents | **no** | a sha256 of a low-entropy API key is offline-guessable, and an evidence pack travels. Only path, size, mtime and mode are recorded — enough to say the same secret file was in place, nothing about the secret. |
+| native and runtime dependencies beyond the lockfiles | **no** | pyproject.toml and uv.lock fix the declared and resolved Python sets, and the meshroad binary is content-addressed. Shared libraries, the OS package set and the container's own contents are NOT pinned; the container image digest is recorded, which identifies the image but does not reconstruct it. |
+| live source state | measured, not pinned | a live database or API cannot be pinned by a pack — it is not ours and it moves. What the pack carries is MEASUREMENT of it at run time: row counts, aggregates, min/max bounds, session timezone, and the artifact's content address. Those values are already in this pack; they establish what the sou... |
+| the machine's wall clock and scheduling | **no** | no timing claim is made by any check in this battery, so clock and load are deliberately outside the boundary rather than silently assumed. |
+
 ## Provenance — what this pack ratifies
 
 ```json
@@ -227,17 +244,40 @@ counter deltas from the server's own get_flight_info app_metadata
     "storage": "copied",
     "suffix": ".arrow"
   },
+  "closure_boundary": [
+    {
+      "item": "secret contents",
+      "pinned": false,
+      "why": "a sha256 of a low-entropy API key is offline-guessable, and an evidence pack travels. Only path, size, mtime and mode are recorded \u2014 enough to say the same secret file was in place, nothing about the secret."
+    },
+    {
+      "item": "native and runtime dependencies beyond the lockfiles",
+      "pinned": false,
+      "why": "pyproject.toml and uv.lock fix the declared and resolved Python sets, and the meshroad binary is content-addressed. Shared libraries, the OS package set and the container's own contents are NOT pinned; the container image digest is recorded, which identifies the image but does not reconstruct it."
+    },
+    {
+      "item": "live source state",
+      "measured": true,
+      "pinned": false,
+      "why": "a live database or API cannot be pinned by a pack \u2014 it is not ours and it moves. What the pack carries is MEASUREMENT of it at run time: row counts, aggregates, min/max bounds, session timezone, and the artifact's content address. Those values are already in this pack; they establish what the source held during this run, not that it will hold it again."
+    },
+    {
+      "item": "the machine's wall clock and scheduling",
+      "pinned": false,
+      "why": "no timing claim is made by any check in this battery, so clock and load are deliberately outside the boundary rather than silently assumed."
+    }
+  ],
   "command": ".venv/bin/python -m factory.conformance --dialect rest --config /home/kos/builds/r64-db-engine/factory/targets/rest-openmeteo.yaml --ground-truth /home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-openmeteo.json --table open_meteo_berlin_hourly --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence --work-dir /tmp/r64-factory-sweep/rest-openmeteo --serve-gate",
   "git": {
     "branch": "feat/meshforge-factory",
-    "commit": "deb1710b6892d1bde16dc18dd22155e5bf05f84a",
+    "commit": "246911cc1dbaf80a5f597f6c8022d27f811d84cf",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"
   },
   "implementation": {
     "distribution_version": "0.1.0",
     "source_files": 46,
-    "source_sha256": "ee7cd7ba60560a403501d368e77eee4be49d13cb609bacfb05761ecc9437ffff"
+    "source_sha256": "a7d75c3929f4e441720461b3f9585b554e47266fa4c4bdb1a609f0019a8f338b"
   },
   "inputs": {
     "ground_truth": {
@@ -255,6 +295,28 @@ counter deltas from the server's own get_flight_info app_metadata
     "target_config": {
       "path": "/home/kos/builds/r64-db-engine/factory/targets/rest-openmeteo.yaml",
       "sha256": "880b232281840e8619ff51e551cb8456e84c92d169602801cced2bbfa7693a3f"
+    }
+  },
+  "proxy_environment": {
+    "_note": "no proxy-related environment variables were set"
+  },
+  "secret_references": [],
+  "toolchain": {
+    "meshroad_binary": {
+      "bytes": 106288656,
+      "path": "/usr/local/bin/meshroad",
+      "sha256": "05e056d48f4ca8551cc3f11c97abeb2fc670cb6d951c5394cbd9d9e16d1e236d"
+    },
+    "platform_triple": "Linux-x86_64-glibc",
+    "pyproject_toml": {
+      "path": "pyproject.toml",
+      "sha256": "7c02da1c2dc19e3fd47c7747c86dff4832ab4aafc250796730c3fd6aff4f6da0"
+    },
+    "python": "3.13.12",
+    "python_implementation": "CPython",
+    "uv_lock": {
+      "path": "uv.lock",
+      "sha256": "c41b2599c5b0a596e33728ae27a4e506a97f99bb31bfef7fb708e552466e6e08"
     }
   }
 }
@@ -276,7 +338,7 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "deb1710b6892d1bde16dc18dd22155e5bf05f84a",
+    "commit": "246911cc1dbaf80a5f597f6c8022d27f811d84cf",
     "branch": "feat/meshforge-factory",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"

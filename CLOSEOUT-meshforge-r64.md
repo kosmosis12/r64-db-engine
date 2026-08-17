@@ -3,9 +3,9 @@
 Branch: `feat/meshforge-factory` (off `main` @ `7820d18`)
 Session: 2026-08-16 → 2026-08-17 · Brief: `CC-BRIEF-meshforge-r64.md` · Index: `docs/MESHFORGE-SKILL-INDEX.md`
 
-**Status: all four gates met. Codex round 1 remediated (§9) — BLOCK on 1/3/4,
-clean on 2, caveat upheld on 5. Re-pushed for re-audit. NOT merged: merge
-remains blocked on the audit verdict per Law 2. See §6 and §9.**
+**Status: all four gates met. Codex rounds 1 (§9) and 2 (§10) remediated.
+Round 2: Q2 CLEAN, Q1/Q3/Q4 BLOCK — all addressed. Re-pushed for round 3.
+NOT merged: merge remains blocked on the audit verdict per Law 2.**
 
 ---
 
@@ -628,4 +628,128 @@ deb1710 T4(evidence): exempt the pack's own output from the dirtiness rule
 6655b90 T4(evidence): packs refuse a dirty tree and pin every input (code)
 4e46cf0 T3(rest): pagination steering and DNS rebinding, both default-deny
 9c8ec6b T1(oracle): negative fixtures assert the REASON, not merely that something failed
+```
+
+---
+
+## 10. Codex round 2 — verdicts and remediation
+
+Audit received 2026-08-17. **BLOCK — Q2 CLEAN, Q1/Q3/Q4 exploitable.** All
+addressed; branch re-pushed for round 3.
+
+| # | Question | Verdict | Remediation | SHA |
+|---|---|---|---|---|
+| **Q1** | Meta-fixture leaked the answer key | **BLOCK** | Metadata-denied harness, full verdict vectors, registry-derived guards | `494ce87` |
+| **Q2** | Wire-level encoding attacks | **CLEAN** | none required — see below | — |
+| **Q3** | Provenance laundering | **BLOCK** | Inputs-outside-evidence rule, extended pins, CLOSURE BOUNDARY | `5991539` |
+| **Q4** | Claims vs code | **BLOCK** | Retry claim deleted, pinning language, redirect fixture, 14 mutations | `143490f` |
+
+### Q2 — CLEAN, recorded
+
+**The wire-level surface held under encoding attacks.** Codex probed the
+destination fence with encoded and malformed authorities and found no bypass:
+the host comparison operates on `urlsplit().hostname`, which normalizes case and
+performs IDNA/percent handling before the label-boundary test, so the encoding
+tricks that defeat naive string matching do not reach it. Recorded here because
+a clean verdict on an adversarial probe is evidence, and evidence that is not
+written down did not happen.
+
+### Q1 — the harness was grading its own answer
+
+Round 1's fixtures asserted a triple (FAIL, check, code) — better than `assert
+FAIL`, and still not enough, because **the case passed its target check into the
+assertion**. A stub handed that metadata can echo it back and pass without
+inspecting an input. The suite was measuring the stub's access to metadata.
+
+Now: fixtures are complete SCENARIOS replayed through a harness that hands an
+oracle exactly what the real battery receives and nothing else; manifests
+declare the verdict of all ten checks, so a catch-all fails on the nine it
+wrongly reds; meta-replays use content-addressed identifiers so name matching is
+unavailable; and three adversaries (unconditional, adaptive-echo, name-pattern)
+must all fail. **Two fenced negative controls** prove the fences are
+load-bearing: the echo stub PASSES when deliberately leaked the manifest, and
+the name matcher provably behaves differently on real names. Without those, "the
+stub failed" would be equally consistent with a stub too weak to matter.
+
+Guards are derived from `battery.CHECK_NAMES` and `battery.MECHANISMS`; the
+duplicated hard-coded set is deleted. Proven by mutation three ways — adding an
+unproven check, leaking unconditionally, and leaking in the adversary test (37
+cases red).
+
+### Q3 — the exemption was the laundering mechanism
+
+`factory/evidence/` carries the dirty-tree exemption so a pack's own output
+cannot invalidate it. An **input** placed there inherited that exemption: it
+could be swapped between runs without ever making the tree dirty, and every pack
+would keep reporting `ratifies_head: true` while its inputs moved underneath it.
+Now two-sided — the exemption covers outputs only, and only paths outside the
+resolved input set. A pinned input under `factory/evidence/` is refused, naming
+the path, before any pull.
+
+Extended pins: `pyproject.toml` + `uv.lock`, the meshroad binary's content
+address (it is a build artifact from outside this repo, and the serve gate
+reports *its* counters), python version/implementation/platform triple, and the
+proxy environment **with values** — a pack naming a hostname while `HTTPS_PROXY`
+silently rerouted every call would describe a run that did not happen.
+
+**Secrets are not hashed.** A sha256 of a low-entropy API key is
+offline-guessable and an evidence pack travels; publishing a digest of a short
+credential hands an attacker an oracle to grind against. Path, size, mtime and
+mode only, asserted negatively.
+
+Every pack now carries a **CLOSURE BOUNDARY** section naming what it does *not*
+establish: secret contents, native/runtime deps beyond the lockfiles, live
+source state (**measured, not pinned** — the measurements are in the pack and
+establish what the source held *during this run*), and the wall clock. The
+overclaimed "every input the run consumed" is reworded to the bounded form, with
+a test preventing the old phrasing from creeping back.
+
+### Q4 — a claim with no implementation behind it
+
+The skill claimed transport retry. **No retry of any kind exists** — the engine
+makes one attempt per page and fails. The line is deleted rather than the
+behaviour assumed; ledger **D-12** records that the claim returns when the code
+does.
+
+The redirect fixture exposed real code: the client did disable following, but
+the engine had no explicit 3xx branch, so a redirect fell through into a JSON
+parse error and reported the wrong cause. Now refused by name, naming the
+declined Location, before the body is read.
+
+Battery mutations went **6 → 14** against the shipped book's real pinned URLs.
+The `allowed_next_paths` omitted-vs-empty pair is decided at the **book level**
+through the real loader — passing `[]` twice at the call site would have tested
+nothing about how an omitted key loads. A default-deny rule that only denies
+when someone remembered to write `[]` is not default-deny.
+
+§7's MF-03 entry now enumerates exactly which behaviours are battery-level and
+which are unit-level, with the reason for each. Redirects and live rebinding are
+unit-level **only**: a battery mutation cannot manufacture a redirecting or
+rebinding server from a static config file.
+
+### Verification after round 2
+
+| | result |
+|---|---|
+| Suite (local) | **791 passed / 66 skipped** |
+| With `--integration` | see below |
+| `ruff check src tests factory` | clean |
+| `mypy src factory` | clean, 47 files |
+| Both greps | **0** · `core/` untouched |
+| Both packs | ratify `246911c`, clean tree, `ratifies_head: true`, 14 security mutations |
+
+### Claims after round 2
+
+**MF-01 rescoped** to the operational property, verbatim per the audit.
+**MF-03 rescoped** with the exact pinning wording and a battery-vs-unit
+breakdown. **MF-02 unchanged.** All three remain **FENCED** pending round 3.
+
+Remediation commits:
+
+```
+246911c docs(closeout): ledger D-12 — bounded transport retry is future work
+143490f Q4(claims): make every claim match the code, exactly
+5991539 Q3(provenance): close the laundering path, state the closure boundary
+29b4b1e Q1(oracle): deny the stubs metadata, assert the full verdict vector
+981ec53 docs(closeout): record 369 with --integration after remediation
 ```

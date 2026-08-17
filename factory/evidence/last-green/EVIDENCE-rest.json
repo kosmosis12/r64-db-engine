@@ -10,7 +10,7 @@
   "dialect": "rest",
   "table": "open_meteo_berlin_hourly",
   "source": "open_meteo_berlin_hourly",
-  "generated_utc": "2026-08-17T11:27:19Z",
+  "generated_utc": "2026-08-17T12:09:15Z",
   "invocation": {
     "config": "/home/kos/builds/r64-db-engine/factory/targets/rest-openmeteo.yaml",
     "ground_truth": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-openmeteo.json",
@@ -22,7 +22,7 @@
   },
   "provenance": {
     "git": {
-      "commit": "deb1710b6892d1bde16dc18dd22155e5bf05f84a",
+      "commit": "246911cc1dbaf80a5f597f6c8022d27f811d84cf",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -49,9 +49,31 @@
     },
     "implementation": {
       "distribution_version": "0.1.0",
-      "source_sha256": "ee7cd7ba60560a403501d368e77eee4be49d13cb609bacfb05761ecc9437ffff",
+      "source_sha256": "a7d75c3929f4e441720461b3f9585b554e47266fa4c4bdb1a609f0019a8f338b",
       "source_files": 46
     },
+    "toolchain": {
+      "python": "3.13.12",
+      "python_implementation": "CPython",
+      "platform_triple": "Linux-x86_64-glibc",
+      "pyproject_toml": {
+        "path": "pyproject.toml",
+        "sha256": "7c02da1c2dc19e3fd47c7747c86dff4832ab4aafc250796730c3fd6aff4f6da0"
+      },
+      "uv_lock": {
+        "path": "uv.lock",
+        "sha256": "c41b2599c5b0a596e33728ae27a4e506a97f99bb31bfef7fb708e552466e6e08"
+      },
+      "meshroad_binary": {
+        "path": "/usr/local/bin/meshroad",
+        "sha256": "05e056d48f4ca8551cc3f11c97abeb2fc670cb6d951c5394cbd9d9e16d1e236d",
+        "bytes": 106288656
+      }
+    },
+    "proxy_environment": {
+      "_note": "no proxy-related environment variables were set"
+    },
+    "secret_references": [],
     "artifact": {
       "sha256": "a16b8d2ed10a81a11ac9e7ddfb39e96d4afe0d6a22b8a1a3a4bcb61bf29870ca",
       "bytes": 36090,
@@ -59,7 +81,30 @@
       "suffix": ".arrow",
       "storage": "copied",
       "path": "factory/evidence/artifacts/a16b8d2ed10a81a11ac9e7ddfb39e96d4afe0d6a22b8a1a3a4bcb61bf29870ca.arrow"
-    }
+    },
+    "closure_boundary": [
+      {
+        "item": "secret contents",
+        "pinned": false,
+        "why": "a sha256 of a low-entropy API key is offline-guessable, and an evidence pack travels. Only path, size, mtime and mode are recorded \u2014 enough to say the same secret file was in place, nothing about the secret."
+      },
+      {
+        "item": "native and runtime dependencies beyond the lockfiles",
+        "pinned": false,
+        "why": "pyproject.toml and uv.lock fix the declared and resolved Python sets, and the meshroad binary is content-addressed. Shared libraries, the OS package set and the container's own contents are NOT pinned; the container image digest is recorded, which identifies the image but does not reconstruct it."
+      },
+      {
+        "item": "live source state",
+        "pinned": false,
+        "measured": true,
+        "why": "a live database or API cannot be pinned by a pack \u2014 it is not ours and it moves. What the pack carries is MEASUREMENT of it at run time: row counts, aggregates, min/max bounds, session timezone, and the artifact's content address. Those values are already in this pack; they establish what the source held during this run, not that it will hold it again."
+      },
+      {
+        "item": "the machine's wall clock and scheduling",
+        "pinned": false,
+        "why": "no timing claim is made by any check in this battery, so clock and load are deliberately outside the boundary rather than silently assumed."
+      }
+    ]
   },
   "artifact": {
     "path": "/tmp/r64-factory-sweep/rest-openmeteo/arrow_out/open_meteo_berlin_hourly.arrow",
@@ -82,7 +127,7 @@
       "httpx": "0.28.1"
     },
     "git": {
-      "commit": "deb1710b6892d1bde16dc18dd22155e5bf05f84a",
+      "commit": "246911cc1dbaf80a5f597f6c8022d27f811d84cf",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -393,7 +438,7 @@
       "name": "recipe_security_invariants",
       "status": "PASS",
       "reason_code": "",
-      "detail": "6 destination-pinning mutations, all of which must be refused",
+      "detail": "14 destination-pinning mutations, all of which must be refused",
       "comparisons": [
         {
           "label": "https->http downgrade in recipe[0].url",
@@ -441,6 +486,70 @@
           "expected": "REFUSED",
           "ok": true,
           "note": "RecipeSecurityError: recipe host resolves to 127.0.0.1 (loopback address space), which is refused. Reaching an internal service through a config-described call is the SSRF shape this fence exists to prevent.",
+          "code": "recipe_security.mutation_accepted"
+        },
+        {
+          "label": "cross-path next-URL against pinned https://geocoding-api.open-meteo.com/v1/search",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: pagination next-URL path '/v1/../admin' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends.",
+          "code": "recipe_security.mutation_accepted"
+        },
+        {
+          "label": "undeclared path next-URL against pinned https://geocoding-api.open-meteo.com/v1/search",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: pagination next-URL path '/definitely-not-the-pinned-path' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends.",
+          "code": "recipe_security.mutation_accepted"
+        },
+        {
+          "label": "subdomain next-URL against pinned https://geocoding-api.open-meteo.com/v1/search",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: pagination next-URL host 'attacker.geocoding-api.open-meteo.com' does not EXACTLY match the recipe's pinned host 'geocoding-api.open-meteo.com'. Subdomain latitude is deliberately not available on the pagination path: this URL came from the provider, not from the recipe author.",
+          "code": "recipe_security.mutation_accepted"
+        },
+        {
+          "label": "cross-path next-URL against pinned https://archive-api.open-meteo.com/v1/archive",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: pagination next-URL path '/v1/../admin' is neither the recipe's pinned path '/v1/archive' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends.",
+          "code": "recipe_security.mutation_accepted"
+        },
+        {
+          "label": "undeclared path next-URL against pinned https://archive-api.open-meteo.com/v1/archive",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: pagination next-URL path '/definitely-not-the-pinned-path' is neither the recipe's pinned path '/v1/archive' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends.",
+          "code": "recipe_security.mutation_accepted"
+        },
+        {
+          "label": "subdomain next-URL against pinned https://archive-api.open-meteo.com/v1/archive",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: pagination next-URL host 'attacker.archive-api.open-meteo.com' does not EXACTLY match the recipe's pinned host 'archive-api.open-meteo.com'. Subdomain latitude is deliberately not available on the pagination path: this URL came from the provider, not from the recipe author.",
+          "code": "recipe_security.mutation_accepted"
+        },
+        {
+          "label": "cross-path next-URL with allowed_next_paths OMITTED",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: pagination next-URL path '/somewhere-else' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends.",
+          "code": "recipe_security.mutation_accepted"
+        },
+        {
+          "label": "cross-path next-URL with allowed_next_paths EXPLICITLY EMPTY",
+          "actual": "REFUSED",
+          "expected": "REFUSED",
+          "ok": true,
+          "note": "RecipeSecurityError: pagination next-URL path '/somewhere-else' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends.",
           "code": "recipe_security.mutation_accepted"
         }
       ],
@@ -526,7 +635,7 @@
         },
         "sql": "SELECT count(*), min(time), max(time) FROM open_meteo_berlin_hourly",
         "addr": "127.0.0.1:8903",
-        "pid": 951041,
+        "pid": 1015086,
         "baseline": {
           "cache_hits": 0,
           "cache_misses": 0,

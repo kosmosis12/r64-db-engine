@@ -10,7 +10,7 @@
   "dialect": "clickhouse",
   "table": "perf_1m",
   "source": "SELECT * FROM meshbench.perf_1m ORDER BY row_id",
-  "generated_utc": "2026-08-17T11:27:13Z",
+  "generated_utc": "2026-08-17T12:09:09Z",
   "invocation": {
     "config": "/home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml",
     "ground_truth": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json",
@@ -22,7 +22,7 @@
   },
   "provenance": {
     "git": {
-      "commit": "deb1710b6892d1bde16dc18dd22155e5bf05f84a",
+      "commit": "246911cc1dbaf80a5f597f6c8022d27f811d84cf",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -46,9 +46,31 @@
     },
     "implementation": {
       "distribution_version": "0.1.0",
-      "source_sha256": "ee7cd7ba60560a403501d368e77eee4be49d13cb609bacfb05761ecc9437ffff",
+      "source_sha256": "a7d75c3929f4e441720461b3f9585b554e47266fa4c4bdb1a609f0019a8f338b",
       "source_files": 46
     },
+    "toolchain": {
+      "python": "3.13.12",
+      "python_implementation": "CPython",
+      "platform_triple": "Linux-x86_64-glibc",
+      "pyproject_toml": {
+        "path": "pyproject.toml",
+        "sha256": "7c02da1c2dc19e3fd47c7747c86dff4832ab4aafc250796730c3fd6aff4f6da0"
+      },
+      "uv_lock": {
+        "path": "uv.lock",
+        "sha256": "c41b2599c5b0a596e33728ae27a4e506a97f99bb31bfef7fb708e552466e6e08"
+      },
+      "meshroad_binary": {
+        "path": "/usr/local/bin/meshroad",
+        "sha256": "05e056d48f4ca8551cc3f11c97abeb2fc670cb6d951c5394cbd9d9e16d1e236d",
+        "bytes": 106288656
+      }
+    },
+    "proxy_environment": {
+      "_note": "no proxy-related environment variables were set"
+    },
+    "secret_references": [],
     "artifact": {
       "sha256": "db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a",
       "bytes": 149806522,
@@ -57,7 +79,30 @@
       "storage": "content-addressed manifest",
       "path": "factory/evidence/artifacts/db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a.manifest.json",
       "note": "artifact is 149806522 bytes, over the 8388608-byte copy limit; the sha256 above is the content address and the bytes are not committed"
-    }
+    },
+    "closure_boundary": [
+      {
+        "item": "secret contents",
+        "pinned": false,
+        "why": "a sha256 of a low-entropy API key is offline-guessable, and an evidence pack travels. Only path, size, mtime and mode are recorded \u2014 enough to say the same secret file was in place, nothing about the secret."
+      },
+      {
+        "item": "native and runtime dependencies beyond the lockfiles",
+        "pinned": false,
+        "why": "pyproject.toml and uv.lock fix the declared and resolved Python sets, and the meshroad binary is content-addressed. Shared libraries, the OS package set and the container's own contents are NOT pinned; the container image digest is recorded, which identifies the image but does not reconstruct it."
+      },
+      {
+        "item": "live source state",
+        "pinned": false,
+        "measured": true,
+        "why": "a live database or API cannot be pinned by a pack \u2014 it is not ours and it moves. What the pack carries is MEASUREMENT of it at run time: row counts, aggregates, min/max bounds, session timezone, and the artifact's content address. Those values are already in this pack; they establish what the source held during this run, not that it will hold it again."
+      },
+      {
+        "item": "the machine's wall clock and scheduling",
+        "pinned": false,
+        "why": "no timing claim is made by any check in this battery, so clock and load are deliberately outside the boundary rather than silently assumed."
+      }
+    ]
   },
   "artifact": {
     "path": "/tmp/r64-factory-sweep/clickhouse-meshbench/arrow_out/perf_1m.arrow",
@@ -80,7 +125,7 @@
       "httpx": "0.28.1"
     },
     "git": {
-      "commit": "deb1710b6892d1bde16dc18dd22155e5bf05f84a",
+      "commit": "246911cc1dbaf80a5f597f6c8022d27f811d84cf",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -720,7 +765,7 @@
         },
         "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
         "addr": "127.0.0.1:8903",
-        "pid": 950698,
+        "pid": 1014831,
         "baseline": {
           "cache_hits": 0,
           "cache_misses": 0,
