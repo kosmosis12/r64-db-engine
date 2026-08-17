@@ -162,12 +162,31 @@ the benign one.
    - **Read at call time from a 0600 path.** A group- or world-readable file is
      refused before any call is made.
    - **Header auth never reaches the query string** (and vice versa).
-   - **Scrubbed from engine-raised errors and from drift/repair events.** Every
-     secret loaded during a call is removed from message text, and for query
-     auth the parameter's value is redacted in any URL that appears in an
-     error — by parameter NAME as well as by literal, since a client may
-     re-encode the value. Scrubbed re-raises use `from None`, because chaining
-     would print the unscrubbed original in the traceback.
+   - **Validation errors are VALUE-FREE — this is the primary defence.**
+     A schema violation reports the instance PATH, the violated CONSTRAINT and
+     the schema path. It never reports the failing VALUE, and jsonschema's own
+     message (which embeds the instance) is never propagated. That kills the
+     credential-echo class outright: a provider echoing a submitted key back in
+     its response body is REMOTE behaviour the engine cannot control, so the
+     engine simply never puts response values into messages.
+   - **Scrubbing is the BACKSTOP, for everything that is not a schema
+     violation.** A single boundary encloses the whole post-secret-load path —
+     build_request, send, peer-check, read, decode, validate — so exceptions
+     nobody anticipated, including ones raised by httpx or the standard
+     library, are scrubbed on the way out. Literal replacement plus
+     URL-encoded forms plus redaction by parameter NAME (a client may re-encode
+     the value; the name is stable). Scrubbed re-raises use `from None`, because
+     chaining would print the unscrubbed original in the traceback.
+   - **Declared floor: secrets shorter than 8 characters are NOT registered for
+     literal scrubbing.** Replacing a short string across arbitrary error text
+     corrupts unrelated content and produces confusing, wrong diagnostics — a
+     redaction that eats the word "table" is worse than useless. This is why
+     value-free errors are the primary defence rather than the other way round:
+     a credential under the floor is still never placed into a message, because
+     messages never carry instance values at all.
+   - **The drift serializer scrubs the final JSON line** before it reaches
+     disk, and the ntfy body too — belt and braces over field-level scrubbing,
+     which depends on every current and future field being remembered.
    - **Never in evidence packs.** Packs record a secret file's path, size,
      mtime and mode — never a digest of its contents, which for a low-entropy
      key would be offline-guessable.

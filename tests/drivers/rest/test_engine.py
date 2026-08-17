@@ -768,6 +768,28 @@ def query_auth_book(tmp_path: Path):
     })
 
 
+def _query_auth_book_with(book, response_schema):
+    """The same query-auth recipe with a tighter response schema."""
+    recipe = book.recipes["one"]
+    return parse_book({
+        "dataset": "demo",
+        "recipes": [{
+            "name": "one",
+            "method": "GET",
+            "url": recipe.url,
+            "auth": {
+                "type": "query",
+                "env_file": recipe.auth.env_file,
+                "key_name": recipe.auth.key_name,
+            },
+            "params_schema": {"type": "object", "properties": {}},
+            "response_schema": response_schema,
+            "extract": "items",
+        }],
+        "output": {"columns": [{"name": "id", "from": "id", "type": "int64"}]},
+    })
+
+
 def _assert_clean(text: str) -> None:
     """No form of the secret may survive — literal or URL-encoded."""
     from urllib.parse import quote, quote_plus
@@ -927,3 +949,237 @@ def test_the_scrubber_ignores_values_too_short_to_be_credentials() -> None:
     s = engine.Scrubber()
     s.register_secret("ab")
     assert s.scrub("a stable table") == "a stable table"
+
+
+# ---------------------------------------------------------------------------
+# Round 4 Q2(a) — validation errors are VALUE-FREE
+# ---------------------------------------------------------------------------
+
+# A secret short enough to fall UNDER the literal-scrubbing floor. If the only
+# defence were the scrubber, this would survive; value-free errors are what
+# actually stop it.
+SHORT_SECRET = "sk-a1b2"
+
+
+def test_a_validation_error_never_reports_the_failing_VALUE(query_auth_book) -> None:
+    """The credential-echo class, killed outright.
+
+    A provider that echoes a submitted API key back inside its response body is
+    REMOTE behaviour — nothing the engine does controls it. jsonschema's own
+    message embeds the instance, so it is never propagated: the message is
+    composed from path + constraint + schema path only.
+    """
+    # The book's own schema must actually constrain the type, or the value
+    # sails past the validator and `_extract` raises instead — a different
+    # (also value-free) path, but not the one under test.
+    book = _query_auth_book_with(
+        query_auth_book,
+        {"type": "object", "required": ["items"],
+         "properties": {"items": {"type": "array"}}},
+    )
+    echoed = f"ECHOED-{SECRET}-BACK"
+    client = FakeClient([{"items": echoed}])  # a real `type` violation
+
+    with pytest.raises(engine.ResponseValidationError) as exc:
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+
+    text = str(exc.value)
+    assert echoed not in text
+    _assert_clean(text)
+    # It must still be diagnosable.
+    assert "instance path" in text
+    assert "violates constraint" in text
+
+
+def test_a_validation_error_says_WHICH_constraint_broke() -> None:
+    """Value-free must not mean information-free — a repair brief that says only
+    'validation failed' has moved the problem to the reader's memory."""
+    book = make_book(response_schema={
+        "type": "object",
+        "properties": {"items": {"type": "array"}},
+        "required": ["items"],
+    })
+    client = FakeClient([{"items": {"not": "an array"}}])
+    with pytest.raises(engine.ResponseValidationError) as exc:
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+
+    text = str(exc.value)
+    assert "items" in text, "the instance PATH is reportable and useful"
+    assert "'type'" in text, "the violated constraint is named"
+    assert "not an array" not in text, "but never the instance value"
+
+
+def test_the_drift_event_is_value_free_too(query_auth_book) -> None:
+    """The drift event is the agent-read record — the one that matters most."""
+    book = query_auth_book
+    echoed = f"leaked-{SECRET}"
+    client = FakeClient([{"items": echoed}])
+    with pytest.raises(engine.ResponseValidationError):
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+
+    events = json.dumps(drift.read_events("demo"))
+    assert echoed not in events
+    _assert_clean(events)
+
+
+def test_a_SHORT_secret_below_the_scrub_floor_still_does_not_leak(tmp_path: Path) -> None:
+    """The floor's justification, tested rather than asserted.
+
+    `SHORT_SECRET` is under `MIN_SCRUBBABLE_LENGTH`, so literal scrubbing does
+    NOT protect it. It still never reaches the message, because value-free
+    errors are the primary defence and scrubbing only the backstop.
+    """
+    secret_file = tmp_path / "api.env"
+    secret_file.write_text(SHORT_SECRET)
+    secret_file.chmod(0o600)
+    book = make_book(
+        auth={"type": "query", "env_file": str(secret_file), "key_name": "api_key"},
+        response_schema={"type": "object", "required": ["items"]},
+    )
+    client = FakeClient([{"echo": SHORT_SECRET}])
+
+    with pytest.raises(engine.ResponseValidationError) as exc:
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+    assert SHORT_SECRET not in str(exc.value)
+    assert SHORT_SECRET not in json.dumps(drift.read_events("demo"))
+
+
+def test_the_scrub_floor_is_declared_not_incidental() -> None:
+    s = engine.Scrubber()
+    assert engine.Scrubber.MIN_SCRUBBABLE_LENGTH == 8
+    s.register_secret("short")           # under the floor
+    s.register_secret("long-enough-secret")
+    assert s.scrub("short") == "short"
+    assert "long-enough-secret" not in s.scrub("x long-enough-secret y")
+
+
+# ---------------------------------------------------------------------------
+# Round 4 Q2(b) — one outer boundary covers EVERY stage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["build_request", "send", "peer_check", "read", "decode", "validate"],
+)
+def test_an_exception_from_ANY_stage_is_scrubbed_at_the_boundary(
+    query_auth_book, stage: str, monkeypatch
+) -> None:
+    """Per-site scrubbing is a promise every future raise remembers to keep.
+
+    The boundary is the guarantee: a raise injected at each stage of the
+    post-secret-load path must cross it scrubbed, with the chain severed —
+    including from code this module does not own.
+    """
+    book = query_auth_book
+    leaky = f"boom carrying {SECRET} in it"
+
+    class StagedClient(FakeClient):
+        def build_request(self, method, url, params=None, json=None, headers=None):
+            if stage == "build_request":
+                raise RuntimeError(leaky)
+            return super().build_request(method, url, params=params, json=json, headers=headers)
+
+        def send(self, request, stream=False):
+            if stage == "send":
+                raise RuntimeError(leaky)
+            response = super().send(request, stream=stream)
+            if stage == "read":
+                def exploding_read():
+                    raise RuntimeError(leaky)
+                response.read = exploding_read
+            return response
+
+    if stage == "peer_check":
+        monkeypatch.setattr(
+            engine, "_assert_connected_peer_was_vetted",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError(leaky)),
+        )
+    if stage == "decode":
+        monkeypatch.setattr(
+            engine.json, "loads", lambda *a, **k: (_ for _ in ()).throw(RuntimeError(leaky))
+        )
+    if stage == "validate":
+        monkeypatch.setattr(
+            engine, "validate_response",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError(leaky)),
+        )
+
+    client = StagedClient([{"items": []}])
+    with pytest.raises(engine.RecipeExecutionError) as exc:
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+
+    _assert_clean(str(exc.value))
+    assert exc.value.__cause__ is None, "the unscrubbed original is still chained"
+    assert exc.value.__suppress_context__ is True
+
+
+def test_the_boundary_preserves_our_own_exception_types(query_auth_book) -> None:
+    """Callers and tests discriminate on type; the boundary must not flatten
+    everything into one class while it scrubs."""
+    book = query_auth_book
+
+    class RedirectingClient(FakeClient):
+        def send(self, request, stream=False):
+            response = FakeResponse({}, status=302, headers={"location": "https://x/y"})
+            self.responses.append(response)
+            return response
+
+    with pytest.raises(engine.RecipeSecurityError):
+        engine.run_recipe(RedirectingClient([{}]), book.recipes["one"], {}, book)
+
+
+def test_MUTATION_without_the_boundary_an_unanticipated_raise_leaks(
+    query_auth_book, monkeypatch
+) -> None:
+    """Mutation check for the boundary specifically.
+
+    With `scrub_boundary` neutered to a pass-through, a raise from a stage that
+    has no inner scrubbing of its own leaks — which is the gap the boundary
+    exists to close, and confirms the tests above measure it.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def passthrough(scrubber, context):
+        yield
+
+    monkeypatch.setattr(engine, "scrub_boundary", passthrough)
+    book = query_auth_book
+
+    monkeypatch.setattr(
+        engine, "_assert_connected_peer_was_vetted",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError(f"peer said {SECRET}")),
+    )
+    with pytest.raises(RuntimeError) as exc:
+        engine.run_recipe(FakeClient([{"items": []}]), book.recipes["one"], {}, book)
+    assert SECRET in str(exc.value), (
+        "with the boundary neutered the secret should leak — if it does not, the "
+        "tests above are not measuring the boundary"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Round 4 Q2(d) — the drift serializer scrubs the final bytes
+# ---------------------------------------------------------------------------
+
+
+def test_the_drift_serializer_scrubs_the_line_that_reaches_disk(tmp_path: Path) -> None:
+    """Field-level scrubbing depends on every current AND future field being
+    remembered. Scrubbing the serialized line is a property of the bytes that
+    actually land on disk."""
+    from r64_db_engine.drivers.rest.drift import DriftEvent, emit_drift, read_events
+
+    scrubber = engine.Scrubber()
+    scrubber.register_secret(SECRET)
+
+    emit_drift(
+        DriftEvent(
+            source="demo", recipe="one", url="https://x/y", page=1,
+            reason="response_schema validation failed",
+            # A field that bypassed field-level scrubbing entirely.
+            detail=f"unscrubbed field carrying {SECRET}",
+        ),
+        scrubber=scrubber,
+    )
+    assert SECRET not in json.dumps(read_events("demo"))

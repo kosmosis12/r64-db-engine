@@ -62,31 +62,50 @@ def drift_dir() -> Path:
     return Path(override) if override else DEFAULT_DRIFT_DIR
 
 
-def emit_drift(event: DriftEvent) -> Path | None:
-    """Record the event and alert. Best-effort; never raises."""
+def emit_drift(event: DriftEvent, scrubber: Any | None = None) -> Path | None:
+    """Record the event and alert. Best-effort; never raises.
+
+    The scrubber runs over the FINAL SERIALIZED JSON, not merely over the
+    fields — belt and braces. Field-level scrubbing depends on every current and
+    future field being remembered; scrubbing the serialized line is a property
+    of the bytes that actually reach disk, which is the thing that matters.
+
+    Drift events are AGENT-READ: the next agent opens this record in order to
+    repair the connector, so a credential landing here is a credential in model
+    context. Law 3 is enforced at this sink, not assumed upstream of it.
+    """
     path = None
+    scrub = scrubber.scrub if scrubber is not None else (lambda text: text)
     try:
         directory = drift_dir()
         directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d")
         path = directory / f"{event.source}-{stamp}.jsonl"
+        line = scrub(json.dumps(event.as_dict(), sort_keys=True))
         with open(path, "a") as handle:
-            handle.write(json.dumps(event.as_dict(), sort_keys=True) + "\n")
+            handle.write(line + "\n")
         log.error("rest_drift source=%s recipe=%s reason=%s", event.source, event.recipe, event.reason)
     except OSError as exc:
         log.error("rest_drift: could not write repair event: %s", exc)
 
-    _notify(event)
+    _notify(event, scrub)
     return path
 
 
-def _notify(event: DriftEvent) -> None:
-    """ntfy alert, matching the fleet's `ntfy-fail@` message shape."""
+def _notify(event: DriftEvent, scrub: Any = None) -> None:
+    """ntfy alert, matching the fleet's `ntfy-fail@` message shape.
+
+    Scrubbed too: an alert body travels further than a log line, and a
+    credential in a push notification is a credential on somebody's phone.
+    """
+    scrub = scrub or (lambda text: text)
     if not Path(NTFY_BINARY).exists():
         log.warning("rest_drift: %s not present, skipping ntfy alert", NTFY_BINARY)
         return
-    title = f"r64 recipe drift: {event.source}/{event.recipe}"
-    body = f"{event.reason} — {event.detail[:400]}. Re-research and re-admit; do not retry."
+    title = scrub(f"r64 recipe drift: {event.source}/{event.recipe}")
+    body = scrub(
+        f"{event.reason} — {event.detail[:400]}. Re-research and re-admit; do not retry."
+    )
     try:
         subprocess.run(
             [NTFY_BINARY, "publish", "--title", title, "--priority", "high",

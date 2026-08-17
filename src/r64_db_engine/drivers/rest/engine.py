@@ -23,6 +23,8 @@ import json
 import logging
 import re
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, quote_plus
@@ -94,11 +96,18 @@ class Scrubber:
         self._secrets: set[str] = set()
         self._auth_keys: set[str] = set()
 
+    #: Secrets shorter than this are NOT registered for literal scrubbing.
+    #: Replacing a short string across arbitrary error text corrupts unrelated
+    #: content and produces confusing, wrong diagnostics — a redaction that
+    #: eats the word "table" is worse than useless. The floor is DECLARED
+    #: rather than tuned silently, and it is why value-free errors are the
+    #: primary defence and scrubbing only the backstop: a credential short
+    #: enough to fall under this floor is still never placed into a message,
+    #: because the message never carries instance values in the first place.
+    MIN_SCRUBBABLE_LENGTH = 8
+
     def register_secret(self, value: str) -> None:
-        # Very short values are not registered: replacing a 1-3 character
-        # string would corrupt unrelated text without protecting anything a
-        # real credential looks like.
-        if value and len(value) >= 4:
+        if value and len(value) >= self.MIN_SCRUBBABLE_LENGTH:
             self._secrets.add(value)
 
     def register_auth_key(self, key: str) -> None:
@@ -121,6 +130,38 @@ class Scrubber:
 
     def scrubbed(self, exc: BaseException) -> str:
         return self.scrub(f"{type(exc).__name__}: {exc}")
+
+
+@contextmanager
+def scrub_boundary(scrubber: Scrubber, context: str) -> Iterator[None]:
+    """THE guarantee: nothing crosses this boundary carrying a credential.
+
+    Inner call sites still scrub their own messages, and that is worth keeping —
+    a precise message beats a generic one. But per-site scrubbing is a promise
+    that every current AND FUTURE raise inside the request path remembered to
+    do it, which is not a promise code can keep. This boundary encloses the
+    entire post-secret-load path — build_request, send, peer-check, read,
+    decode, validate — so the guarantee holds for exceptions nobody anticipated,
+    including ones raised by httpx, jsonschema or the standard library.
+
+    The original exception TYPE is preserved when it is one of ours, so callers
+    and tests that discriminate on type keep working; anything else is wrapped
+    as `RecipeExecutionError`. Either way the message is scrubbed and the raise
+    is `from None` — chaining would put the unscrubbed original back in the
+    traceback and defeat the entire mechanism.
+    """
+    try:
+        yield
+    except (RecipeSecurityError, EngineInvariantError, ResponseValidationError,
+            RecipeExecutionError) as exc:
+        cleaned = scrubber.scrub(str(exc))
+        if cleaned == str(exc):
+            raise
+        raise type(exc)(cleaned) from None
+    except Exception as exc:  # noqa: BLE001 - re-raised scrubbed, never chained
+        raise RecipeExecutionError(
+            f"{context}: {scrubber.scrubbed(exc)}"
+        ) from None
 
 
 def read_secret(env_file: str) -> str:
@@ -178,40 +219,80 @@ def dotted_get(doc: Any, path: str) -> Any:
     return current
 
 
+def describe_violation(exc: Any) -> str:
+    """A VALUE-FREE description of a schema violation.
+
+    # Why jsonschema's own message is never propagated
+
+    `ValidationError.message` embeds the INSTANCE — the value that failed. For
+    a response carrying credential material, or a provider that echoes a
+    submitted API key back in its error body, that message is a credential
+    verbatim. And an echo is REMOTE PROVIDER BEHAVIOUR: nothing the engine does
+    controls whether a response contains the key it was sent.
+
+    So the message is composed here from the parts that describe the SHAPE and
+    never the content:
+
+      * where           — the instance path (`hourly.temperature_2m[3]`)
+      * what constraint — the validator name and the value OUR SCHEMA declared
+      * which check     — the schema path
+
+    `validator_value` is safe because it comes from the recipe book, which is
+    ours and carries no secrets. The instance is never touched.
+
+    This is the PRIMARY defence against credential echo; the scrubber is the
+    backstop for everything that is not a schema violation.
+    """
+    where = ".".join(str(p) for p in exc.absolute_path) or "<root>"
+    schema_where = ".".join(str(p) for p in exc.absolute_schema_path) or "<root>"
+    constraint = getattr(exc, "validator", "<unknown>")
+    declared = getattr(exc, "validator_value", None)
+    return (
+        f"at instance path {where}: violates constraint {constraint!r}"
+        f"{f' = {declared!r}' if declared is not None else ''} "
+        f"(schema path {schema_where}). The failing VALUE is deliberately not "
+        f"reported: a response can echo credential material, and the value is "
+        f"not needed to identify which constraint broke."
+    )
+
+
 def validate_response(
     recipe: Recipe, payload: Any, book: RecipeBook, page: int,
     scrubber: Scrubber | None = None,
 ) -> None:
     """Per-pull `response_schema` validation. Failure is a repair signal.
 
-    Both the raised message and the DRIFT EVENT are scrubbed. The drift event
-    matters most: it is the structured record the next agent reads in order to
-    repair the connector, so a credential landing there is a credential in
-    model context.
+    Neither the raised message nor the DRIFT EVENT ever carries the failing
+    instance value — see `describe_violation`. The drift event matters most: it
+    is the structured record the next agent reads in order to repair the
+    connector, so a credential landing there is a credential in model context.
+    Scrubbing runs over both as a second layer.
     """
     import jsonschema
 
-    scrub = (scrubber or Scrubber()).scrub
+    active = scrubber or Scrubber()
+    scrub = active.scrub
     try:
         jsonschema.validate(payload, recipe.response_schema)
     except jsonschema.ValidationError as exc:
+        violation = describe_violation(exc)
         event = DriftEvent(
             source=book.dataset,
             recipe=recipe.name,
             url=scrub(recipe.url),
             page=page,
             reason="response_schema validation failed",
-            detail=scrub(exc.message),
+            detail=scrub(violation),
             json_path=[scrub(str(p)) for p in exc.absolute_path],
             schema_path=[scrub(str(p)) for p in exc.absolute_schema_path],
         )
-        emit_drift(event)
-        # `from None`, not `from exc`: chaining would print the ORIGINAL,
-        # unscrubbed exception in the traceback and undo the scrubbing entirely.
+        emit_drift(event, scrubber=active)
+        # `from None`, not `from exc`: chaining would print the ORIGINAL
+        # jsonschema exception — the one carrying the instance value — in the
+        # traceback, and undo both defences at once.
         raise ResponseValidationError(
             scrub(
-                f"recipe {recipe.name!r} response failed response_schema at "
-                f"{'.'.join(str(p) for p in exc.absolute_path) or '<root>'}: {exc.message}. "
+                f"recipe {recipe.name!r} response failed response_schema {violation} "
                 f"A repair event was written and ntfy fired. This is NOT retried with a "
                 f"different interpretation — the provider changed, so the book must be "
                 f"re-researched and re-admitted through the battery."
@@ -498,13 +579,17 @@ def run_recipe(
     scrubber = Scrubber()
 
     for page in range(1, recipe.pagination.max_pages + 1):
-        payload, response = _request(client, recipe, url, page_params, book, scrubber)
-        validate_response(recipe, payload, book, page, scrubber)
-        if first_payload is None:
-            first_payload = payload
-        records.extend(_extract(recipe, payload))
-
-        nxt = _next_page_params(recipe, payload, response, page)
+        # ONE boundary around the whole post-secret-load sequence. The secret is
+        # loaded inside `_request` and registered on the scrubber before any
+        # call is made, so anything raised from here onward is covered —
+        # including from code this module does not own.
+        with scrub_boundary(scrubber, f"recipe {recipe.name!r} page {page}"):
+            payload, response = _request(client, recipe, url, page_params, book, scrubber)
+            validate_response(recipe, payload, book, page, scrubber)
+            if first_payload is None:
+                first_payload = payload
+            records.extend(_extract(recipe, payload))
+            nxt = _next_page_params(recipe, payload, response, page)
         if not nxt:
             break
         if "__link__" in nxt:
@@ -607,6 +692,7 @@ def records_to_frame(records: list[dict[str, Any]], book: RecipeBook) -> Any:
 __all__ = [
     "EngineInvariantError",
     "Scrubber",
+    "describe_violation",
     "RecipeExecutionError",
     "ResponseValidationError",
     "dotted_get",
