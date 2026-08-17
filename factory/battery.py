@@ -47,6 +47,97 @@ FAIL = "FAIL"
 SKIPPED = "SKIPPED"
 
 
+# ---------------------------------------------------------------------------
+# The registries — the single declaration of what this battery checks
+# ---------------------------------------------------------------------------
+
+# The checks, in the order `factory/conformance.py` runs them. THIS is the set
+# tests derive coverage from; a duplicated hard-coded list in a test file would
+# happily stay green while a new check arrived unproven, which is Law 4 read
+# backwards.
+CHECK_NAMES: tuple[str, ...] = (
+    "registry_admission",
+    "schema_exactness",
+    "aggregate_parity",
+    "rf002_null_discriminator",
+    "b2_boundary",
+    "pg011_refusal",
+    "block_structure",
+    "checksum",
+    "recipe_security_invariants",
+    "zero_copy_serve_gate",
+)
+
+# Every (check, reason_code) pair declared ONCE, with the id of the mechanism
+# that owns it.
+#
+# Two fixtures may legitimately share a reason code — `schema.type_mismatch`
+# fires for both an int32-where-int64 drift and a timestamp-unit drift — but
+# only when they are the SAME mechanism. The mechanism id is what makes that
+# statable: a shared code across two different mechanisms would mean the code
+# no longer pins what failed, and the fixture triple would have quietly
+# weakened back toward `assert FAIL`.
+MECHANISMS: dict[tuple[str, str], str] = {
+    ("registry_admission", "registry.dialect_unresolvable"): "registry/resolution",
+    ("registry_admission", "registry.dialect_name_mismatch"): "registry/round-trip",
+    ("registry_admission", "registry.dialect_absent_from_listing"): "registry/listing",
+    ("registry_admission", "registry.refusal_omits_registry"): "registry/refusal-message",
+    ("registry_admission", "registry.unregistered_accepted"): "registry/admission",
+    ("schema_exactness", "schema.empty_spec"): "schema/spec-present",
+    ("schema_exactness", "schema.column_count"): "schema/column-set",
+    ("schema_exactness", "schema.column_set_or_order"): "schema/column-order",
+    ("schema_exactness", "schema.type_mismatch"): "schema/type-drift",
+    ("aggregate_parity", "aggregate.empty_spec"): "aggregate/spec-present",
+    ("aggregate_parity", "aggregate.missing_ground_truth_key"): "aggregate/spec-truth-drift",
+    ("aggregate_parity", "aggregate.not_computed"): "aggregate/op-produced-nothing",
+    ("aggregate_parity", "aggregate.mismatch"): "aggregate/gating-parity",
+    ("aggregate_parity", "aggregate.corroborating_mismatch"): "aggregate/corroborating",
+    ("rf002_null_discriminator", "rf002.no_declaration"): "rf002/declaration-present",
+    ("rf002_null_discriminator", "rf002.empty_without_reason"): "rf002/empty-needs-reason",
+    ("rf002_null_discriminator", "rf002.table_not_declared"): "rf002/declaration-covers-table",
+    ("rf002_null_discriminator", "rf002.spec_ground_truth_disagree"): "rf002/cross-record",
+    ("rf002_null_discriminator", "rf002.null_count_mismatch"): "rf002/exact-null-count",
+    ("rf002_null_discriminator", "rf002.not_discriminating"): "rf002/discrimination",
+    ("rf002_null_discriminator", "rf002.nan_as_value"): "rf002/nan-not-null",
+    ("b2_boundary", "b2.no_boundary_columns"): "b2/declaration-present",
+    ("b2_boundary", "b2.source_not_probed"): "b2/source-probed",
+    ("b2_boundary", "b2.column_absent"): "b2/column-present",
+    ("b2_boundary", "b2.bounds_diverged"): "b2/boundary-divergence",
+    ("pg011_refusal", "pg011.accepted"): "pg011/refusal",
+    ("pg011_refusal", "pg011.wrong_error"): "pg011/refusal-names-cause",
+    ("block_structure", "blocks.count_mismatch"): "blocks/count",
+    ("block_structure", "blocks.rows_missing"): "blocks/rows",
+    ("block_structure", "blocks.layout_mismatch"): "blocks/granularity",
+    ("checksum", "checksum.data_layer_differs"): "checksum/data-layer",
+    ("checksum", "checksum.bytes_only"): "checksum/byte-identity",
+    ("recipe_security_invariants", "recipe_security.no_mutations"): "recipe-security/attempted",
+    ("recipe_security_invariants", "recipe_security.mutation_accepted"): "recipe-security/refusal",
+    ("zero_copy_serve_gate", "serve.copied_columns_cold"): "serve/zero-copy-cold",
+    ("zero_copy_serve_gate", "serve.copied_columns_warm"): "serve/zero-copy-warm",
+    ("zero_copy_serve_gate", "serve.cold_zero_copy_mismatch"): "serve/cold-accounting",
+    ("zero_copy_serve_gate", "serve.cold_no_decode"): "serve/cold-exercised",
+    ("zero_copy_serve_gate", "serve.warm_miss"): "serve/warm-miss-rate",
+    ("zero_copy_serve_gate", "serve.warm_decoded"): "serve/warm-decode",
+}
+
+
+def mechanism_of(check: str, reason_code: str) -> str:
+    """The mechanism owning a (check, code) pair, or a loud failure.
+
+    Unknown pairs raise rather than returning a placeholder: a code emitted by
+    the battery but absent from `MECHANISMS` is an undeclared mechanism, and
+    silently tolerating it is how the registry drifts out of step with the code
+    it is supposed to describe.
+    """
+    try:
+        return MECHANISMS[(check, reason_code)]
+    except KeyError:
+        raise KeyError(
+            f"({check!r}, {reason_code!r}) is not declared in battery.MECHANISMS. "
+            f"Every reason code is declared once, with the mechanism that owns it."
+        ) from None
+
+
 @dataclass(frozen=True)
 class Comparison:
     """One actual-vs-expected pair, recorded whether or not it passed.
@@ -1072,6 +1163,8 @@ def check_recipe_security(
 
 __all__ = [
     "BLOCK_ROWS",
+    "CHECK_NAMES",
+    "MECHANISMS",
     "FAIL",
     "PASS",
     "SKIPPED",
@@ -1089,5 +1182,6 @@ __all__ = [
     "check_schema_exactness",
     "check_serve_gate",
     "expected_block_rows",
+    "mechanism_of",
     "normalize_string_width",
 ]

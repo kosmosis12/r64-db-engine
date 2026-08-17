@@ -440,7 +440,14 @@ conversation.
 
 | ID | Claim | Evidence |
 |---|---|---|
-| **MF-01** | *An oracle proven able to fail.* The conformance battery carries a deliberately-broken fixture per check proving each can FAIL, and the real pipeline is proven able to fail too — a poisoned ground-truth copy turns a green run red, with exactly the poisoned aggregate mismatching. | `tests/factory/test_battery.py` (one fixture per check); `test_a_poisoned_ground_truth_makes_the_battery_fail` on both lanes |
+| **MF-01** *(rescoped after Codex round 2)* | *Every negative fixture is rejected by the real battery with its declared full verdict vector; metadata-denied adversarial stubs (unconditional, adaptive-echo, name-pattern) cannot pass; guards are registry-derived.* The real pipeline is separately proven able to fail: a poisoned ground-truth copy turns a green run red with exactly the poisoned aggregate mismatching. | `tests/factory/test_battery.py`, `tests/factory/scenarios.py`; `test_a_poisoned_ground_truth_makes_the_battery_fail` on both lanes |
+
+> **Why this wording changed twice.** Round 1 said "an oracle proven able to
+> fail" — too weak: an oracle that fails at *everything* satisfies it. Round 1's
+> fix (assert the reason code) was still overclaimed, because the harness handed
+> the stub the target check. The claim now states exactly the operational
+> property the tests establish and nothing beyond it: **no stronger wording
+> anywhere.**
 | **MF-02** | *Zero-core-edit `rest` dialect.* The registry pattern holds on a non-database source class: adding a whole new class of source cost **six lines** in `drivers/__init__.py` and nothing else outside the driver's own directory. | `git grep -rniE "\brest\b" src/r64_db_engine/core/` → 0; `git diff --stat main..HEAD -- src/` |
 | **MF-03** *(rescoped after Codex round 1)* | *Destination fixed at authoring; every request re-validated (HTTPS, host rule, public address); pagination confined to the pinned endpoint, query-only by default; rebinding closed by a pre-body peer-vs-vetted-set assertion, with the residual window being that the request has already reached the socket.* Label-boundary host matching (`evil-checkr.com` ≠ `checkr.com`, tested literally), resolution-time private/loopback/link-local rejection, no redirects, closed parameter vocabulary — each with a failing fixture, and re-asserted against the shipped book's real hosts as a battery check. | `tests/drivers/rest/test_security.py`; `tests/drivers/rest/test_engine.py`; `recipe_security_invariants` in `EVIDENCE-rest-*.md` |
 
