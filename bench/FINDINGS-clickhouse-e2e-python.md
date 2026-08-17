@@ -527,3 +527,4 @@ follow-up filed:
    --time` quantizes to milliseconds, which is too coarse below ~10 ms.
 9. **`meshroad_upper` single-op addendum** — the UPPER result here is
    builtin-vs-builtin; meshroad's dictionary-aware path was not measured.
+- [ ] sudo systemctl stop r64-factory-conformance.timer   # MESHFORGE weekly sweep: pulls 1M rows + spins a Flight server on :8903 — must be stopped before any bench series; restart after: sudo systemctl start r64-factory-conformance.timer
