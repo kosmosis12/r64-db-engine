@@ -21,6 +21,7 @@ from r64_db_engine.drivers.rest.security import (
     assert_https,
     assert_public_address,
     assert_public_host,
+    confine_next_url,
     host_of,
 )
 
@@ -166,3 +167,78 @@ def test_a_name_that_resolves_to_loopback_is_refused() -> None:
 def test_unresolvable_host_is_refused_rather_than_skipped() -> None:
     with pytest.raises(RecipeSecurityError, match="could not resolve"):
         assert_public_host("https://this-host-does-not-exist.invalid/v1/x")
+
+
+# ---------------------------------------------------------------------------
+# Pagination confinement — the provider-supplied next URL
+# ---------------------------------------------------------------------------
+
+PINNED = "https://api.example.com/v1/items?page=1"
+
+
+def test_the_next_url_keeps_the_pinned_endpoint_and_takes_only_the_query() -> None:
+    """Rebuilt from vetted parts, not approved in place.
+
+    A validated string passed through unchanged can still carry something
+    nobody checked; a string reassembled from the pinned scheme, netloc and
+    path plus the provider's query can only contain what was vetted.
+    """
+    out = confine_next_url("https://api.example.com/v1/items?page=2&x=y", PINNED, [])
+    assert out == "https://api.example.com/v1/items?page=2&x=y"
+
+
+def test_a_fragment_is_dropped_from_the_next_url() -> None:
+    out = confine_next_url("https://api.example.com/v1/items?page=2#frag", PINNED, [])
+    assert "#" not in out
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "https://evil.com/v1/items?page=2",
+        "https://api.example.com.evil.net/v1/items?page=2",
+        "https://evil-api.example.com/v1/items?page=2",
+        "http://api.example.com/v1/items?page=2",
+        "https://api.example.com:8443/v1/items?page=2",
+        "https://user:pw@api.example.com/v1/items?page=2",
+    ],
+)
+def test_a_steered_next_url_is_refused(hostile: str) -> None:
+    with pytest.raises(RecipeSecurityError):
+        confine_next_url(hostile, PINNED, [])
+
+
+def test_a_subdomain_next_url_is_refused_even_though_the_host_rule_allows_it() -> None:
+    """The deliberate asymmetry, pinned in a test so it cannot drift back.
+
+    `assert_host_allowed` permits `sub.api.example.com` for an AUTHORED URL —
+    that latitude is a convenience for the person writing the recipe. On the
+    pagination path the URL comes from the SERVER, where the same latitude is a
+    steering primitive, so it is removed entirely.
+    """
+    steered = "https://attacker.api.example.com/v1/items?page=2"
+    # The authored-URL rule would allow it...
+    assert_host_allowed(steered, "api.example.com")
+    # ...and the pagination rule does not.
+    with pytest.raises(RecipeSecurityError, match="EXACTLY match"):
+        confine_next_url(steered, PINNED, [])
+
+
+def test_a_different_path_is_refused_by_default() -> None:
+    with pytest.raises(RecipeSecurityError, match="allowed_next_paths"):
+        confine_next_url("https://api.example.com/v1/admin?page=2", PINNED, [])
+
+
+def test_a_declared_path_is_permitted() -> None:
+    out = confine_next_url(
+        "https://api.example.com/v1/items/page2?x=1", PINNED, ["/v1/items/page2"]
+    )
+    assert out == "https://api.example.com/v1/items/page2?x=1"
+
+
+def test_a_declared_path_does_not_widen_the_host_rule() -> None:
+    """Declaring a path must not accidentally admit another host on that path."""
+    with pytest.raises(RecipeSecurityError, match="EXACTLY match"):
+        confine_next_url(
+            "https://evil.com/v1/items/page2?x=1", PINNED, ["/v1/items/page2"]
+        )

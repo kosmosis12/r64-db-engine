@@ -4,39 +4,56 @@ The recipe lane executes calls described by a config file. That makes the config
 a control surface, and a control surface that can name a destination is one that
 can be pointed somewhere it should not go. These functions are the fence.
 
-Four invariants, each enforced here and each with a failing fixture in
-`tests/drivers/rest/test_security.py` proving the malicious shape is REFUSED —
-not merely that the benign one is accepted. A security check with no failing
-fixture is decoration.
+Each invariant has a failing fixture in `tests/drivers/rest/test_security.py`
+proving the malicious shape is REFUSED — not merely that the benign one is
+accepted. A security check with no failing fixture is decoration.
+
+# What is actually enforced
 
 1. **HTTPS only.** No plaintext, ever, and no downgrade.
-2. **Hostname fixed per recipe.** The URL host must equal the recipe's recorded
-   allowlist host or be a PROPER SUBDOMAIN of it.
-3. **No private address space.** The host's RESOLVED addresses must all be
-   publicly routable.
-4. **No redirects.** Enforced at the client (see `engine.py`), because a 302 is
-   a destination change that would otherwise route around 1-3.
+2. **Destination fixed at authoring.** The URL is pinned when the recipe is
+   written; it admits no placeholder, and runtime inputs may populate declared
+   query/body parameters only. For that AUTHORED url the host rule permits the
+   pinned host or a proper subdomain of it (`assert_host_allowed`).
+3. **Every request re-validated** — https, host rule, and public-address —
+   at call time, not once at load.
+4. **No private address space.** Every RESOLVED address must be publicly
+   routable, checked on resolution rather than on spelling.
+5. **Pagination confined to the pinned endpoint, query-only by default.** A
+   provider-supplied next-URL goes through `confine_next_url`, which requires
+   scheme, host AND port to match the pinned URL *exactly* — subdomain latitude
+   is deliberately NOT available here, because this URL comes from the server
+   rather than the author — and adopts only the query string, rebuilding the
+   URL from vetted parts. Cross-path pagination requires an explicit
+   `allowed_next_paths` declaration in the recipe book; absent it, refused.
+6. **No redirects.** A 302 is a destination change chosen by the remote end.
+7. **Rebinding closed at response time.** `engine._assert_connected_peer_was_vetted`
+   reads the real peer off the live connection and requires it to be public AND
+   in the set validated moments earlier, fail-closed, BEFORE any body is read.
 
-# What this does NOT close, stated plainly
+# The residual window, stated plainly
 
-Between `assert_public_host()` resolving a name and httpx resolving it again to
-open the socket, DNS can change. A DNS-rebinding attacker who controls the
-authoritative server for an allowlisted hostname can therefore still win that
-race. Closing it properly means pinning the validated IP and carrying the
-hostname for TLS SNI and certificate validation, which is a real change to the
-transport layer rather than a tightening of this module.
+The rebinding check runs once a response head exists, which means **the request
+has already been written to the socket**. On a rebound connection the request
+line, headers and any API key have therefore reached the attacker before the
+check fires. What is prevented is the RESPONSE being trusted, parsed, or turned
+into pulled data — not the request leaking.
 
-That window is narrow and requires an attacker who already controls DNS for a
-host somebody deliberately wrote into a recipe. It is recorded here rather than
-papered over, because the failure mode of a security fence is a reader who
-believes it covers more than it does.
+Closing that last gap means connecting to the vetted IP directly while carrying
+the hostname for TLS SNI and certificate validation. httpx exposes no
+first-class hook for it; it requires a custom transport wrapping httpcore's
+connection pool, which is disproportionate here and fragile across versions.
+The peer-assertion form is what is implemented, and this paragraph is why.
+
+Both are recorded rather than papered over, because the failure mode of a
+security fence is a reader who believes it covers more than it does.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import socket
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 
 class RecipeSecurityError(ValueError):
@@ -178,9 +195,74 @@ def assert_destination(url: str, allowed_host: str, *, resolve: bool = True) -> 
     return assert_public_host(url) if resolve else []
 
 
+def confine_next_url(next_url: str, pinned_url: str, allowed_next_paths: list[str]) -> str:
+    """Confine a PROVIDER-SUPPLIED next-page URL to the recipe's pinned endpoint.
+
+    # Why this is stricter than `assert_host_allowed`
+
+    A `Link: <...>; rel="next"` header is a destination chosen by the remote
+    end. Running it through the same rule as the authored URL would let a
+    provider — or anyone who can inject that header — move the request to any
+    SUBDOMAIN of the pinned host, because that rule deliberately admits proper
+    subdomains. For a URL the author wrote down, subdomain latitude is a
+    convenience. For a URL the *server* just handed us, it is a steering
+    primitive, so it is removed here entirely.
+
+    The rule is DEFAULT-DENY and query-only:
+
+    - scheme, host **and port** must be byte-equal to the pinned URL's. Not
+      "a subdomain of", not "resolves to the same address" — equal.
+    - the path must equal the pinned path, or appear verbatim in
+      `allowed_next_paths`, which the recipe author declares at authoring time.
+      A provider that genuinely paginates across paths therefore requires an
+      explicit declaration; absent it, the next URL is REFUSED, not followed.
+    - **only the query string is adopted.** The returned URL is rebuilt from
+      the pinned scheme/netloc plus the permitted path plus the next URL's
+      query. Nothing else survives — not userinfo, not a fragment, not
+      parameters.
+
+    Rebuilding rather than approving-in-place is the point: a validated string
+    that is then passed through unchanged can still carry something nobody
+    checked, whereas a string reassembled from vetted parts can only contain
+    vetted parts.
+    """
+    assert_https(next_url)
+
+    pinned = urlsplit(pinned_url)
+    candidate = urlsplit(next_url)
+
+    if candidate.username or candidate.password:
+        raise RecipeSecurityError(
+            f"pagination next-URL carries credentials in its authority ({next_url!r}); refused"
+        )
+
+    pinned_netloc = (pinned.hostname or "").lower().rstrip(".")
+    candidate_netloc = (candidate.hostname or "").lower().rstrip(".")
+    if candidate_netloc != pinned_netloc or candidate.port != pinned.port:
+        raise RecipeSecurityError(
+            f"pagination next-URL host {candidate_netloc!r}"
+            f"{f':{candidate.port}' if candidate.port else ''} does not EXACTLY match the "
+            f"recipe's pinned host {pinned_netloc!r}"
+            f"{f':{pinned.port}' if pinned.port else ''}. Subdomain latitude is deliberately "
+            f"not available on the pagination path: this URL came from the provider, not from "
+            f"the recipe author."
+        )
+
+    if candidate.path != pinned.path and candidate.path not in allowed_next_paths:
+        raise RecipeSecurityError(
+            f"pagination next-URL path {candidate.path!r} is neither the recipe's pinned path "
+            f"{pinned.path!r} nor one of its declared allowed_next_paths "
+            f"{sorted(allowed_next_paths)}. Cross-path pagination must be declared at "
+            f"authoring time; it is never inferred from what a provider sends."
+        )
+
+    return urlunsplit((pinned.scheme, pinned.netloc, candidate.path, candidate.query, ""))
+
+
 __all__ = [
     "RecipeSecurityError",
     "assert_destination",
+    "confine_next_url",
     "assert_host_allowed",
     "assert_https",
     "assert_public_address",

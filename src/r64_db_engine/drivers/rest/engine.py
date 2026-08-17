@@ -27,7 +27,12 @@ from typing import Any
 
 from r64_db_engine.drivers.rest.drift import DriftEvent, emit_drift
 from r64_db_engine.drivers.rest.recipes import Recipe, RecipeBook
-from r64_db_engine.drivers.rest.security import RecipeSecurityError, assert_destination
+from r64_db_engine.drivers.rest.security import (
+    RecipeSecurityError,
+    assert_destination,
+    assert_public_address,
+    confine_next_url,
+)
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +43,16 @@ class RecipeExecutionError(RuntimeError):
 
 class ResponseValidationError(RecipeExecutionError):
     """The response did not match `response_schema` — the drift signal."""
+
+
+class EngineInvariantError(RecipeExecutionError):
+    """A Recipe reached the engine in a state the loader would have refused.
+
+    Unreachable through any supported runtime path — `recipes.py` validates
+    every book before a Recipe exists. It raises rather than degrading because
+    the alternative for each of these branches is a SILENT TRUNCATION: a pull
+    that stops after page one and reports success.
+    """
 
 
 def read_secret(env_file: str) -> str:
@@ -173,18 +188,28 @@ def _next_page_params(
         return None
     # `cursor_param` / `page_param` are Optional on the dataclass but REQUIRED
     # for their own pagination type — `recipes.py` refuses a book that omits
-    # them at load. Narrowed explicitly here anyway rather than asserted away:
-    # a None slipping into a params dict would become the literal key "None" in
-    # a query string, which is the kind of defect that produces a confusing
-    # 400 from the provider rather than a clear failure here.
+    # them at load, so a None here means a Recipe was constructed bypassing the
+    # loader. That is an INVARIANT VIOLATION, and it raises rather than
+    # returning None: silently ending pagination would truncate the pull to its
+    # first page and report success, which is the worst available outcome.
+    # Unreachable through any supported runtime path; the invariant lives in
+    # `tests/drivers/rest/test_engine.py` instead.
     if pagination.type == "cursor":
+        if pagination.cursor_param is None:
+            raise EngineInvariantError(
+                f"recipe {recipe.name!r}: pagination.type is 'cursor' but cursor_param is None. "
+                f"The loader refuses such a book, so this Recipe was built bypassing it."
+            )
         cursor = dotted_get(payload, pagination.cursor_path or "")
-        if not cursor or pagination.cursor_param is None:
+        if not cursor:
             return None
         return {pagination.cursor_param: cursor}
     if pagination.type == "page":
         if pagination.page_param is None:
-            return None
+            raise EngineInvariantError(
+                f"recipe {recipe.name!r}: pagination.type is 'page' but page_param is None. "
+                f"The loader refuses such a book, so this Recipe was built bypassing it."
+            )
         params: dict[str, Any] = {pagination.page_param: page + 1}
         if pagination.size_param and pagination.page_size:
             params[pagination.size_param] = pagination.page_size
@@ -206,6 +231,63 @@ def _parse_link_header(value: str, rel: str) -> str | None:
             if key.strip().lower() == "rel" and raw.strip().strip('"') == rel:
                 return url
     return None
+
+
+def _assert_connected_peer_was_vetted(
+    response: Any, vetted: list[str], recipe: Recipe, url: str
+) -> None:
+    """The address we CONNECTED to must be the address we VALIDATED.
+
+    This closes the DNS-rebinding gap that `assert_public_host` alone leaves
+    open: validation resolves a name, then httpx resolves it again to open the
+    socket, and an attacker controlling DNS for an allowlisted host can return
+    a public address to the first lookup and a private one to the second.
+
+    The check reads the real peer off the live connection
+    (`network_stream` -> `server_addr`) and requires it to be BOTH publicly
+    routable AND a member of the set validated moments earlier. Fail-closed: an
+    address that cannot be determined is refused, not waved through, because
+    "I could not tell" and "it was fine" must not produce the same outcome.
+
+    It runs BEFORE `response.read()`, so no body is fetched from an unvetted
+    peer and no bytes reach the caller.
+
+    # Residual window, stated rather than implied
+
+    The REQUEST has already been written to that socket by the time a response
+    head exists — so on a rebound connection, the request line, headers and any
+    API key have reached the attacker before this fires. What is prevented is
+    the RESPONSE being trusted, parsed, and turned into pulled data.
+
+    Closing the remaining window means connecting to the vetted IP directly
+    while carrying the hostname for TLS SNI and certificate validation. httpx
+    has no first-class hook for that; it requires a custom transport wrapping
+    httpcore's connection pool, which is disproportionate here and version-
+    fragile. The peer-assertion form is what is implemented, and this paragraph
+    is why.
+    """
+    stream = response.extensions.get("network_stream")
+    server_addr = stream.get_extra_info("server_addr") if stream is not None else None
+    peer = server_addr[0] if isinstance(server_addr, tuple) and server_addr else None
+
+    if not peer:
+        raise RecipeSecurityError(
+            f"recipe {recipe.name!r}: could not determine the connected peer address for "
+            f"{url}, so the validated-address check cannot be made. Refusing fail-closed — "
+            f"an unverifiable connection is treated as an unvetted one."
+        )
+
+    # Re-checked independently of the vetted set: if the set were ever computed
+    # wrongly, this still refuses a private peer.
+    assert_public_address(str(peer))
+
+    if str(peer) not in vetted:
+        raise RecipeSecurityError(
+            f"recipe {recipe.name!r}: connected to {peer}, which is NOT among the addresses "
+            f"validated for this request ({sorted(vetted)}). The name resolved differently "
+            f"between validation and connection — that is DNS rebinding, and the response "
+            f"is refused unread."
+        )
 
 
 def _request(
@@ -232,17 +314,28 @@ def _request(
             query[recipe.auth.key_name or ""] = secret
         del secret
 
-    if recipe.method == "GET":
-        response = client.get(url, params=query, headers=headers)
-    else:
-        response = client.post(url, json=query, headers=headers)
+    # Sent STREAMING so the peer address can be checked before any body is read.
+    # `client.get()` reads the body eagerly, which would put the rebinding check
+    # after the very thing it is supposed to gate.
+    request = client.build_request(
+        recipe.method,
+        url,
+        params=query if recipe.method == "GET" else None,
+        json=query if recipe.method != "GET" else None,
+        headers=headers,
+    )
+    response = client.send(request, stream=True)
+    try:
+        _assert_connected_peer_was_vetted(response, addresses, recipe, url)
 
-    if response.status_code >= 400:
-        raise RecipeExecutionError(
-            f"recipe {recipe.name!r} returned HTTP {response.status_code} for {url}"
-        )
-
-    body = response.content
+        if response.status_code >= 400:
+            raise RecipeExecutionError(
+                f"recipe {recipe.name!r} returned HTTP {response.status_code} for {url}"
+            )
+        response.read()
+        body = response.content
+    finally:
+        response.close()
     if len(body) > book.limits.max_response_bytes:
         raise RecipeExecutionError(
             f"recipe {recipe.name!r} response is {len(body)} bytes, over the "
@@ -295,7 +388,13 @@ def run_recipe(
             link = nxt["__link__"]
             if not link:
                 break
-            url = link  # re-validated by _request on the next iteration
+            # DEFAULT-DENY. The next URL came from the PROVIDER, so it is
+            # confined to the recipe's pinned endpoint: same scheme, host and
+            # port exactly (no subdomain latitude on this path), the pinned
+            # path or a declared `allowed_next_paths` entry, and ONLY the query
+            # string adopted. The URL is rebuilt from vetted parts rather than
+            # approved in place.
+            url = confine_next_url(link, recipe.url, recipe.pagination.allowed_next_paths)
         else:
             page_params = {**page_params, **nxt}
     else:
@@ -380,6 +479,7 @@ def records_to_frame(records: list[dict[str, Any]], book: RecipeBook) -> Any:
 
 
 __all__ = [
+    "EngineInvariantError",
     "RecipeExecutionError",
     "ResponseValidationError",
     "dotted_get",

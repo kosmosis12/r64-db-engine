@@ -72,7 +72,12 @@ rest:
         type: none                      # none | cursor | page | link-header
         # cursor:      cursor_path, cursor_param, max_pages
         # page:        page_param, size_param, page_size, max_pages
-        # link-header: rel (default "next"), max_pages
+        # link-header: rel (default "next"), max_pages, allowed_next_paths
+        #
+        # allowed_next_paths (link-header ONLY): paths a PROVIDER-SUPPLIED next
+        # URL may move to. Default empty = the pinned path only. A provider that
+        # genuinely paginates across paths must be declared here at authoring
+        # time; absent the declaration the next URL is REFUSED, not followed.
       extract: hourly                   # dotted path / JSONPath to the records
 
   threading:                            # ordered; output → input bindings
@@ -111,14 +116,27 @@ the benign one.
 
 1. **HTTPS-only.** An `http://` URL is refused at load, and a recipe mutated
    from https to http must be refused — test it literally.
-2. **Hostname fixed per recipe.** The resolved host must exactly match the
-   recipe's recorded allowlist host, or be a **proper subdomain** of it.
-   `api.checkr.com` matches `checkr.com`; **`evil-checkr.com` does NOT** — test
-   that exact pair, because naive suffix matching passes it.
+2. **Hostname fixed per recipe.** For the AUTHORED url, the resolved host must
+   exactly match the recipe's recorded allowlist host, or be a **proper
+   subdomain** of it. `api.checkr.com` matches `checkr.com`; **`evil-checkr.com`
+   does NOT** — test that exact pair, because naive suffix matching passes it.
 3. **Private address space rejected.** After resolution: loopback, link-local,
    private ranges, unique-local and unspecified addresses are refused. This is
    the SSRF fence; resolution-time checking is what makes it real rather than
    cosmetic.
+3b. **Pagination is confined, default-deny.** A provider-supplied next-URL must
+   match the pinned scheme, host AND port EXACTLY — the subdomain latitude of
+   rule 2 is deliberately unavailable here, because this URL comes from the
+   server, not the author — and only its QUERY STRING is adopted, with the URL
+   rebuilt from vetted parts. Cross-path pagination requires
+   `allowed_next_paths`. Test the subdomain case explicitly: it is the one a
+   reasonable implementation gets wrong by reusing rule 2.
+3c. **DNS rebinding closed at response time.** The peer actually connected to
+   must be public AND in the set validated moments earlier, asserted
+   fail-closed BEFORE any body is read. Residual window: the request has
+   already reached the socket, so a rebound peer sees the request and its
+   credentials — what is prevented is the response being trusted. State that
+   window; do not claim it is closed.
 4. **Destination pinning.** Runtime inputs populate declared body/query
    parameters only. No input reaches host or path.
 5. **Per-pull `response_schema` validation.** On failure: a structured repair

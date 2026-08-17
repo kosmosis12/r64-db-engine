@@ -22,27 +22,80 @@ import pytest
 from r64_db_engine.drivers.rest import drift, engine
 from r64_db_engine.drivers.rest.recipes import parse_book
 
+# The address `stub_dns` reports as the validated resolution. The fake peer
+# matches it, so the rebinding check passes by default and a test has to opt
+# INTO a mismatch — the same way reality works.
+VETTED_ADDRESS = "93.184.216.34"
+
+
+class FakeNetworkStream:
+    def __init__(self, peer):
+        self._peer = peer
+
+    def get_extra_info(self, name):
+        if name == "server_addr" and self._peer is not None:
+            return (self._peer, 443)
+        return None
+
+
+class FakeRequest:
+    def __init__(self, method, url, params, json_body, headers):
+        self.method = method
+        self.url = url
+        self.params = dict(params or {})
+        self.json_body = dict(json_body or {})
+        self.headers = dict(headers or {})
+
 
 class FakeResponse:
-    def __init__(self, payload, status=200, headers=None):
-        self.content = json.dumps(payload).encode()
+    """Models the STREAMING response the engine now uses.
+
+    `read()` is deliberately explicit and counted: the rebinding check must run
+    before any body is fetched, and `body_reads` is what lets a test prove the
+    body was never read on a refused connection.
+    """
+
+    def __init__(self, payload, status=200, headers=None, peer=VETTED_ADDRESS, raw=None):
+        self._payload = raw if raw is not None else json.dumps(payload).encode()
         self.status_code = status
         self.headers = headers or {}
+        self.extensions = {"network_stream": FakeNetworkStream(peer)}
+        self.content = b""
+        self.body_reads = 0
+        self.closed = False
+
+    def read(self):
+        self.body_reads += 1
+        self.content = self._payload
+        return self.content
+
+    def close(self):
+        self.closed = True
 
 
 class FakeClient:
-    """Returns queued payloads and records the params it was called with."""
+    """Returns queued payloads and records what it was asked to send."""
 
-    def __init__(self, payloads, headers=None):
+    def __init__(self, payloads, headers=None, peers=None):
         self._payloads = list(payloads)
         self._headers = list(headers or [{}] * len(self._payloads))
+        self._peers = list(peers or [VETTED_ADDRESS] * len(self._payloads))
         self.calls: list[tuple[str, dict, dict]] = []
+        self.responses: list[FakeResponse] = []
 
-    def get(self, url, params=None, headers=None):
-        self.calls.append((url, dict(params or {}), dict(headers or {})))
-        return FakeResponse(self._payloads.pop(0), headers=self._headers.pop(0))
+    def build_request(self, method, url, params=None, json=None, headers=None):
+        return FakeRequest(method, url, params, json, headers)
 
-    post = get
+    def send(self, request, stream=False):
+        sent = request.params if request.method == "GET" else request.json_body
+        self.calls.append((request.url, dict(sent), dict(request.headers)))
+        response = FakeResponse(
+            self._payloads.pop(0),
+            headers=self._headers.pop(0),
+            peer=self._peers.pop(0),
+        )
+        self.responses.append(response)
+        return response
 
     def close(self):
         pass
@@ -259,10 +312,8 @@ def test_a_non_json_body_is_a_validation_error() -> None:
     book = make_book()
 
     class BadClient(FakeClient):
-        def get(self, url, params=None, headers=None):
-            response = FakeResponse({})
-            response.content = b"<html>502 Bad Gateway</html>"
-            return response
+        def send(self, request, stream=False):
+            return FakeResponse(None, raw=b"<html>502 Bad Gateway</html>")
 
     with pytest.raises(engine.ResponseValidationError, match="not JSON"):
         engine.run_recipe(BadClient([{}]), book.recipes["one"], {}, book)
@@ -272,7 +323,7 @@ def test_an_http_error_status_is_refused() -> None:
     book = make_book()
 
     class ErrorClient(FakeClient):
-        def get(self, url, params=None, headers=None):
+        def send(self, request, stream=False):
             return FakeResponse({"items": []}, status=503)
 
     with pytest.raises(engine.RecipeExecutionError, match="HTTP 503"):
@@ -423,3 +474,209 @@ def test_an_explicit_offset_is_converted_to_utc_rather_than_dropped() -> None:
     })
     frame = engine.records_to_frame([{"t": "2026-01-01T08:00:00+08:00"}], book)
     assert str(frame["t"].iloc[0]) == "2026-01-01 00:00:00"
+
+
+# ---------------------------------------------------------------------------
+# T3(b) — DNS rebinding: the address validated must be the address connected to
+# ---------------------------------------------------------------------------
+
+
+def test_a_rebound_peer_is_refused_and_the_body_is_never_read() -> None:
+    """The rebinding attack, end to end through the engine.
+
+    An attacker controlling DNS for an allowlisted host answers the VALIDATION
+    lookup with a public address and the CONNECT lookup with an internal one.
+    `assert_public_host` alone cannot see this — it only ever saw the first
+    answer. The peer check does, and the assertion that matters is the second
+    one: the body is never read, so nothing from the rebound peer is parsed or
+    returned.
+    """
+    book = make_book()
+    client = FakeClient([{"items": [{"id": 1}]}], peers=["10.0.0.5"])
+    with pytest.raises(engine.RecipeSecurityError, match="rebinding|private"):
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+
+    assert client.responses[0].body_reads == 0, "the body was read from an unvetted peer"
+    assert client.responses[0].closed, "the connection was left open"
+
+
+def test_a_public_peer_outside_the_vetted_set_is_still_refused() -> None:
+    """Rebinding to another PUBLIC address is still rebinding.
+
+    `assert_public_address` would happily pass 8.8.8.8. The set-membership
+    check is what catches a swap to a different host the attacker controls.
+    """
+    book = make_book()
+    client = FakeClient([{"items": []}], peers=["8.8.8.8"])
+    with pytest.raises(engine.RecipeSecurityError, match="NOT among the addresses validated"):
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+    assert client.responses[0].body_reads == 0
+
+
+def test_an_undeterminable_peer_fails_closed() -> None:
+    """'I could not tell' and 'it was fine' must not produce the same outcome."""
+    book = make_book()
+    client = FakeClient([{"items": []}], peers=[None])
+    with pytest.raises(engine.RecipeSecurityError, match="could not determine"):
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+    assert client.responses[0].body_reads == 0
+
+
+def test_the_vetted_peer_is_accepted_and_the_body_is_read() -> None:
+    """The fence is not vacuously strict — the honest path still works."""
+    book = make_book()
+    client = FakeClient([{"items": [{"id": 1}]}])
+    records, _ = engine.run_recipe(client, book.recipes["one"], {}, book)
+    assert records == [{"id": 1}]
+    assert client.responses[0].body_reads == 1
+
+
+def test_the_peer_check_runs_on_every_page_not_just_the_first() -> None:
+    """A connection rebound on page two is the interesting case: page one
+    establishes trust and the attacker takes over afterwards."""
+    book = make_book(
+        pagination={"type": "cursor", "cursor_path": "next", "cursor_param": "cursor"},
+        response_schema={"type": "object", "required": ["items"]},
+    )
+    client = FakeClient(
+        [{"items": [{"id": 1}], "next": "c2"}, {"items": [{"id": 2}]}],
+        peers=[VETTED_ADDRESS, "127.0.0.1"],
+    )
+    with pytest.raises(engine.RecipeSecurityError):
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+    assert client.responses[1].body_reads == 0
+
+
+# ---------------------------------------------------------------------------
+# T3(a) — pagination steering, through the engine
+# ---------------------------------------------------------------------------
+
+
+def _link(url: str) -> dict:
+    return {"link": f'<{url}>; rel="next"'}
+
+
+def test_link_header_pagination_adopts_only_the_query_string() -> None:
+    """The next URL is REBUILT from the pinned endpoint plus the provider's
+    query. Anything else the provider put in that URL is discarded, not
+    approved."""
+    book = make_book(pagination={"type": "link-header"})
+    client = FakeClient(
+        [{"items": [{"id": 1}]}, {"items": [{"id": 2}]}],
+        headers=[_link("https://api.example.com/v1/items?page=2&cursor=abc"), {}],
+    )
+    records, _ = engine.run_recipe(client, book.recipes["one"], {}, book)
+    assert [r["id"] for r in records] == [1, 2]
+    assert client.calls[1][0] == "https://api.example.com/v1/items?page=2&cursor=abc"
+
+
+@pytest.mark.parametrize(
+    "hostile,why",
+    [
+        ("https://evil.com/v1/items?page=2", "a different host entirely"),
+        ("https://api.example.com.evil.net/v1/items?page=2", "the pinned host as a prefix"),
+        ("https://evil-api.example.com/v1/items?page=2", "a lookalike host"),
+        ("https://attacker.api.example.com/v1/items?page=2", "a SUBDOMAIN of the pinned host"),
+        ("http://api.example.com/v1/items?page=2", "an https->http downgrade"),
+        ("https://api.example.com:8443/v1/items?page=2", "a different port"),
+        ("https://api.example.com/v1/admin?page=2", "an undeclared path"),
+        ("https://user:pw@api.example.com/v1/items?page=2", "credentials in the authority"),
+    ],
+)
+def test_a_steered_next_url_is_refused(hostile: str, why: str) -> None:
+    """Default-deny on the pagination path.
+
+    The SUBDOMAIN case is the one worth staring at: `assert_host_allowed`
+    deliberately permits proper subdomains for the URL the author wrote down.
+    Extending that latitude to a URL the SERVER supplies would hand a provider
+    (or a header injector) a steering primitive, so it is removed here.
+    """
+    book = make_book(pagination={"type": "link-header"})
+    client = FakeClient([{"items": [{"id": 1}]}], headers=[_link(hostile)])
+    with pytest.raises(engine.RecipeSecurityError):
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+
+
+def test_a_declared_allowed_next_path_is_followed() -> None:
+    """Cross-path pagination works — but only because the AUTHOR declared it."""
+    book = make_book(
+        pagination={"type": "link-header", "allowed_next_paths": ["/v1/items/page2"]},
+    )
+    client = FakeClient(
+        [{"items": [{"id": 1}]}, {"items": [{"id": 2}]}],
+        headers=[_link("https://api.example.com/v1/items/page2?x=1"), {}],
+    )
+    records, _ = engine.run_recipe(client, book.recipes["one"], {}, book)
+    assert [r["id"] for r in records] == [1, 2]
+    assert client.calls[1][0] == "https://api.example.com/v1/items/page2?x=1"
+
+
+def test_an_undeclared_path_is_refused_even_on_the_pinned_host() -> None:
+    book = make_book(
+        pagination={"type": "link-header", "allowed_next_paths": ["/v1/items/page2"]},
+    )
+    client = FakeClient(
+        [{"items": [{"id": 1}]}],
+        headers=[_link("https://api.example.com/v1/items/page3?x=1")],
+    )
+    with pytest.raises(engine.RecipeSecurityError, match="allowed_next_paths"):
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+
+
+# ---------------------------------------------------------------------------
+# T5 — engine invariants, unreachable via the loader
+# ---------------------------------------------------------------------------
+
+
+def test_a_hand_built_cursor_recipe_without_cursor_param_raises() -> None:
+    """The invariant the loader makes unreachable, asserted where it lives.
+
+    `recipes.py` refuses a book whose cursor pagination omits `cursor_param`,
+    so this Recipe cannot arise at runtime — it is constructed by hand here.
+    The branch must RAISE rather than return None: silently ending pagination
+    would truncate the pull to its first page and report success, which is the
+    worst outcome available to it.
+    """
+    from r64_db_engine.drivers.rest.recipes import Auth, Extract, Pagination, Recipe
+
+    recipe = Recipe(
+        name="hand-built",
+        method="GET",
+        url="https://api.example.com/v1/items",
+        allowed_host="api.example.com",
+        auth=Auth(),
+        params_schema={"type": "object", "properties": {}},
+        response_schema={"type": "object"},
+        pagination=Pagination(type="cursor", cursor_path="next", cursor_param=None),
+        extract=Extract(path="items"),
+    )
+    with pytest.raises(engine.EngineInvariantError, match="cursor_param is None"):
+        engine._next_page_params(recipe, {"next": "c2"}, None, 1)
+
+
+def test_a_hand_built_page_recipe_without_page_param_raises() -> None:
+    from r64_db_engine.drivers.rest.recipes import Auth, Extract, Pagination, Recipe
+
+    recipe = Recipe(
+        name="hand-built",
+        method="GET",
+        url="https://api.example.com/v1/items",
+        allowed_host="api.example.com",
+        auth=Auth(),
+        params_schema={"type": "object", "properties": {}},
+        response_schema={"type": "object"},
+        pagination=Pagination(type="page", page_param=None),
+        extract=Extract(path="items"),
+    )
+    with pytest.raises(engine.EngineInvariantError, match="page_param is None"):
+        engine._next_page_params(recipe, {}, None, 1)
+
+
+def test_the_loader_makes_those_invariants_unreachable() -> None:
+    """Codex's point, pinned: the runtime path cannot produce those Recipes."""
+    from r64_db_engine.drivers.rest.recipes import RecipeBookError
+
+    with pytest.raises(RecipeBookError, match="cursor_param"):
+        make_book(pagination={"type": "cursor", "cursor_path": "next"})
+    with pytest.raises(RecipeBookError, match="page_param"):
+        make_book(pagination={"type": "page"})

@@ -60,6 +60,9 @@ class Pagination:
     page_size: int | None = None
     rel: str = "next"
     max_pages: int = DEFAULT_MAX_PAGES
+    # Paths a provider-supplied next-URL may move to, declared at AUTHORING
+    # time. Empty means "the pinned path only" — the default-deny position.
+    allowed_next_paths: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -171,7 +174,7 @@ def _parse_pagination(doc: Any, where: str) -> Pagination:
     _reject_unknown(
         doc,
         {"type", "cursor_path", "cursor_param", "page_param", "size_param",
-         "page_size", "rel", "max_pages"},
+         "page_size", "rel", "max_pages", "allowed_next_paths"},
         f"{where}.pagination",
     )
     ptype = doc.get("type", "none")
@@ -185,6 +188,19 @@ def _parse_pagination(doc: Any, where: str) -> Pagination:
                 raise RecipeBookError(f"{where}.pagination.{key} is required for type 'cursor'")
     if ptype == "page" and not doc.get("page_param"):
         raise RecipeBookError(f"{where}.pagination.page_param is required for type 'page'")
+    if doc.get("allowed_next_paths") and ptype != "link-header":
+        # Accept-and-ignore would leave the author believing they had widened
+        # something. Only the link-header path consumes a provider-supplied URL.
+        raise RecipeBookError(
+            f"{where}.pagination.allowed_next_paths only applies to type 'link-header' "
+            f"(got type {ptype!r}); cursor and page pagination never adopt a provider URL."
+        )
+    for path in doc.get("allowed_next_paths") or []:
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise RecipeBookError(
+                f"{where}.pagination.allowed_next_paths entries must be absolute paths "
+                f"beginning with '/', got {path!r}"
+            )
 
     # max_pages is a HARD bound, not a hint: a provider whose cursor never
     # terminates would otherwise loop until the process dies.
@@ -201,6 +217,7 @@ def _parse_pagination(doc: Any, where: str) -> Pagination:
         page_size=doc.get("page_size"),
         rel=doc.get("rel", "next"),
         max_pages=max_pages,
+        allowed_next_paths=list(doc.get("allowed_next_paths") or []),
     )
 
 

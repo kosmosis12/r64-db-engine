@@ -440,7 +440,15 @@ conversation.
 |---|---|---|
 | **MF-01** | *An oracle proven able to fail.* The conformance battery carries a deliberately-broken fixture per check proving each can FAIL, and the real pipeline is proven able to fail too — a poisoned ground-truth copy turns a green run red, with exactly the poisoned aggregate mismatching. | `tests/factory/test_battery.py` (one fixture per check); `test_a_poisoned_ground_truth_makes_the_battery_fail` on both lanes |
 | **MF-02** | *Zero-core-edit `rest` dialect.* The registry pattern holds on a non-database source class: adding a whole new class of source cost **six lines** in `drivers/__init__.py` and nothing else outside the driver's own directory. | `git grep -rniE "\brest\b" src/r64_db_engine/core/` → 0; `git diff --stat main..HEAD -- src/` |
-| **MF-03** | *Destination-pinning security invariants, test-proven.* https-only, label-boundary host matching (`evil-checkr.com` ≠ `checkr.com`, tested literally), resolution-time private/loopback/link-local rejection, no redirects, closed parameter vocabulary — each with a failing fixture, and re-asserted against the shipped book's real hosts as a battery check. | `tests/drivers/rest/test_security.py`; `recipe_security_invariants` in `EVIDENCE-rest-20260817.md` |
+| **MF-03** *(rescoped after Codex round 1)* | *Destination fixed at authoring; every request re-validated (HTTPS, host rule, public address); pagination confined to the pinned endpoint, query-only by default; rebinding closed by a pre-body peer-vs-vetted-set assertion, with the residual window being that the request has already reached the socket.* Label-boundary host matching (`evil-checkr.com` ≠ `checkr.com`, tested literally), resolution-time private/loopback/link-local rejection, no redirects, closed parameter vocabulary — each with a failing fixture, and re-asserted against the shipped book's real hosts as a battery check. | `tests/drivers/rest/test_security.py`; `tests/drivers/rest/test_engine.py`; `recipe_security_invariants` in `EVIDENCE-rest-*.md` |
+
+> **Why the wording changed.** The original read "destination-pinning security
+> invariants" with an unqualified *pinned*. Codex was right that this overclaimed
+> on two counts: a provider-supplied pagination URL could move to any SUBDOMAIN
+> of the pinned host, and the validated address was not the address connected to.
+> Both are now closed in code (T3), and the claim states the mechanism and its
+> residual window rather than a bare adjective. **No unqualified "pinned"
+> anywhere in this claim.**
 
 **MF-04 — WITHDRAWN as a claim (2026-08-17), filed as finding F-1.** Scan-order
 nondeterminism is ClickHouse substrate behaviour plus a cure (`ORDER BY` pin,
