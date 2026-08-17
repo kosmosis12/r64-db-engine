@@ -46,7 +46,30 @@ def test_both_units_exist() -> None:
     assert SERVICE.exists() and TIMER.exists()
 
 
+# A systemd unit must hardcode ABSOLUTE paths on its deployment host, so the
+# unit legitimately names /home/kos/... while a CI runner checks the repo out at
+# /home/runner/work/.... Asserting the unit's paths equal THIS checkout's
+# location therefore tests where the tests happen to be running, not whether the
+# unit is correct — which is exactly how these three failed on the first PR.
+#
+# The machine-independent property, and the one that actually catches typos, is
+# INTERNAL CONSISTENCY: whatever root the unit declares, its ExecStart must use
+# that same root's venv and that same root's sweep. That is asserted everywhere.
+# The stronger "and that root is this checkout" claim is kept, but as its own
+# on-host test with an explicit skip reason.
+DEPLOYMENT_ROOT = Path(_unit(SERVICE)["Service"]["WorkingDirectory"])
+DEPLOYED_PYTHON = DEPLOYMENT_ROOT / ".venv" / "bin" / "python"
+ON_DEPLOYMENT_HOST = DEPLOYMENT_ROOT == conformance.REPO_ROOT
+
+
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze not present")
+@pytest.mark.skipif(
+    not DEPLOYED_PYTHON.exists(),
+    reason=(
+        f"systemd-analyze verify resolves ExecStart and fails if the binary is absent; "
+        f"{DEPLOYED_PYTHON} does not exist here, so this can only run on the deployment host"
+    ),
+)
 @pytest.mark.parametrize("unit", ["r64-factory-conformance.service", "r64-factory-conformance.timer"])
 def test_units_pass_systemd_analyze_verify(unit: str) -> None:
     result = subprocess.run(
@@ -58,20 +81,43 @@ def test_units_pass_systemd_analyze_verify(unit: str) -> None:
     assert result.stderr.strip() == "", result.stderr
 
 
-def test_the_service_runs_as_kos_from_the_repo_with_no_user_site() -> None:
+def test_the_service_runs_as_kos_with_no_user_site() -> None:
     service = _unit(SERVICE)["Service"]
     assert service["User"] == "kos"
-    assert service["WorkingDirectory"] == str(conformance.REPO_ROOT)
+    # An absolute path that looks like this repo — not necessarily THIS checkout.
+    assert DEPLOYMENT_ROOT.is_absolute()
+    assert DEPLOYMENT_ROOT.name == "r64-db-engine"
     # Standing discipline: a stray package in ~/.local must never shadow the
     # pinned one — pyarrow above all, since it owns the IPC block layout.
     assert "PYTHONNOUSERSITE=1" in service["Environment"]
 
 
-def test_the_service_execstart_points_at_the_venv_and_the_real_sweep() -> None:
+def test_the_service_execstart_is_internally_consistent_with_its_working_directory() -> None:
+    """ExecStart must use the venv and the sweep of the root it declares.
+
+    This is the check with teeth: a unit whose WorkingDirectory and ExecStart
+    drifted apart would install cleanly and then fail at 04:00 on a Sunday.
+    """
     exec_start = _unit(SERVICE)["Service"]["ExecStart"]
-    assert str(conformance.REPO_ROOT / ".venv" / "bin" / "python") in exec_start
-    assert str(SWEEP) in exec_start
+    assert str(DEPLOYED_PYTHON) in exec_start
+    assert str(DEPLOYMENT_ROOT / "factory" / "bin" / "factory-conformance-sweep") in exec_start
     assert "--serve-gate" in exec_start
+
+
+@pytest.mark.skipif(
+    not ON_DEPLOYMENT_HOST,
+    reason=f"unit targets {DEPLOYMENT_ROOT}, this checkout is {conformance.REPO_ROOT}",
+)
+def test_on_the_deployment_host_the_unit_points_at_this_very_checkout() -> None:
+    """The stronger claim, kept but fenced to where it can be true.
+
+    On Kos's machine the installed unit must drive THIS repo, not a stale copy
+    at some other path. Off-host it is unknowable, so it skips with a reason
+    rather than asserting something about the CI runner's filesystem.
+    """
+    assert DEPLOYMENT_ROOT == conformance.REPO_ROOT
+    assert str(SWEEP) in _unit(SERVICE)["Service"]["ExecStart"]
+    assert SWEEP.exists()
 
 
 def test_the_service_alerts_on_failure_via_the_fleet_convention() -> None:
