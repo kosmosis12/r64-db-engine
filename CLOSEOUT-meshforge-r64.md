@@ -572,7 +572,7 @@ test that the loader genuinely refuses such a book.
 | | result |
 |---|---|
 | Suite (local) | **668 passed / 66 skipped** |
-| With `--integration` | **258 passed** (`tests/factory` + `tests/drivers/rest`) |
+| With `--integration` | **369 passed** (`tests/factory` + `tests/drivers/rest`) — the pre-audit 258 all still green, plus 111 added by the remediation |
 | `ruff check src tests factory` | clean |
 | `mypy src factory` | clean, 46 files |
 | `git grep -rnE "(^\|[^_])[Ff]actory" src/r64_db_engine/core/` | **0** |
