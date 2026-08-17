@@ -1,8 +1,8 @@
 # EVIDENCE — rest / open_meteo_berlin_hourly
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T14:11:25Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T14:49:58Z.
 
-> Ratifies `49c01eddbbaf` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
+> Ratifies `57bee40b1f7c` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -157,14 +157,14 @@ two consecutive same-lane pulls are byte-identical (sha256 a16b8d2ed10a81a1…)
 | templated url (host/path substitution) | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: recipes[geocode].url contains a template placeholder: 'https://geocoding-api.open-meteo.com/v1/search/{path}'. The URL is PINNED at recipe creation — runtime inputs may populate declared body/query parameters only, never the host or the path. A substitutable URL is a destination |
 | undeclared threading input | `REFUSED` | `REFUSED` | ok |  | RecipeBookError: threading[1] supplies input(s) ['not_a_declared_param'] that recipe 'archive' does not declare in params_schema.properties (declared: ['end_date', 'hourly', 'latitude', 'longitude', 'start_date', 'timezone']). Runtime inputs may only populate DECLARED parameters. |
 | loopback destination (SSRF) | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: recipe host resolves to 127.0.0.1 (loopback address space), which is refused. Reaching an internal service through a config-described call is the SSRF shape this fence exists to prevent. |
-| cross-path next-URL against pinned https://geocoding-api.open-meteo.com/v1/search | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/v1/../admin' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
-| undeclared path next-URL against pinned https://geocoding-api.open-meteo.com/v1/search | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/definitely-not-the-pinned-path' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
-| subdomain next-URL against pinned https://geocoding-api.open-meteo.com/v1/search | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL host 'attacker.geocoding-api.open-meteo.com' does not EXACTLY match the recipe's pinned host 'geocoding-api.open-meteo.com'. Subdomain latitude is deliberately not available on the pagination path: this URL came from the provider, not from the recipe author. |
-| cross-path next-URL against pinned https://archive-api.open-meteo.com/v1/archive | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/v1/../admin' is neither the recipe's pinned path '/v1/archive' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
-| undeclared path next-URL against pinned https://archive-api.open-meteo.com/v1/archive | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/definitely-not-the-pinned-path' is neither the recipe's pinned path '/v1/archive' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
-| subdomain next-URL against pinned https://archive-api.open-meteo.com/v1/archive | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL host 'attacker.archive-api.open-meteo.com' does not EXACTLY match the recipe's pinned host 'archive-api.open-meteo.com'. Subdomain latitude is deliberately not available on the pagination path: this URL came from the provider, not from the recipe author. |
-| cross-path next-URL with allowed_next_paths OMITTED | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/somewhere-else' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
-| cross-path next-URL with allowed_next_paths EXPLICITLY EMPTY | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL path '/somewhere-else' is neither the recipe's pinned path '/v1/search' nor one of its declared allowed_next_paths []. Cross-path pagination must be declared at authoring time; it is never inferred from what a provider sends. |
+| cross-path next-URL against pinned https://geocoding-api.open-meteo.com/v1/search | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported — it is provider-controlled. |
+| undeclared path next-URL against pinned https://geocoding-api.open-meteo.com/v1/search | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported — it is provider-controlled. |
+| subdomain next-URL against pinned https://geocoding-api.open-meteo.com/v1/search | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL rejected: host outside pinned set: attacker.geocoding-api.open-meteo.com. Subdomain latitude is deliberately unavailable here — this URL came from the provider, not the recipe author. |
+| cross-path next-URL against pinned https://archive-api.open-meteo.com/v1/archive | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported — it is provider-controlled. |
+| undeclared path next-URL against pinned https://archive-api.open-meteo.com/v1/archive | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported — it is provider-controlled. |
+| subdomain next-URL against pinned https://archive-api.open-meteo.com/v1/archive | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL rejected: host outside pinned set: attacker.archive-api.open-meteo.com. Subdomain latitude is deliberately unavailable here — this URL came from the provider, not the recipe author. |
+| cross-path next-URL with allowed_next_paths OMITTED | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported — it is provider-controlled. |
+| cross-path next-URL with allowed_next_paths EXPLICITLY EMPTY | `REFUSED` | `REFUSED` | ok |  | RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported — it is provider-controlled. |
 
 ## 10. `zero_copy_serve_gate` — PASS
 
@@ -205,7 +205,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT count(*), min(time), max(time) FROM open_meteo_berlin_hourly",
   "addr": "127.0.0.1:8903",
-  "pid": 1196714,
+  "pid": 1255399,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -278,14 +278,14 @@ counter deltas from the server's own get_flight_info app_metadata
   "command": ".venv/bin/python -m factory.conformance --dialect rest --config /home/kos/builds/r64-db-engine/factory/targets/rest-openmeteo.yaml --ground-truth /home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-openmeteo.json --table open_meteo_berlin_hourly --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence --work-dir /tmp/r64-factory-sweep/rest-openmeteo --serve-gate",
   "git": {
     "branch": "feat/meshforge-factory",
-    "commit": "49c01eddbbafb7ebba4c5284b6781f43a2b708eb",
+    "commit": "57bee40b1f7c7e2501d12e96196e72077c8be6ed",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"
   },
   "implementation": {
     "distribution_version": "0.1.0",
     "source_files": 46,
-    "source_sha256": "b04bf3bae6c5532448b5237dbf23a7e2d6547e15eb41795d479992b0704418ef"
+    "source_sha256": "2f6af8200821dadb207b48d5876365bb903a3fd0482bf2e9c8d04933a8b75263"
   },
   "inputs": {
     "ground_truth": {
@@ -346,7 +346,7 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "49c01eddbbafb7ebba4c5284b6781f43a2b708eb",
+    "commit": "57bee40b1f7c7e2501d12e96196e72077c8be6ed",
     "branch": "feat/meshforge-factory",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"

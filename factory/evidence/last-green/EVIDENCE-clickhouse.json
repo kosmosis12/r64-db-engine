@@ -10,7 +10,7 @@
   "dialect": "clickhouse",
   "table": "perf_1m",
   "source": "SELECT * FROM meshbench.perf_1m ORDER BY row_id",
-  "generated_utc": "2026-08-17T14:11:19Z",
+  "generated_utc": "2026-08-17T14:49:52Z",
   "invocation": {
     "config": "/home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml",
     "ground_truth": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json",
@@ -22,7 +22,7 @@
   },
   "provenance": {
     "git": {
-      "commit": "49c01eddbbafb7ebba4c5284b6781f43a2b708eb",
+      "commit": "57bee40b1f7c7e2501d12e96196e72077c8be6ed",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -46,7 +46,7 @@
     },
     "implementation": {
       "distribution_version": "0.1.0",
-      "source_sha256": "b04bf3bae6c5532448b5237dbf23a7e2d6547e15eb41795d479992b0704418ef",
+      "source_sha256": "2f6af8200821dadb207b48d5876365bb903a3fd0482bf2e9c8d04933a8b75263",
       "source_files": 46
     },
     "toolchain": {
@@ -133,7 +133,7 @@
       "httpx": "0.28.1"
     },
     "git": {
-      "commit": "49c01eddbbafb7ebba4c5284b6781f43a2b708eb",
+      "commit": "57bee40b1f7c7e2501d12e96196e72077c8be6ed",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -773,7 +773,7 @@
         },
         "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
         "addr": "127.0.0.1:8903",
-        "pid": 1196433,
+        "pid": 1255076,
         "baseline": {
           "cache_hits": 0,
           "cache_misses": 0,

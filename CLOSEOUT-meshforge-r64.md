@@ -3,10 +3,10 @@
 Branch: `feat/meshforge-factory` (off `main` @ `7820d18`)
 Session: 2026-08-16 → 2026-08-17 · Brief: `CC-BRIEF-meshforge-r64.md` · Index: `docs/MESHFORGE-SKILL-INDEX.md`
 
-**Status: all four gates met. Codex rounds 1–4 remediated (§9–§12). Round 4:
-Q1 SPLIT by operator ruling (TOCTOU out of frame, two crash-consistency
-sub-items accepted), Q2 accepted in full — both addressed. Re-pushed for
-round 5. NOT merged: merge remains blocked on the audit verdict per Law 2.**
+**Status: all four gates met. Codex rounds 1–5 remediated (§9–§13). Round 5:
+both questions BLOCK and both accepted as edge-completions of the round-4
+fixes. Re-pushed for round 6. NOT merged: merge remains blocked on the audit
+verdict per Law 2.**
 
 ---
 
@@ -981,4 +981,113 @@ Remediation commits:
 ```
 49c01ed Q2(secrets): value-free validation errors, one outer boundary, declared floor
 fb84432 Q1(evidence): preserve corruption before repair; hash late; state the boundary
+```
+
+---
+
+## 13. Codex round 5 — verdicts and remediation
+
+Audit received 2026-08-17. **BLOCK / BLOCK, both accepted** — both are
+edge-completions of the round-4 fixes, in scope. Addressed; branch re-pushed
+for round 6.
+
+| # | Question | Verdict | Remediation | SHA |
+|---|---|---|---|---|
+| **Q1** | Preservation presumed rather than verified | **BLOCK, accepted** | hash the existing copy, atomic write, atomic manifest | `050ec9f` |
+| **Q2** | Confinement outside the boundary; refusals echoed the candidate | **BLOCK, accepted** | one closing brace per page; structural refusals | `57bee40` |
+
+### Q1 — the round-4 fix had a reachable hole
+
+Round 4 preserved corrupted bytes before repairing, but **skipped preservation
+entirely when the destination already existed**. A run that crashed mid-copy
+leaves a FRAGMENT under the right name, so "the path exists" was being read as
+"the corruption is recorded" — and the next `--repair-store` would overwrite
+`stored` while the archive only appeared to hold what went wrong. The single
+state round 4 was written to prevent was reachable by retrying after a partial
+preservation.
+
+Now the existing file is **hashed**: complete → proceed; missing, partial or
+mismatched → preservation is redone and re-verified, and `stored` is not
+touched until a hash-verified preserved copy exists. The pack records which of
+the three happened, because "already complete" and "completed a fragment left
+by a crashed run" are different facts about the archive.
+
+Preservation and the manifest write are now **atomic** — temp file, fsync,
+`rename(2)`, directory fsync. A plain copy or `write_text` truncates the
+destination first, so a crash mid-write leaves a half-written file that still
+carries the real NAME. For a preserved-corruption record that is the worst
+available outcome: the archive would look like it held the evidence while
+holding a fragment of it.
+
+### Q2 — the last provider-controlled value outside the guarantee
+
+**(a)** Link extraction ran inside the per-page scrub boundary, but
+`confine_next_url` ran after it closed — so the single piece of
+provider-controlled data most likely to carry a credential was processed
+outside the one guarantee that covers unanticipated raises. The page now has
+**one closing brace**: request, validate, extract, Link parse and confinement
+all inside it.
+
+**(b)** `confine_next_url` quoted the candidate URL in its refusals — including
+the userinfo case, where the quoted value *is* credential material by
+definition, and the path case, where a provider can place a token. Refusals are
+now **structural**: they name the violated rule and the offending component
+CATEGORY, never the content.
+
+> `non-https scheme` · `userinfo present in authority` ·
+> `host outside pinned set: <canonicalized-host>` · `port outside pinned set` ·
+> `path outside the declared set`
+
+The candidate URL, its query, its path and its userinfo are neither reported
+nor recorded. The **canonicalized host** is the single permitted exception,
+because it is compared against pinned-known values: naming it says which
+allowlist decision fired without disclosing anything the provider chose freely.
+
+This is round 4's principle generalized, and it is in the skill in that form:
+
+> Every engine-raised error that can carry provider-controlled content is
+> structural/value-free — validation errors AND security refusals. Literal
+> scrubbing is the backstop, never the guarantee.
+
+**(c)** Five hostile Link shapes — secret in query, as userinfo, URL-encoded,
+embedded in a path segment, and an 8-char prefix — each asserted absent from
+the exception text, the drift event, **and every artifact left on disk**. A
+refusal that stays out of the exception but lands in the repair record has
+protected nothing. Mutation-proven. Codex's two named-missing cases now exist
+by name: `test_a_TRUNCATED_preserved_copy_is_completed_before_any_overwrite`
+and `test_a_secret_bearing_LINK_HEADER_is_refused_without_echoing_it`.
+
+### One test of mine was wrong, and the correction is the interesting part
+
+The test proving "confinement runs inside the boundary" asserted a severed
+exception chain. But a **clean** structural refusal is deliberately
+bare-re-raised — there is nothing to redact, and the original traceback is
+worth keeping — so severance could not distinguish *crossed the boundary* from
+*never entered it*. It now raises a FOREIGN exception from the confinement step
+and asserts the boundary's own context prefix, which only the boundary adds.
+
+The general shape recurs: a proxy assertion that happens to hold for the right
+answer, while also holding for the wrong one.
+
+### Verification after round 5
+
+| | result |
+|---|---|
+| Suite (local) | **851 passed / 66 skipped** |
+| `ruff check src tests factory` | clean |
+| `mypy src factory` | clean |
+| Both greps | **0** · `core/` untouched |
+| Both packs | ratify `57bee40`, clean tree, `ratifies_head: true`, `store_verified: true`, 5 closure items |
+
+### Claims after round 5
+
+Q2's work tightened the structural-error rule behind **MF-03**; the claim text
+is unchanged from its round-2 rescope. **MF-01** and **MF-02** unchanged. All
+three remain **FENCED** pending round 6.
+
+Remediation commits:
+
+```
+57bee40 Q2(rest): confinement inside the boundary; security refusals go structural
+050ec9f Q1(evidence): preservation is verified, not presumed; manifest write is atomic
 ```
