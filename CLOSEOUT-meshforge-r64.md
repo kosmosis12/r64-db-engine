@@ -3,8 +3,9 @@
 Branch: `feat/meshforge-factory` (off `main` @ `7820d18`)
 Session: 2026-08-16 → 2026-08-17 · Brief: `CC-BRIEF-meshforge-r64.md` · Index: `docs/MESHFORGE-SKILL-INDEX.md`
 
-**Status: all four gates met. CI green on PR #9. NOT merged — cross-agent QA is mandatory
-between conformance-green and merge (Law 2). See §6.**
+**Status: all four gates met. Codex round 1 remediated (§9) — BLOCK on 1/3/4,
+clean on 2, caveat upheld on 5. Re-pushed for re-audit. NOT merged: merge
+remains blocked on the audit verdict per Law 2. See §6 and §9.**
 
 ---
 
@@ -48,8 +49,9 @@ Six lines in the registry. Nothing else outside the driver's own directory.
 | | passed | skipped | collected |
 |---|---:|---:|---:|
 | Baseline (`main` @ `7820d18`) — local | 325 | 40 | 365 |
-| This branch — local | **558** | 66 | 624 |
-| This branch — **CI**, PR #9 | **555** | 69 | 624 |
+| This branch — local, pre-audit | 558 | 66 | 624 |
+| This branch — local, **post-remediation** | **668** | 66 | 734 |
+| This branch — **CI**, PR #9 (pre-audit) | 555 | 69 | 624 |
 
 CI passes three fewer and skips three more than local: the two
 `systemd-analyze verify` cases and the one deployment-host path check, each
@@ -482,3 +484,116 @@ after audit, not before — so nothing here travels yet, including internally.
 | `src/r64_db_engine/drivers/rest/` | The `rest` driver |
 | `~/.claude/skills/meshforge/SKILL.md` | **Outside this repo** — core doctrine, travels with the machine, not the branch |
 | `.claude/skills/r64-*/SKILL.md` | The four in-repo lane skills |
+
+---
+
+## 9. Codex round 1 — verdicts and remediation
+
+Audit received 2026-08-17. **BLOCK on targets 1, 3, 4 · clean on 2 · target 5
+rejected with one caveat.** All five addressed; branch re-pushed for re-audit.
+
+| # | Target | Verdict | Remediation | SHA |
+|---|---|---|---|---|
+| **1** | Negative fixtures | **BLOCK** | Reason-specific triple + adversarial meta-fixture | `9c8ec6b` |
+| **2** | — | **CLEAN** | none required | — |
+| **3** | Pagination steering + DNS rebinding | **BLOCK** | Default-deny confinement; pre-body peer assertion; MF-03 rescoped | `4e46cf0` |
+| **4** | Pack provenance | **BLOCK** | Dirty-tree refusal, six pinned inputs, content-addressed artifacts | `6655b90`, `deb1710`, `5e0287a` |
+| **5** | Defensive `None` branch | **REJECTED** *(caveat upheld)* | `EngineInvariantError` + hand-built-Recipe unit tests | `4e46cf0` |
+
+### What each finding actually was
+
+**T1 — the fixtures proved less than they appeared to.** Every negative fixture
+asserted `status == FAIL` and nothing more, which is satisfied by an oracle
+failing for an unrelated reason and, fatally, by one failing at *everything*. A
+catch-all FAIL stub would have turned the whole suite green while checking
+nothing, and it would have looked exactly as green as a correct suite.
+
+Fixed by giving every FAIL a machine-checkable `reason_code`, asserting the
+triple (FAIL, check name, reason code), and adding
+`test_a_catch_all_failing_oracle_does_not_pass_the_fixture_suite` — which
+replays every case against that stub through the *same* assertion helper and
+requires each to reject it. **Proven by mutation:** weakening the helper back
+to status-only makes all 38 meta cases fail. MF-01 now rests on that
+meta-fixture rather than on the count of negative tests.
+
+**T3 — two real holes, and the second one mattered more.**
+*(a)* A `Link: rel="next"` URL is chosen by the remote end, and it was going
+through the host rule written for the *authored* URL — which deliberately
+permits proper subdomains. A provider, or a header injector, could move the
+request to any subdomain of the pinned host. Now `confine_next_url` requires
+scheme, host **and port** byte-equal, adopts **only** the query string, rebuilds
+the URL from vetted parts, and requires an authored `allowed_next_paths`
+declaration for any cross-path move.
+*(b)* The address validated was not the address connected to. Requests are now
+sent streaming and the real peer is asserted public **and** in the vetted set
+**before any body is read**, fail-closed. Tests assert `body_reads == 0` on a
+refused peer — the property, not the exception type — and prove the check runs
+on every page, since page-one-then-rebind is the interesting attack.
+
+*Which form was implemented, and why:* the **minimum acceptable** peer
+assertion, not the preferred connect-to-vetted-IP transport. httpx exposes no
+first-class hook for pinning the IP while carrying the hostname for SNI; it
+needs a custom transport wrapping httpcore's pool, which is disproportionate
+here and version-fragile. **Residual window, stated in `security.py` and in the
+claim:** the request has already reached the socket, so a rebound peer sees the
+request line, headers and any API key. What is prevented is the *response*
+being trusted, parsed, or turned into pulled data.
+
+**T4 — packs named a commit whose content was not what ran.** Now a hard
+refusal before any work (a dirty tree costs a second, not two million-row
+pulls), naming the uncommitted paths. `--allow-dirty` stamps ALLOW-DIRTY into
+the verdict line, into a header warning block, and sets `ratifies_head: false`.
+Six inputs pinned by sha256: target config, recipe book (explicit `null` on the
+DB lane), schema spec, ground truth, executed implementation (version + a
+digest over 46 source files, because a git SHA identifies a *commit*, not an
+*install*), and the produced artifact.
+
+*One design flaw found by running it:* the first target's pack dirtied the tree,
+so every later target refused. `factory/evidence/` is now exempt — the exemption
+covers the **product**, never an input, and is recorded in provenance as
+`dirty_exemption` rather than applied silently.
+
+*Artifact storage, both routes exercised:* rest 36,090 bytes **copied** (bytes
+re-verifiable in-repo); clickhouse 149,806,522 bytes **content-addressed
+manifest** (committing 150 MB would bloat the repo without adding a check the
+sha256 does not already give). Which route was taken is recorded, so a reader
+never guesses whether bytes are present.
+
+**T5 — caveat upheld.** Codex was right that the loader makes the branch
+unreachable via any supported runtime path, so it is not dead code to delete
+but an invariant to assert. It now raises `EngineInvariantError` rather than
+returning `None`: silently ending pagination would truncate the pull to its
+first page and report success, the worst outcome available to it. The invariant
+lives in `tests/drivers/rest/test_engine.py`, constructed by hand, alongside a
+test that the loader genuinely refuses such a book.
+
+### Verification after remediation
+
+| | result |
+|---|---|
+| Suite (local) | **668 passed / 66 skipped** |
+| With `--integration` | **258 passed** (`tests/factory` + `tests/drivers/rest`) |
+| `ruff check src tests factory` | clean |
+| `mypy src factory` | clean, 46 files |
+| `git grep -rnE "(^\|[^_])[Ff]actory" src/r64_db_engine/core/` | **0** |
+| `git grep -rniE "\brest\b" src/r64_db_engine/core/` | **0** |
+| `git status --porcelain src/r64_db_engine/core/` | empty |
+| Both packs | ratify `deb1710`, clean tree, `ratifies_head: true` |
+
+### Claims status after round 1
+
+**MF-03 rescoped** — the original said "destination-pinning" with an unqualified
+*pinned*, which overclaimed on exactly the two counts Codex found. It now states
+the mechanism and its residual window. **MF-01 strengthened** — its support is
+now the meta-fixture. **MF-02 unchanged.** All three remain **FENCED** pending
+the round-2 verdict.
+
+Remediation commits:
+
+```
+5e0287a T4(evidence): regenerate both packs at the clean head (packs)
+deb1710 T4(evidence): exempt the pack's own output from the dirtiness rule
+6655b90 T4(evidence): packs refuse a dirty tree and pin every input (code)
+4e46cf0 T3(rest): pagination steering and DNS rebinding, both default-deny
+9c8ec6b T1(oracle): negative fixtures assert the REASON, not merely that something failed
+```
