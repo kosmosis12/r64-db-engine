@@ -451,6 +451,32 @@ def run(args: argparse.Namespace, argv: list[str] | None = None) -> int:
         )
     ground_truth = ground_truth_doc["tables"][args.table]
 
+    # The six pinned inputs, resolved once. Enforced BEFORE any pull: an input
+    # living inside the evidence tree would inherit the dirty-file exemption and
+    # could be swapped between runs while every pack still reported
+    # ratifies_head: true.
+    pinned_inputs: dict[str, Path | None] = {
+        "target_config": config_path,
+        "recipe_book": recipe_book_path,
+        "schema_spec": spec_path,
+        "ground_truth": Path(args.ground_truth).resolve(),
+    }
+    try:
+        evidence.assert_inputs_outside_evidence(pinned_inputs, REPO_ROOT)
+    except evidence.LaunderedInputError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    # Secret files the book declares, recorded by reference only.
+    declared_env_files: list[str] = []
+    if recipe_book_path and recipe_book_path.exists():
+        import yaml as _yaml
+
+        book_doc = _yaml.safe_load(recipe_book_path.read_text()) or {}
+        for recipe in book_doc.get("recipes", []):
+            env_file = (recipe.get("auth") or {}).get("env_file")
+            if env_file:
+                declared_env_files.append(env_file)
+
     work_dir = Path(args.work_dir).resolve() if args.work_dir else None
     doc = apply_work_dir(doc, work_dir)
 
@@ -683,17 +709,23 @@ def run(args: argparse.Namespace, argv: list[str] | None = None) -> int:
             "command": " ".join(
                 [".venv/bin/python", "-m", "factory.conformance", *(argv or [])]
             ),
-            # Every input the run consumed, pinned. A pack that named its inputs
-            # by path alone could be re-read against different content and still
-            # look like the same evidence.
-            "inputs": evidence.digest_inputs({
-                "target_config": config_path,
-                "recipe_book": recipe_book_path,
-                "schema_spec": spec_path,
-                "ground_truth": Path(args.ground_truth).resolve(),
-            }),
+            # The DECLARED inputs this run read from disk, pinned by content.
+            # Not "every input the run consumed" — that was overclaimed: the
+            # live source, the secret contents and the runtime beyond the
+            # lockfiles are outside what a pack can pin, and the CLOSURE
+            # BOUNDARY section says so explicitly rather than leaving a reader
+            # to infer it from an absence.
+            "inputs": evidence.digest_inputs(pinned_inputs),
             "implementation": evidence.implementation_digest(),
+            "toolchain": evidence.toolchain_pins(
+                REPO_ROOT, args.meshroad_binary if args.serve_gate else None
+            ),
+            "proxy_environment": evidence.proxy_environment(),
+            # Paths and metadata only — never a digest of the contents. See
+            # `evidence.secret_references` and the CLOSURE BOUNDARY section.
+            "secret_references": evidence.secret_references(declared_env_files),
             "artifact": evidence.record_artifact(artifact_path, Path(args.evidence_dir).resolve()),
+            "closure_boundary": evidence.CLOSURE_BOUNDARY,
         },
     )
 

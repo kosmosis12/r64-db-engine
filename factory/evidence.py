@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -142,7 +143,7 @@ def _package_version(name: str) -> str:
         return "<not installed>"
 
 
-def _git_facts() -> dict[str, Any]:
+def _git_facts(never_exempt: set[str] | None = None) -> dict[str, Any]:
     def run(*args: str) -> str:
         try:
             return subprocess.run(
@@ -154,7 +155,7 @@ def _git_facts() -> dict[str, Any]:
     return {
         "commit": run("rev-parse", "HEAD"),
         "branch": run("rev-parse", "--abbrev-ref", "HEAD"),
-        "dirty": bool(_dirty_paths()),
+        "dirty": bool(_dirty_paths(never_exempt)),
         "dirty_exemption": EVIDENCE_SUBTREE,
     }
 
@@ -196,7 +197,9 @@ class DirtyTreeError(RuntimeError):
 EVIDENCE_SUBTREE = "factory/evidence/"
 
 
-def assert_clean_tree(allow_dirty: bool = False) -> dict[str, Any]:
+def assert_clean_tree(
+    allow_dirty: bool = False, never_exempt: set[str] | None = None
+) -> dict[str, Any]:
     """A pack must ratify a HEAD that exists, or say loudly that it does not.
 
     An evidence pack generated from a dirty tree names a commit whose content
@@ -211,7 +214,7 @@ def assert_clean_tree(allow_dirty: bool = False) -> dict[str, Any]:
 
     Changes under `factory/evidence/` are excluded — see `EVIDENCE_SUBTREE`.
     """
-    facts = _git_facts()
+    facts = _git_facts(never_exempt=never_exempt)
     if not facts.get("commit"):
         raise DirtyTreeError(
             "no git commit could be determined, so this pack cannot ratify anything. "
@@ -225,12 +228,48 @@ def assert_clean_tree(allow_dirty: bool = False) -> dict[str, Any]:
             "Commit the tree and re-run, or pass --allow-dirty to produce a pack stamped "
             "ALLOW-DIRTY that explicitly does NOT ratify a commit.\n"
             "Uncommitted paths:\n  "
-            + "\n  ".join(_dirty_paths()[:40])
+            + "\n  ".join(_dirty_paths(never_exempt)[:40])
         )
     return facts
 
 
-def _dirty_paths() -> list[str]:
+class LaunderedInputError(RuntimeError):
+    """A pinned input resolves inside the evidence tree's dirty-file exemption."""
+
+
+def assert_inputs_outside_evidence(paths: dict[str, Path | None], repo_root: Path) -> None:
+    """No pinned INPUT may live where the dirty-tree exemption applies.
+
+    The exemption exists so a pack's own output cannot invalidate it. But an
+    input placed under `factory/evidence/` would inherit that exemption and
+    become editable without ever making the tree dirty — a target config, a
+    schema spec or a ground-truth file could be swapped between runs and every
+    pack would still report `ratifies_head: true`. That is provenance
+    laundering, and the exemption is what would have been laundering it.
+
+    So the rule is two-sided: the exemption covers outputs only, AND it applies
+    only to paths that are not among the resolved input set. Refused loudly,
+    naming the offending path, because a config that arranges this is wrong the
+    moment it is written.
+    """
+    guarded = (repo_root / EVIDENCE_SUBTREE.rstrip("/")).resolve()
+    for name, path in paths.items():
+        if path is None:
+            continue
+        resolved = Path(path).resolve()
+        if resolved == guarded or guarded in resolved.parents:
+            raise LaunderedInputError(
+                f"pinned input {name!r} resolves to {resolved}, which is inside "
+                f"{guarded}.\n"
+                f"That directory carries the dirty-tree exemption for the pack's own OUTPUT, "
+                f"so an input placed there could be edited between runs without ever making "
+                f"the tree dirty — every pack would keep reporting ratifies_head: true while "
+                f"the inputs moved underneath it.\n"
+                f"Move the input outside {guarded} and re-run."
+            )
+
+
+def _dirty_paths(exempt_except: set[str] | None = None) -> list[str]:
     try:
         out = subprocess.run(
             ["git", "status", "--porcelain"], capture_output=True, text=True,
@@ -246,7 +285,11 @@ def _dirty_paths() -> list[str]:
         # Porcelain is "XY path"; the path may be quoted or a rename pair. Only
         # the evidence subtree is exempt, so a simple prefix test suffices.
         target = entry.split(maxsplit=1)[-1].strip('"')
-        if target.startswith(EVIDENCE_SUBTREE):
+        # The exemption applies to the evidence subtree AND ONLY to paths that
+        # are not pinned inputs. A file that is both is never exempt — see
+        # `assert_inputs_outside_evidence`, which refuses that arrangement
+        # outright; this is the second line of the same defence.
+        if target.startswith(EVIDENCE_SUBTREE) and target not in (exempt_except or set()):
             continue
         paths.append(entry)
     return paths
@@ -335,6 +378,131 @@ def record_artifact(artifact_path: Path, evidence_dir: Path) -> dict[str, Any]:
             f"committed"
         )
     return record
+
+
+# Env vars that change WHERE a request actually goes. A pack that recorded a
+# hostname while a proxy silently rerouted every call would be describing a run
+# that did not happen. Values are recorded, not just presence: `HTTPS_PROXY`
+# pointing somewhere unexpected is the finding, and these are routing
+# configuration rather than credentials.
+PROXY_ENV_VARS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+)
+
+
+def proxy_environment() -> dict[str, Any]:
+    return {name: os.environ.get(name) for name in PROXY_ENV_VARS if name in os.environ} or {
+        "_note": "no proxy-related environment variables were set"
+    }
+
+
+def toolchain_pins(repo_root: Path, meshroad_binary: str | None = None) -> dict[str, Any]:
+    """Pins that are cheap to take and expensive to be wrong about.
+
+    `pyproject.toml` and `uv.lock` fix the declared and resolved dependency
+    sets; the meshroad binary is the consumer whose counters the serve gate
+    reports, and it is a build artifact outside this repo entirely, so a
+    content address is the only thing that identifies which one ran.
+    """
+    pins: dict[str, Any] = {
+        "python": sys.version.split()[0],
+        "python_implementation": platform.python_implementation(),
+        "platform_triple": f"{platform.system()}-{platform.machine()}-{platform.libc_ver()[0] or 'n/a'}",
+        "pyproject_toml": None,
+        "uv_lock": None,
+        "meshroad_binary": None,
+    }
+    for key, rel in (("pyproject_toml", "pyproject.toml"), ("uv_lock", "uv.lock")):
+        path = repo_root / rel
+        if path.exists():
+            pins[key] = {"path": rel, "sha256": sha256_file(path)}
+    if meshroad_binary:
+        binary = Path(meshroad_binary)
+        if binary.exists():
+            pins["meshroad_binary"] = {
+                "path": str(binary),
+                "sha256": sha256_file(binary),
+                "bytes": binary.stat().st_size,
+            }
+        else:
+            pins["meshroad_binary"] = {"path": str(binary), "sha256": "<not present>"}
+    return pins
+
+
+def secret_references(env_files: list[str]) -> list[dict[str, Any]]:
+    """Describe secret files WITHOUT hashing their contents.
+
+    A sha256 of a low-entropy API key is offline-guessable: an evidence pack is
+    a review artifact that travels, and publishing a digest of a short or
+    structured credential hands an attacker an oracle they can grind against.
+    The pack therefore records only what identifies the FILE — path, size,
+    mtime — which is enough to say "the same secret file was in place" without
+    saying anything about the secret.
+
+    Recorded in the CLOSURE BOUNDARY section as deliberately unpinned.
+    """
+    out: list[dict[str, Any]] = []
+    for env_file in env_files:
+        path = Path(env_file).expanduser()
+        record: dict[str, Any] = {"path": str(path), "contents_hashed": False}
+        if path.exists():
+            stat = path.stat()
+            record.update({
+                "bytes": stat.st_size,
+                "mtime_utc": datetime.fromtimestamp(stat.st_mtime, UTC).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"),
+                "mode": oct(stat.st_mode & 0o777),
+            })
+        else:
+            record["present"] = False
+        out.append(record)
+    return out
+
+
+# What a pack deliberately does NOT pin, and why. Emitted into every pack so a
+# reader never has to infer the boundary from what happens to be absent.
+CLOSURE_BOUNDARY = [
+    {
+        "item": "secret contents",
+        "pinned": False,
+        "why": (
+            "a sha256 of a low-entropy API key is offline-guessable, and an evidence pack "
+            "travels. Only path, size, mtime and mode are recorded — enough to say the same "
+            "secret file was in place, nothing about the secret."
+        ),
+    },
+    {
+        "item": "native and runtime dependencies beyond the lockfiles",
+        "pinned": False,
+        "why": (
+            "pyproject.toml and uv.lock fix the declared and resolved Python sets, and the "
+            "meshroad binary is content-addressed. Shared libraries, the OS package set and "
+            "the container's own contents are NOT pinned; the container image digest is "
+            "recorded, which identifies the image but does not reconstruct it."
+        ),
+    },
+    {
+        "item": "live source state",
+        "pinned": False,
+        "measured": True,
+        "why": (
+            "a live database or API cannot be pinned by a pack — it is not ours and it "
+            "moves. What the pack carries is MEASUREMENT of it at run time: row counts, "
+            "aggregates, min/max bounds, session timezone, and the artifact's content "
+            "address. Those values are already in this pack; they establish what the source "
+            "held during this run, not that it will hold it again."
+        ),
+    },
+    {
+        "item": "the machine's wall clock and scheduling",
+        "pinned": False,
+        "why": (
+            "no timing claim is made by any check in this battery, so clock and load are "
+            "deliberately outside the boundary rather than silently assumed."
+        ),
+    },
+]
 
 
 def digest_inputs(paths: dict[str, Path | None]) -> dict[str, Any]:
@@ -489,6 +657,18 @@ def render_markdown(pack: EvidencePack) -> str:
             lines.append("</details>")
             lines.append("")
 
+    # MANDATORY in every pack: what is deliberately NOT pinned, and why. A
+    # reader must never have to infer the boundary from what happens to be
+    # absent — an omission and a decision look identical from outside.
+    lines.append("## CLOSURE BOUNDARY — what this pack does NOT establish")
+    lines.append("")
+    lines.append("| item | pinned | why |")
+    lines.append("|---|---|---|")
+    for entry in CLOSURE_BOUNDARY:
+        pinned = "measured, not pinned" if entry.get("measured") else "**no**"
+        lines.append(f"| {_cell(entry['item'])} | {pinned} | {_cell(entry['why'])} |")
+    lines.append("")
+
     if pack.provenance:
         lines.append("## Provenance — what this pack ratifies")
         lines.append("")
@@ -514,10 +694,17 @@ def _cell(value: Any) -> str:
 
 
 __all__ = [
+    "CLOSURE_BOUNDARY",
+    "PROXY_ENV_VARS",
     "TRACKED_PACKAGES",
     "EvidencePack",
+    "LaunderedInputError",
+    "assert_inputs_outside_evidence",
     "build_pack",
     "collect_environment",
+    "proxy_environment",
     "render_markdown",
+    "secret_references",
+    "toolchain_pins",
     "write_pack",
 ]
