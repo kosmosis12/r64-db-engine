@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import stat
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, quote_plus
 
 from r64_db_engine.drivers.rest.drift import DriftEvent, emit_drift
 from r64_db_engine.drivers.rest.recipes import Recipe, RecipeBook
@@ -53,6 +55,72 @@ class EngineInvariantError(RecipeExecutionError):
     the alternative for each of these branches is a SILENT TRUNCATION: a pull
     that stops after page one and reports success.
     """
+
+
+class Scrubber:
+    """Removes credential material from anything the engine is about to surface.
+
+    # Why this exists (Law 3 enforcement, not cosmetics)
+
+    Credentials never enter model context. A recipe's secret is read at call
+    time from a 0600 file and placed in a header or a query parameter — and
+    then, if the call fails, it can come straight back out inside an exception
+    message or an httpx repr, which for query auth includes the full URL with
+    the key in it.
+
+    That matters more here than in an ordinary service, because **drift events
+    and repair briefs are AGENT-READ**. A leaked key in a `ResponseValidationError`
+    does not merely land in a log an operator might scroll past; it lands in the
+    structured repair record that the next agent opens in order to fix the
+    connector. Scrubbing is where Law 3 is actually enforced.
+
+    Two mechanisms, because one is not enough:
+
+    1. **Literal replacement** of the secret and its URL-encoded forms. Catches
+       the common case where the value is echoed verbatim.
+    2. **Query-parameter redaction by NAME** for query auth. Catches the forms
+       literal matching misses — percent-encoding, `+` for space, or a client
+       that re-serialized the value — because the parameter name is stable even
+       when its rendering is not.
+
+    Registered secrets are held only for the duration of the call.
+    """
+
+    __slots__ = ("_secrets", "_auth_keys")
+
+    REDACTED = "«redacted»"
+
+    def __init__(self) -> None:
+        self._secrets: set[str] = set()
+        self._auth_keys: set[str] = set()
+
+    def register_secret(self, value: str) -> None:
+        # Very short values are not registered: replacing a 1-3 character
+        # string would corrupt unrelated text without protecting anything a
+        # real credential looks like.
+        if value and len(value) >= 4:
+            self._secrets.add(value)
+
+    def register_auth_key(self, key: str) -> None:
+        if key:
+            self._auth_keys.add(key)
+
+    def scrub(self, text: str) -> str:
+        out = str(text)
+        for secret in self._secrets:
+            for form in (secret, quote(secret, safe=""), quote_plus(secret)):
+                if form:
+                    out = out.replace(form, self.REDACTED)
+        for key in self._auth_keys:
+            out = re.sub(
+                rf"([?&]{re.escape(key)}=)[^&\s\"'\)\]]*",
+                rf"\1{self.REDACTED}",
+                out,
+            )
+        return out
+
+    def scrubbed(self, exc: BaseException) -> str:
+        return self.scrub(f"{type(exc).__name__}: {exc}")
 
 
 def read_secret(env_file: str) -> str:
@@ -110,31 +178,45 @@ def dotted_get(doc: Any, path: str) -> Any:
     return current
 
 
-def validate_response(recipe: Recipe, payload: Any, book: RecipeBook, page: int) -> None:
-    """Per-pull `response_schema` validation. Failure is a repair signal."""
+def validate_response(
+    recipe: Recipe, payload: Any, book: RecipeBook, page: int,
+    scrubber: Scrubber | None = None,
+) -> None:
+    """Per-pull `response_schema` validation. Failure is a repair signal.
+
+    Both the raised message and the DRIFT EVENT are scrubbed. The drift event
+    matters most: it is the structured record the next agent reads in order to
+    repair the connector, so a credential landing there is a credential in
+    model context.
+    """
     import jsonschema
 
+    scrub = (scrubber or Scrubber()).scrub
     try:
         jsonschema.validate(payload, recipe.response_schema)
     except jsonschema.ValidationError as exc:
         event = DriftEvent(
             source=book.dataset,
             recipe=recipe.name,
-            url=recipe.url,
+            url=scrub(recipe.url),
             page=page,
             reason="response_schema validation failed",
-            detail=exc.message,
-            json_path=list(exc.absolute_path),
-            schema_path=list(exc.absolute_schema_path),
+            detail=scrub(exc.message),
+            json_path=[scrub(str(p)) for p in exc.absolute_path],
+            schema_path=[scrub(str(p)) for p in exc.absolute_schema_path],
         )
         emit_drift(event)
+        # `from None`, not `from exc`: chaining would print the ORIGINAL,
+        # unscrubbed exception in the traceback and undo the scrubbing entirely.
         raise ResponseValidationError(
-            f"recipe {recipe.name!r} response failed response_schema at "
-            f"{'.'.join(str(p) for p in exc.absolute_path) or '<root>'}: {exc.message}. "
-            f"A repair event was written and ntfy fired. This is NOT retried with a "
-            f"different interpretation — the provider changed, so the book must be "
-            f"re-researched and re-admitted through the battery."
-        ) from exc
+            scrub(
+                f"recipe {recipe.name!r} response failed response_schema at "
+                f"{'.'.join(str(p) for p in exc.absolute_path) or '<root>'}: {exc.message}. "
+                f"A repair event was written and ntfy fired. This is NOT retried with a "
+                f"different interpretation — the provider changed, so the book must be "
+                f"re-researched and re-admitted through the battery."
+            )
+        ) from None
 
 
 def _extract(recipe: Recipe, payload: Any) -> list[dict[str, Any]]:
@@ -296,6 +378,7 @@ def _request(
     url: str,
     params: dict[str, Any],
     book: RecipeBook,
+    scrubber: Scrubber,
 ) -> tuple[Any, Any]:
     """One HTTP call, with every destination invariant re-asserted first."""
     # Re-asserted per call rather than trusted from load: the URL being
@@ -308,10 +391,15 @@ def _request(
     query = dict(params)
     if recipe.auth.type != "none":
         secret = read_secret(recipe.auth.env_file or "")
+        scrubber.register_secret(secret)
         if recipe.auth.type == "header":
             headers[recipe.auth.key_name or ""] = secret
         else:
+            # Query auth puts the credential in the URL, so the parameter name
+            # is registered too: any error carrying that URL gets the VALUE
+            # redacted even when the literal has been re-encoded in transit.
             query[recipe.auth.key_name or ""] = secret
+            scrubber.register_auth_key(recipe.auth.key_name or "")
         del secret
 
     # Sent STREAMING so the peer address can be checked before any body is read.
@@ -324,7 +412,17 @@ def _request(
         json=query if recipe.method != "GET" else None,
         headers=headers,
     )
-    response = client.send(request, stream=True)
+    try:
+        response = client.send(request, stream=True)
+    except Exception as exc:  # noqa: BLE001 - re-raised scrubbed, never chained
+        # THE error-boundary case for query auth: httpx renders the full request
+        # URL in transport errors, and for query auth that URL contains the key.
+        # `from None` because chaining would put the unscrubbed original back in
+        # the traceback.
+        raise RecipeExecutionError(
+            scrubber.scrub(f"recipe {recipe.name!r} transport failure for {url}: ")
+            + scrubber.scrubbed(exc)
+        ) from None
     try:
         _assert_connected_peer_was_vetted(response, addresses, recipe, url)
 
@@ -337,14 +435,18 @@ def _request(
         if 300 <= response.status_code < 400:
             location = response.headers.get("location", "<none>")
             raise RecipeSecurityError(
-                f"recipe {recipe.name!r} received HTTP {response.status_code} redirecting to "
-                f"{location!r}. Redirects are refused: following one would move the request "
-                f"to a destination the recipe never pinned, routing around the https, host "
-                f"and private-address checks in a single hop."
+                scrubber.scrub(
+                    f"recipe {recipe.name!r} received HTTP {response.status_code} redirecting "
+                    f"to {location!r}. Redirects are refused: following one would move the "
+                    f"request to a destination the recipe never pinned, routing around the "
+                    f"https, host and private-address checks in a single hop."
+                )
             )
         if response.status_code >= 400:
             raise RecipeExecutionError(
-                f"recipe {recipe.name!r} returned HTTP {response.status_code} for {url}"
+                scrubber.scrub(
+                    f"recipe {recipe.name!r} returned HTTP {response.status_code} for {url}"
+                )
             )
         response.read()
         body = response.content
@@ -352,17 +454,19 @@ def _request(
         response.close()
     if len(body) > book.limits.max_response_bytes:
         raise RecipeExecutionError(
-            f"recipe {recipe.name!r} response is {len(body)} bytes, over the "
-            f"{book.limits.max_response_bytes}-byte cap. An unbounded read is a memory "
-            f"bug waiting for a bad day; raise limits.max_response_bytes deliberately "
-            f"if the source genuinely returns this much."
+            scrubber.scrub(
+                f"recipe {recipe.name!r} response is {len(body)} bytes, over the "
+                f"{book.limits.max_response_bytes}-byte cap. An unbounded read is a memory "
+                f"bug waiting for a bad day; raise limits.max_response_bytes deliberately "
+                f"if the source genuinely returns this much."
+            )
         )
     try:
         return json.loads(body), response
     except json.JSONDecodeError as exc:
         raise ResponseValidationError(
-            f"recipe {recipe.name!r} returned a body that is not JSON: {exc}"
-        ) from exc
+            scrubber.scrub(f"recipe {recipe.name!r} returned a body that is not JSON: {exc}")
+        ) from None
 
 
 def run_recipe(
@@ -388,9 +492,14 @@ def run_recipe(
     url = recipe.url
     page_params = {**recipe.static_params, **params}
 
+    # One scrubber for the whole recipe: every page's secret is registered on
+    # it, so an error raised on page 7 still redacts a value first seen on
+    # page 1. Scoped to this call — it goes out of scope with the recipe.
+    scrubber = Scrubber()
+
     for page in range(1, recipe.pagination.max_pages + 1):
-        payload, response = _request(client, recipe, url, page_params, book)
-        validate_response(recipe, payload, book, page)
+        payload, response = _request(client, recipe, url, page_params, book, scrubber)
+        validate_response(recipe, payload, book, page, scrubber)
         if first_payload is None:
             first_payload = payload
         records.extend(_extract(recipe, payload))
@@ -413,9 +522,12 @@ def run_recipe(
             page_params = {**page_params, **nxt}
     else:
         raise RecipeExecutionError(
-            f"recipe {recipe.name!r} hit the {recipe.pagination.max_pages}-page cap without "
-            f"the provider signalling an end. Refusing to return a silently truncated "
-            f"result: raise pagination.max_pages deliberately, or narrow the query."
+            scrubber.scrub(
+                f"recipe {recipe.name!r} hit the {recipe.pagination.max_pages}-page cap "
+                f"without the provider signalling an end. Refusing to return a silently "
+                f"truncated result: raise pagination.max_pages deliberately, or narrow "
+                f"the query."
+            )
         )
 
     return records, first_payload
@@ -494,6 +606,7 @@ def records_to_frame(records: list[dict[str, Any]], book: RecipeBook) -> Any:
 
 __all__ = [
     "EngineInvariantError",
+    "Scrubber",
     "RecipeExecutionError",
     "ResponseValidationError",
     "dotted_get",

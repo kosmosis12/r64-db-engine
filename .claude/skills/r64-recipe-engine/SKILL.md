@@ -154,9 +154,38 @@ the benign one.
    does.
 6. **Response size and time caps**, configurable, defaulted sanely. An
    unbounded read is a memory bug waiting for a bad day.
-7. **Credentials.** `env_file` is a path the engine reads at call time. Never
-   in a config value, a log line, an error message, a recorded request, or an
-   evidence pack.
+7. **Credentials — exactly what is enforced.** Each of these is tested:
+
+   - **Never authored in a recipe schema.** The `auth` block accepts a PATH and
+     a key name and nothing else, so a book cannot carry a secret even by
+     mistake.
+   - **Read at call time from a 0600 path.** A group- or world-readable file is
+     refused before any call is made.
+   - **Header auth never reaches the query string** (and vice versa).
+   - **Scrubbed from engine-raised errors and from drift/repair events.** Every
+     secret loaded during a call is removed from message text, and for query
+     auth the parameter's value is redacted in any URL that appears in an
+     error — by parameter NAME as well as by literal, since a client may
+     re-encode the value. Scrubbed re-raises use `from None`, because chaining
+     would print the unscrubbed original in the traceback.
+   - **Never in evidence packs.** Packs record a secret file's path, size,
+     mtime and mode — never a digest of its contents, which for a low-entropy
+     key would be offline-guessable.
+
+   **And, plainly: the wire request necessarily carries the credential.** That
+   is what authentication is. The guarantee is about where the secret can be
+   OBSERVED afterwards — context, logs, errors, repair records, packs — not
+   about the request itself.
+
+   *Rationale of record:* drift events and repair briefs are **agent-read**.
+   The next agent opens the repair record to fix the connector, so a credential
+   landing there is a credential in model context. The scrubber is Law 3
+   enforcement, not cosmetics.
+
+   > An earlier version of this clause said secrets are "never in a log line,
+   > an error message, a recorded request". Unqualified, that was false on two
+   > counts — nothing scrubbed errors at the time, and "recorded request" reads
+   > as a claim about the wire. Replaced with the enumerated, tested list above.
 
 ---
 

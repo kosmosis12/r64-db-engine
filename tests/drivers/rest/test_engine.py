@@ -744,3 +744,186 @@ def test_the_engine_client_disables_redirect_following() -> None:
 
     source = inspect.getsource(engine.run_book)
     assert "follow_redirects=False" in source
+
+
+# ---------------------------------------------------------------------------
+# Q3(a) — secrets never escape through the error boundary
+# ---------------------------------------------------------------------------
+
+SECRET = "sk-live-9f2a7b31c4d5e6f8"
+
+
+@pytest.fixture()
+def query_auth_book(tmp_path: Path):
+    """A recipe whose credential travels in the URL — the leaky shape.
+
+    Query auth is the hard case: the key is IN the request URL, so any error
+    that renders that URL renders the credential with it.
+    """
+    secret_file = tmp_path / "api.env"
+    secret_file.write_text(SECRET)
+    secret_file.chmod(0o600)
+    return make_book(auth={
+        "type": "query", "env_file": str(secret_file), "key_name": "api_key",
+    })
+
+
+def _assert_clean(text: str) -> None:
+    """No form of the secret may survive — literal or URL-encoded."""
+    from urllib.parse import quote, quote_plus
+
+    for form in (SECRET, quote(SECRET, safe=""), quote_plus(SECRET)):
+        assert form not in text, f"secret leaked as {form!r} in: {text[:400]}"
+
+
+def test_a_transport_failure_does_not_leak_a_query_credential(query_auth_book) -> None:
+    """The canonical leak: httpx renders the full request URL in transport
+    errors, and for query auth that URL carries the key."""
+    book = query_auth_book
+
+    class ExplodingClient(FakeClient):
+        def send(self, request, stream=False):
+            raise RuntimeError(
+                f"ConnectError: failed to reach "
+                f"https://api.example.com/v1/items?api_key={SECRET}&q=1"
+            )
+
+    with pytest.raises(engine.RecipeExecutionError) as exc:
+        engine.run_recipe(ExplodingClient([{}]), book.recipes["one"], {}, book)
+    _assert_clean(str(exc.value))
+    assert "«redacted»" in str(exc.value)
+
+
+def test_an_http_error_status_does_not_leak_a_query_credential(query_auth_book) -> None:
+    book = query_auth_book
+
+    class ErrorClient(FakeClient):
+        def send(self, request, stream=False):
+            response = FakeResponse({}, status=503)
+            self.responses.append(response)
+            return response
+
+    with pytest.raises(engine.RecipeExecutionError) as exc:
+        engine.run_recipe(ErrorClient([{}]), book.recipes["one"], {}, book)
+    _assert_clean(str(exc.value))
+
+
+def test_a_schema_violation_does_not_leak_the_credential_into_the_RAISED_text(
+    query_auth_book,
+) -> None:
+    book = query_auth_book
+    client = FakeClient([{"wrong_key": [], "echo": f"?api_key={SECRET}"}])
+    with pytest.raises(engine.ResponseValidationError) as exc:
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+    _assert_clean(str(exc.value))
+
+
+def test_a_schema_violation_does_not_leak_the_credential_into_the_DRIFT_EVENT(
+    query_auth_book,
+) -> None:
+    """The one that matters most.
+
+    Drift events are AGENT-READ: the next agent opens the repair record in
+    order to fix the connector. A credential landing there is a credential in
+    model context, which is Law 3 violated at exactly the point the factory is
+    supposed to enforce it.
+    """
+    book = query_auth_book
+    client = FakeClient([{"wrong_key": [], "echo": f"https://x/y?api_key={SECRET}"}])
+    with pytest.raises(engine.ResponseValidationError):
+        engine.run_recipe(client, book.recipes["one"], {}, book)
+
+    events = drift.read_events("demo")
+    assert events, "no drift event was written"
+    _assert_clean(json.dumps(events))
+
+
+def test_the_traceback_chain_does_not_reintroduce_the_secret(query_auth_book) -> None:
+    """`raise ... from exc` would print the ORIGINAL, unscrubbed exception in
+    the traceback and undo the scrubbing entirely. The engine uses `from None`
+    on every scrubbed re-raise; this asserts the chain is genuinely severed."""
+    book = query_auth_book
+
+    class ExplodingClient(FakeClient):
+        def send(self, request, stream=False):
+            raise RuntimeError(f"boom with {SECRET} inside")
+
+    with pytest.raises(engine.RecipeExecutionError) as exc:
+        engine.run_recipe(ExplodingClient([{}]), book.recipes["one"], {}, book)
+
+    assert exc.value.__cause__ is None, "the unscrubbed original is still chained"
+    assert exc.value.__suppress_context__ is True
+
+
+def test_a_header_credential_is_also_scrubbed_from_errors(tmp_path: Path) -> None:
+    """Header auth keeps the key out of the URL, but an exception can still
+    quote a header dict."""
+    secret_file = tmp_path / "api.env"
+    secret_file.write_text(SECRET)
+    secret_file.chmod(0o600)
+    book = make_book(auth={
+        "type": "header", "env_file": str(secret_file), "key_name": "X-Api-Key"})
+
+    class ExplodingClient(FakeClient):
+        def send(self, request, stream=False):
+            raise RuntimeError(f"headers were {{'X-Api-Key': '{SECRET}'}}")
+
+    with pytest.raises(engine.RecipeExecutionError) as exc:
+        engine.run_recipe(ExplodingClient([{}]), book.recipes["one"], {}, book)
+    _assert_clean(str(exc.value))
+
+
+def test_MUTATION_without_the_scrubber_the_secret_leaks(query_auth_book, monkeypatch) -> None:
+    """Mutation check: the tests above must depend on the scrubber.
+
+    With `scrub` neutered to the identity, the credential appears in the raised
+    text — which is the pre-fix behaviour, and confirms these tests measure the
+    scrubbing rather than restating it.
+    """
+    monkeypatch.setattr(engine.Scrubber, "scrub", lambda self, text: str(text))
+    monkeypatch.setattr(
+        engine.Scrubber, "scrubbed", lambda self, exc: f"{type(exc).__name__}: {exc}"
+    )
+    book = query_auth_book
+
+    class ExplodingClient(FakeClient):
+        def send(self, request, stream=False):
+            raise RuntimeError(f"ConnectError: ...?api_key={SECRET}")
+
+    with pytest.raises(engine.RecipeExecutionError) as exc:
+        engine.run_recipe(ExplodingClient([{}]), book.recipes["one"], {}, book)
+    assert SECRET in str(exc.value), (
+        "with the scrubber neutered the secret should leak — if it does not, the "
+        "tests above are not measuring the scrubber"
+    )
+
+
+# --- the Scrubber itself ---------------------------------------------------
+
+
+def test_the_scrubber_redacts_every_encoding_of_the_value() -> None:
+    from urllib.parse import quote, quote_plus
+
+    s = engine.Scrubber()
+    s.register_secret(SECRET)
+    for form in (SECRET, quote(SECRET, safe=""), quote_plus(SECRET)):
+        assert SECRET not in s.scrub(f"prefix {form} suffix")
+
+
+def test_the_scrubber_redacts_by_param_name_even_when_the_value_was_rewritten() -> None:
+    """Literal matching alone is not enough: a client may re-serialize the
+    value. The parameter NAME is stable when its rendering is not."""
+    s = engine.Scrubber()
+    s.register_secret(SECRET)
+    s.register_auth_key("api_key")
+    out = s.scrub("GET https://api.example.com/v1?api_key=SOMETHING-RE-ENCODED&p=2")
+    assert "SOMETHING-RE-ENCODED" not in out
+    assert "p=2" in out, "redaction must stop at the parameter boundary"
+
+
+def test_the_scrubber_ignores_values_too_short_to_be_credentials() -> None:
+    """Replacing a 1-3 character string would corrupt unrelated text without
+    protecting anything a real credential looks like."""
+    s = engine.Scrubber()
+    s.register_secret("ab")
+    assert s.scrub("a stable table") == "a stable table"
