@@ -154,7 +154,8 @@ def _git_facts() -> dict[str, Any]:
     return {
         "commit": run("rev-parse", "HEAD"),
         "branch": run("rev-parse", "--abbrev-ref", "HEAD"),
-        "dirty": bool(run("status", "--porcelain")),
+        "dirty": bool(_dirty_paths()),
+        "dirty_exemption": EVIDENCE_SUBTREE,
     }
 
 
@@ -185,6 +186,16 @@ class DirtyTreeError(RuntimeError):
     """The working tree is dirty, so a pack could not ratify a known commit."""
 
 
+# The pack's own output directory. Changes here do NOT make the tree dirty for
+# the purposes of ratification: a pack cannot be invalidated by the fact that it
+# is being written, and a sweep across several targets would otherwise refuse
+# every target after the first — the first pack dirties the tree for the rest.
+#
+# This is an exemption for the PRODUCT, never for an INPUT. Code, configs, specs
+# and ground truth are all outside it and all still count.
+EVIDENCE_SUBTREE = "factory/evidence/"
+
+
 def assert_clean_tree(allow_dirty: bool = False) -> dict[str, Any]:
     """A pack must ratify a HEAD that exists, or say loudly that it does not.
 
@@ -197,6 +208,8 @@ def assert_clean_tree(allow_dirty: bool = False) -> dict[str, Any]:
     it does not merely permit the run: it stamps ALLOW-DIRTY into the verdict
     line and the pack header, so a pack produced that way can never be mistaken
     for one that ratifies a commit.
+
+    Changes under `factory/evidence/` are excluded — see `EVIDENCE_SUBTREE`.
     """
     facts = _git_facts()
     if not facts.get("commit"):
@@ -225,7 +238,18 @@ def _dirty_paths() -> list[str]:
         ).stdout
     except Exception:  # noqa: BLE001
         return []
-    return [line.strip() for line in out.splitlines() if line.strip()]
+    paths: list[str] = []
+    for line in out.splitlines():
+        entry = line.strip()
+        if not entry:
+            continue
+        # Porcelain is "XY path"; the path may be quoted or a rename pair. Only
+        # the evidence subtree is exempt, so a simple prefix test suffices.
+        target = entry.split(maxsplit=1)[-1].strip('"')
+        if target.startswith(EVIDENCE_SUBTREE):
+            continue
+        paths.append(entry)
+    return paths
 
 
 def sha256_file(path: Path) -> str:

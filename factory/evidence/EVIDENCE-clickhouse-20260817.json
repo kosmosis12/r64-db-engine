@@ -1,5 +1,7 @@
 {
   "verdict": "PASS",
+  "verdict_status": "PASS",
+  "ratifies_head": true,
   "tally": {
     "PASS": 9,
     "FAIL": 0,
@@ -8,7 +10,7 @@
   "dialect": "clickhouse",
   "table": "perf_1m",
   "source": "SELECT * FROM meshbench.perf_1m ORDER BY row_id",
-  "generated_utc": "2026-08-17T08:53:33Z",
+  "generated_utc": "2026-08-17T11:25:58Z",
   "invocation": {
     "config": "/home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml",
     "ground_truth": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json",
@@ -17,6 +19,44 @@
     "source_endpoint": "http://127.0.0.1:8123/ (database=meshbench, user=default)",
     "source_timezone": "UTC",
     "note": "data checks read pull 1; the serve gate, when run, reads the file as it stands after pull 2 (identical when the checksum check passes)"
+  },
+  "provenance": {
+    "git": {
+      "commit": "6655b9026f23568889190ce845586e3dd1235a0d",
+      "branch": "feat/meshforge-factory",
+      "dirty": false
+    },
+    "allow_dirty": false,
+    "command": ".venv/bin/python -m factory.conformance --dialect clickhouse --config /home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml --ground-truth /home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json --table perf_1m --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence --work-dir /tmp/r64-factory-sweep/clickhouse-meshbench --serve-gate",
+    "inputs": {
+      "target_config": {
+        "path": "/home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml",
+        "sha256": "7c504d92bcd95f699f46d0fb3e93374ed87def4277065cfba05a00d022d85db3"
+      },
+      "recipe_book": null,
+      "schema_spec": {
+        "path": "/home/kos/builds/r64-db-engine/factory/specs/meshbench-schema.json",
+        "sha256": "93c735e0c6647f7f9c17ca6921146bdd3416ee594aa760fae6700b86add76636"
+      },
+      "ground_truth": {
+        "path": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json",
+        "sha256": "6c7f9331a553dc76890ba3dd19bf888aca50a5a2bfb823333c2ef83c40082a4e"
+      }
+    },
+    "implementation": {
+      "distribution_version": "0.1.0",
+      "source_sha256": "0443a9a67f4f2520d910c076a9f14f8f4325a801d740f7ac0a16a34b95f332b8",
+      "source_files": 46
+    },
+    "artifact": {
+      "sha256": "db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a",
+      "bytes": 149806522,
+      "produced_at": "/tmp/r64-factory-sweep/clickhouse-meshbench/arrow_out/perf_1m.arrow",
+      "suffix": ".arrow",
+      "storage": "content-addressed manifest",
+      "path": "factory/evidence/artifacts/db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a.manifest.json",
+      "note": "artifact is 149806522 bytes, over the 8388608-byte copy limit; the sha256 above is the content address and the bytes are not committed"
+    }
   },
   "artifact": {
     "path": "/tmp/r64-factory-sweep/clickhouse-meshbench/arrow_out/perf_1m.arrow",
@@ -39,7 +79,7 @@
       "httpx": "0.28.1"
     },
     "git": {
-      "commit": "c4122fd8c6332257fcc039ba93d4152d7b78d9db",
+      "commit": "6655b9026f23568889190ce845586e3dd1235a0d",
       "branch": "feat/meshforge-factory",
       "dirty": true
     },
@@ -54,6 +94,7 @@
     {
       "name": "registry_admission",
       "status": "PASS",
+      "reason_code": "",
       "detail": "dialect 'clickhouse' against registry ['clickhouse', 'postgres', 'rest']",
       "comparisons": [
         {
@@ -61,7 +102,8 @@
           "actual": "clickhouse",
           "expected": "clickhouse",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "registry.dialect_name_mismatch"
         },
         {
           "label": "dialect present in registry listing",
@@ -72,14 +114,16 @@
           ],
           "expected": "contains 'clickhouse'",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "registry.dialect_absent_from_listing"
         },
         {
           "label": "drivers.resolve: refuses unregistered dialect",
           "actual": "raised",
           "expected": "raised",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": ""
         },
         {
           "label": "drivers.resolve: refusal lists registered dialects",
@@ -94,14 +138,16 @@
             "rest"
           ],
           "ok": true,
-          "note": "message: unknown dialect 'definitely-not-a-registered-dialect' (available: clickhouse, postgres, rest)"
+          "note": "message: unknown dialect 'definitely-not-a-registered-dialect' (available: clickhouse, postgres, rest)",
+          "code": "registry.refusal_omits_registry"
         },
         {
           "label": "Config validation: refuses unregistered dialect",
           "actual": "raised",
           "expected": "raised",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": ""
         },
         {
           "label": "Config validation: refusal lists registered dialects",
@@ -116,7 +162,8 @@
             "rest"
           ],
           "ok": true,
-          "note": "message: 1 validation error for Config\n  Value error, unknown dialect 'definitely-not-a-registered-dialect' (registered: clickhouse, postgres, rest) [type=value_error, input_value={'dialect': 'definitely-n...: 0, 'metrics_port': 0}}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error"
+          "note": "message: 1 validation error for Config\n  Value error, unknown dialect 'definitely-not-a-registered-dialect' (registered: clickhouse, postgres, rest) [type=value_error, input_value={'dialect': 'definitely-n...: 0, 'metrics_port': 0}}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/value_error",
+          "code": "registry.refusal_omits_registry"
         }
       ],
       "queries": [],
@@ -125,6 +172,7 @@
     {
       "name": "schema_exactness",
       "status": "PASS",
+      "reason_code": "",
       "detail": "14 columns, string-width tolerance ON (B-3)",
       "comparisons": [
         {
@@ -132,7 +180,8 @@
           "actual": 14,
           "expected": 14,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.column_count"
         },
         {
           "label": "column names and order",
@@ -169,105 +218,120 @@
             "event_time"
           ],
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.column_set_or_order"
         },
         {
           "label": "type[row_id]",
           "actual": "int64",
           "expected": "int64",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[account_id]",
           "actual": "int64",
           "expected": "int64",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[user_id]",
           "actual": "int64",
           "expected": "int64",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[region]",
           "actual": "large_string",
           "expected": "large_string",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[city]",
           "actual": "large_string",
           "expected": "large_string",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[category]",
           "actual": "large_string",
           "expected": "large_string",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[segment]",
           "actual": "large_string",
           "expected": "large_string",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[product_name]",
           "actual": "large_string",
           "expected": "large_string",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[status]",
           "actual": "dictionary<values=string, indices=int32, ordered=0>",
           "expected": "dictionary<values=string, indices=int32, ordered=0>",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[amount]",
           "actual": "double",
           "expected": "double",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[quantity]",
           "actual": "int64",
           "expected": "int64",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[price]",
           "actual": "double",
           "expected": "double",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[score]",
           "actual": "double",
           "expected": "double",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         },
         {
           "label": "type[event_time]",
           "actual": "timestamp[us]",
           "expected": "timestamp[us]",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "schema.type_mismatch"
         }
       ],
       "queries": [],
@@ -276,6 +340,7 @@
     {
       "name": "aggregate_parity",
       "status": "PASS",
+      "reason_code": "",
       "detail": "12 aggregates vs ground truth",
       "comparisons": [
         {
@@ -283,84 +348,96 @@
           "actual": 1000000,
           "expected": 1000000,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "aggregate.mismatch"
         },
         {
           "label": "uniq_status",
           "actual": 6,
           "expected": 6,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "aggregate.mismatch"
         },
         {
           "label": "uniq_region",
           "actual": 8,
           "expected": 8,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "aggregate.mismatch"
         },
         {
           "label": "uniq_product_name",
           "actual": 50000,
           "expected": 50000,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "aggregate.mismatch"
         },
         {
           "label": "count_status_active",
           "actual": 166627,
           "expected": 166627,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "aggregate.mismatch"
         },
         {
           "label": "count_region_west",
           "actual": 124935,
           "expected": 124935,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "aggregate.mismatch"
         },
         {
           "label": "sum_quantity",
           "actual": 250480021,
           "expected": 250480021,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "aggregate.mismatch"
         },
         {
           "label": "max_account_id",
           "actual": 3599999873,
           "expected": 3599999873,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "aggregate.mismatch"
         },
         {
           "label": "scaled_amount_sum_exact_int",
           "actual": 11994337292,
           "expected": 11994337292,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "aggregate.mismatch"
         },
         {
           "label": "scaled_amount_sum",
           "actual": 11994337292,
           "expected": 11994337292,
           "ok": true,
-          "note": "corroborating only \u2014 does not gate (float-order sensitivity)"
+          "note": "corroborating only \u2014 does not gate (float-order sensitivity)",
+          "code": "aggregate.corroborating_mismatch"
         },
         {
           "label": "count_score_null",
           "actual": 20039,
           "expected": 20039,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "aggregate.mismatch"
         },
         {
           "label": "pct_score_null",
           "actual": 2.0039,
           "expected": 2.0039,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "aggregate.mismatch"
         }
       ],
       "queries": [],
@@ -369,6 +446,7 @@
     {
       "name": "rf002_null_discriminator",
       "status": "PASS",
+      "reason_code": "",
       "detail": "1 declared discriminator(s) on perf_1m: score",
       "comparisons": [
         {
@@ -376,28 +454,32 @@
           "actual": 20039,
           "expected": 20039,
           "ok": true,
-          "note": "two independent records of the same number; disagreement means one of the two files is stale"
+          "note": "two independent records of the same number; disagreement means one of the two files is stale",
+          "code": "rf002.spec_ground_truth_disagree"
         },
         {
           "label": "score: artifact null_count",
           "actual": 20039,
           "expected": 20039,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "rf002.null_count_mismatch"
         },
         {
           "label": "score: count(col) vs count(*)",
           "actual": "979961 vs 1000000",
           "expected": "must differ",
           "ok": true,
-          "note": "if equal, nulls were filled in transit"
+          "note": "if equal, nulls were filled in transit",
+          "code": "rf002.not_discriminating"
         },
         {
           "label": "score: NaN smuggled as a value",
           "actual": 0,
           "expected": 0,
           "ok": true,
-          "note": "a literal NaN sets null_count=0 and poisons every downstream sum()"
+          "note": "a literal NaN sets null_count=0 and poisons every downstream sum()",
+          "code": "rf002.nan_as_value"
         }
       ],
       "queries": [],
@@ -406,6 +488,7 @@
     {
       "name": "b2_boundary",
       "status": "PASS",
+      "reason_code": "",
       "detail": "boundary columns ['event_time'] vs live source (source session timezone: UTC)",
       "comparisons": [
         {
@@ -413,14 +496,16 @@
           "actual": "2026-01-01 00:00:15.184566",
           "expected": "2026-01-01 00:00:15.184566",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "b2.bounds_diverged"
         },
         {
           "label": "event_time: max",
           "actual": "2026-06-29 23:59:30.942340",
           "expected": "2026-06-29 23:59:30.942340",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "b2.bounds_diverged"
         }
       ],
       "queries": [
@@ -434,6 +519,7 @@
     {
       "name": "pg011_refusal",
       "status": "PASS",
+      "reason_code": "",
       "detail": "refused with: sink 'arrow_ipc' cannot serve incremental mode (its output format is not appendable in place), but these tables request it: perf_1m. Use mode: full_refresh.",
       "comparisons": [
         {
@@ -441,14 +527,16 @@
           "actual": "raised",
           "expected": "raised",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": ""
         },
         {
           "label": "refusal names the cause",
           "actual": "sink 'arrow_ipc' cannot serve incremental mode (its output format is not appendable in place), but these tables request it: perf_1m. Use mode: full_refresh.",
           "expected": "cannot serve incremental mode",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "pg011.wrong_error"
         }
       ],
       "queries": [],
@@ -457,6 +545,7 @@
     {
       "name": "block_structure",
       "status": "PASS",
+      "reason_code": "",
       "detail": "16 blocks expected for 1000000 rows at 65536/block",
       "comparisons": [
         {
@@ -464,14 +553,16 @@
           "actual": 16,
           "expected": 16,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "blocks.count_mismatch"
         },
         {
           "label": "rows across blocks",
           "actual": 1000000,
           "expected": 1000000,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "blocks.rows_missing"
         },
         {
           "label": "block layout",
@@ -512,7 +603,8 @@
             16960
           ],
           "ok": true,
-          "note": "65536-row blocks, final block carries the remainder"
+          "note": "65536-row blocks, final block carries the remainder",
+          "code": "blocks.layout_mismatch"
         }
       ],
       "queries": [],
@@ -521,6 +613,7 @@
     {
       "name": "checksum",
       "status": "PASS",
+      "reason_code": "",
       "detail": "two consecutive same-lane pulls are byte-identical (sha256 db2912dfbd6a4233\u2026)",
       "comparisons": [
         {
@@ -528,7 +621,8 @@
           "actual": "db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a",
           "expected": "db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": ""
         }
       ],
       "queries": [],
@@ -539,6 +633,7 @@
     {
       "name": "recipe_security_invariants",
       "status": "SKIPPED",
+      "reason_code": "",
       "detail": "not a recipe-lane dialect; no recipe book to mutate",
       "comparisons": [],
       "queries": [],
@@ -547,6 +642,7 @@
     {
       "name": "zero_copy_serve_gate",
       "status": "PASS",
+      "reason_code": "",
       "detail": "counter deltas from the server's own get_flight_info app_metadata",
       "comparisons": [
         {
@@ -554,42 +650,48 @@
           "actual": 0,
           "expected": 0,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "serve.copied_columns_cold"
         },
         {
           "label": "warm: copied_columns",
           "actual": 0,
           "expected": 0,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "serve.copied_columns_warm"
         },
         {
           "label": "cold: zero_copy_columns == columns_decoded",
           "actual": "32 vs 32",
           "expected": "equal",
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "serve.cold_zero_copy_mismatch"
         },
         {
           "label": "cold: columns actually decoded",
           "actual": 32,
           "expected": "> 0",
           "ok": true,
-          "note": "a cold pass that decodes nothing did not exercise the reader"
+          "note": "a cold pass that decodes nothing did not exercise the reader",
+          "code": "serve.cold_no_decode"
         },
         {
           "label": "warm: miss_rate %",
           "actual": 0.0,
           "expected": 0.0,
           "ok": true,
-          "note": ""
+          "note": "",
+          "code": "serve.warm_miss"
         },
         {
           "label": "warm: columns_decoded",
           "actual": 0,
           "expected": 0,
           "ok": true,
-          "note": "stronger than miss_rate: a warm pass must decode nothing at all"
+          "note": "stronger than miss_rate: a warm pass must decode nothing at all",
+          "code": "serve.warm_decoded"
         }
       ],
       "queries": [],
@@ -616,7 +718,7 @@
         },
         "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
         "addr": "127.0.0.1:8903",
-        "pid": 725472,
+        "pid": 948795,
         "baseline": {
           "cache_hits": 0,
           "cache_misses": 0,
