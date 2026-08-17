@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Run the conformance battery across every registered target. Exit non-zero on any failure.
+
+    factory/bin/factory-conformance-sweep
+    factory/bin/factory-conformance-sweep --target clickhouse-meshbench --serve-gate
+
+This is the "maintains" half of the factory. A factory that only builds is half
+a factory: integrations rot because sources change underneath them, and the
+failure is usually SILENT — a column that became nullable, a timestamp that
+changed zone, an enum that gained a value. The sweep exists so that the first
+thing to notice is a timer, not a customer.
+
+On failure it writes `REPAIR-BRIEF-<dialect>-<YYYYMMDD>.md` from the template
+in the `r64-factory-maintenance` skill, including a diff of the failing
+evidence pack against the last green one for that dialect.
+
+# Why a `last-green` copy exists
+
+Evidence packs are named by date, so a failing run on the same day would
+overwrite the very pack a repair brief needs to diff against. Each green sweep
+therefore snapshots its pack to `factory/evidence/last-green/EVIDENCE-<dialect>.json`,
+which is what makes "what changed since it worked" answerable at the moment it
+stops working rather than only in hindsight.
+
+# Environmental prerequisites are FAILURES, not skips
+
+A stopped container or an unreachable source turns the sweep red. Silently
+skipping a target whose source is down would turn the timer into decoration:
+the one week the sweep quietly checks nothing is the week you needed it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _reexec_under_venv() -> None:
+    """Re-exec under the repo venv if the engine is not importable.
+
+    Standing discipline is that the suite and its tooling run under
+    `.venv/bin/python` and never a bare interpreter. Rather than fail with an
+    ImportError when someone runs `./factory/bin/factory-conformance-sweep`
+    directly, this hands off to the right interpreter once. `PYTHONNOUSERSITE`
+    is set for the child for the same reason it is set everywhere else here:
+    a stray package in ~/.local must not shadow the pinned one.
+    """
+    if importlib.util.find_spec("r64_db_engine") is not None:
+        return
+    venv_python = REPO_ROOT / ".venv" / "bin" / "python"
+    if not venv_python.exists() or os.environ.get("_R64_SWEEP_REEXEC"):
+        return
+    os.environ["_R64_SWEEP_REEXEC"] = "1"
+    os.environ["PYTHONNOUSERSITE"] = "1"
+    os.execv(str(venv_python), [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+_reexec_under_venv()
+sys.path.insert(0, str(REPO_ROOT))
+
+from factory import conformance  # noqa: E402
+from factory.repair import write_repair_brief  # noqa: E402
+
+
+def discover_targets(targets_dir: Path, only: str | None) -> list[Path]:
+    targets = sorted(p for p in targets_dir.glob("*.yaml"))
+    if only:
+        targets = [p for p in targets if p.stem == only]
+        if not targets:
+            raise SystemExit(
+                f"--target {only!r} matched nothing in {targets_dir} "
+                f"(available: {[p.stem for p in sorted(targets_dir.glob('*.yaml'))]})"
+            )
+    if not targets:
+        raise SystemExit(
+            f"no targets found in {targets_dir}. A sweep with nothing to sweep exits "
+            f"non-zero rather than reporting success over an empty set."
+        )
+    return targets
+
+
+def resolve_ground_truth(target: Path, dialect: str, ground_truth_dir: Path) -> Path:
+    """Find the ground truth for a target, by dataset name then by dialect name.
+
+    Two conventions exist in the repo and both are honoured rather than one
+    being renamed: `GROUND-TRUTH-clickhouse.json` is named for its dialect (it
+    predates the factory), `GROUND-TRUTH-openmeteo.json` for its dataset.
+    Renaming a committed evidence-bearing file to satisfy a naming rule would
+    be a contract-touching change made for tidiness.
+    """
+    stem = target.stem
+    dataset = stem[len(dialect) + 1:] if stem.startswith(f"{dialect}-") else stem
+    for candidate in (
+        ground_truth_dir / f"GROUND-TRUTH-{dataset}.json",
+        ground_truth_dir / f"GROUND-TRUTH-{dialect}.json",
+    ):
+        if candidate.exists():
+            return candidate
+    raise SystemExit(
+        f"no ground truth for target {stem!r}: tried GROUND-TRUTH-{dataset}.json and "
+        f"GROUND-TRUTH-{dialect}.json in {ground_truth_dir}. The battery gates aggregates "
+        f"against source-captured expectations, so a target without them cannot be swept."
+    )
+
+
+def run_target(target: Path, args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Run the battery for every table in one target. Returns per-table results."""
+    doc = conformance.load_yaml(target)
+    dialect = doc.get("dialect")
+    if not dialect:
+        raise SystemExit(f"{target}: no `dialect` key")
+
+    ground_truth = resolve_ground_truth(target, dialect, Path(args.ground_truth_dir))
+    evidence_dir = Path(args.evidence_dir)
+    results: list[dict[str, Any]] = []
+
+    for entry in doc.get("tables", []):
+        table = entry.get("target")
+        argv = [
+            "--dialect", dialect,
+            "--config", str(target),
+            "--ground-truth", str(ground_truth),
+            "--table", table,
+            "--evidence-dir", str(evidence_dir),
+        ]
+        if args.work_dir:
+            argv += ["--work-dir", str(Path(args.work_dir) / target.stem)]
+        if args.serve_gate:
+            argv += ["--serve-gate"]
+        if args.date:
+            argv += ["--date", args.date]
+
+        print(f"\n=== sweep: {target.stem} / {table} ({dialect}) ===", flush=True)
+        stamp = args.date or datetime.now().strftime("%Y%m%d")
+        pack_path = evidence_dir / f"EVIDENCE-{dialect}-{stamp}.json"
+
+        # Each target/table runs as an ISOLATED, TIME-BOUNDED SUBPROCESS rather
+        # than in-process, for three reasons that were each learned the hard way:
+        #
+        # 1. TIME BOUND. A source that is unreachable rather than wrong does not
+        #    fail fast — the clickhouse client retried against a dead port for
+        #    ELEVEN MINUTES and was still going. In-process there was nothing to
+        #    stop it, so the sweep hung. A hung sweep is strictly worse than a
+        #    failed one: nothing alerts, and the timer looks like it is working.
+        # 2. ISOLATION. One target's exception, `SystemExit`, or leaked state
+        #    cannot take the rest of the sweep down with it. An in-process
+        #    version crashed the whole run on a `SystemExit` carrying a STRING
+        #    message (`int(exc.code)` -> ValueError), so one misconfigured target
+        #    silently cancelled every later target — the opposite of a sweep.
+        # 3. The child is the same entry point an operator would run by hand, so
+        #    the sweep cannot drift away from the documented CLI.
+        #
+        # stdout/stderr are INHERITED rather than captured, so a 4-minute run is
+        # watchable live and journalctl gets everything for the systemd case.
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-m", "factory.conformance", *argv],
+                cwd=REPO_ROOT,
+                timeout=args.per_target_timeout,
+                check=False,
+            )
+            code = completed.returncode
+        except subprocess.TimeoutExpired:
+            print(
+                f"[sweep] {target.stem}/{table} TIMED OUT after "
+                f"{args.per_target_timeout}s and was killed",
+                file=sys.stderr,
+            )
+            results.append({
+                "target": target.stem, "table": table, "dialect": dialect,
+                "verdict": "ERROR", "code": 1,
+                "pack": str(pack_path) if pack_path.exists() else None,
+                "error": (
+                    f"the battery did not complete within {args.per_target_timeout}s and was "
+                    f"killed. An unreachable source is the usual cause — a client retrying "
+                    f"against a dead endpoint does not fail fast. This is a RED sweep, never "
+                    f"a skip."
+                ),
+            })
+            continue
+
+        # A battery that FAILED always wrote a pack; a battery that REFUSED its
+        # own inputs (missing spec, unknown table) never got that far. The pack's
+        # presence is what separates "the source drifted" from "this target is
+        # misconfigured", and they need different briefs.
+        if code == 0:
+            verdict = "PASS"
+            error = None
+        elif pack_path.exists():
+            verdict = "FAIL"
+            error = None
+        else:
+            verdict = "ERROR"
+            error = (
+                f"the battery exited {code} without writing an evidence pack, so it refused "
+                f"its own inputs rather than failing a check. See the run log above "
+                f"(journalctl -u r64-factory-conformance.service -e under systemd)."
+            )
+
+        results.append({
+            "target": target.stem, "table": table, "dialect": dialect,
+            "verdict": verdict, "code": code,
+            "pack": str(pack_path) if pack_path.exists() else None,
+            "ground_truth": str(ground_truth),
+            "error": error,
+        })
+    return results
+
+
+def snapshot_green(pack_path: Path, dialect: str, evidence_dir: Path) -> Path:
+    """Record this pack as the last known-good one for the dialect."""
+    directory = evidence_dir / "last-green"
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / f"EVIDENCE-{dialect}.json"
+    shutil.copy2(pack_path, destination)
+    return destination
+
+
+def last_green(dialect: str, evidence_dir: Path) -> dict[str, Any] | None:
+    path = evidence_dir / "last-green" / f"EVIDENCE-{dialect}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+
+
+def collect_drift_events() -> list[dict[str, Any]]:
+    """Recipe-lane repair events accumulated since anyone last looked.
+
+    Surfaced even when the battery itself is green: a recipe that has been
+    quietly failing validation between sweeps is exactly the case that must not
+    stay quiet.
+    """
+    try:
+        from r64_db_engine.drivers.rest.drift import all_events
+
+        return all_events()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sweep] could not read recipe drift log: {exc}", file=sys.stderr)
+        return []
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="factory-conformance-sweep",
+        description="Run the conformance battery across every target; exit non-zero on any failure.",
+    )
+    parser.add_argument("--targets-dir", default=str(REPO_ROOT / "factory" / "targets"))
+    parser.add_argument("--ground-truth-dir", default=str(REPO_ROOT / "bench"))
+    parser.add_argument("--evidence-dir", default=str(REPO_ROOT / "factory" / "evidence"))
+    parser.add_argument("--brief-dir", default=str(REPO_ROOT))
+    parser.add_argument("--work-dir", default="/tmp/r64-factory-sweep")
+    parser.add_argument("--target", default=None, help="sweep a single target by stem")
+    parser.add_argument("--serve-gate", action="store_true")
+    parser.add_argument("--date", default=None)
+    parser.add_argument(
+        "--per-target-timeout", type=int, default=1800,
+        help=(
+            "seconds before one target/table is killed (default 1800). A hung sweep is "
+            "worse than a failed one: nothing alerts, and the timer looks healthy."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    evidence_dir = Path(args.evidence_dir)
+    targets = discover_targets(Path(args.targets_dir), args.target)
+
+    results: list[dict[str, Any]] = []
+    for target in targets:
+        results.extend(run_target(target, args))
+
+    briefs: list[str] = []
+    for result in results:
+        if result["verdict"] == "PASS" and result["pack"]:
+            snapshot_green(Path(result["pack"]), result["dialect"], evidence_dir)
+        elif result["pack"] or result["verdict"] == "ERROR":
+            brief = write_repair_brief(
+                dialect=result["dialect"],
+                target=result["target"],
+                table=result["table"],
+                pack_path=Path(result["pack"]) if result["pack"] else None,
+                previous=last_green(result["dialect"], evidence_dir),
+                brief_dir=Path(args.brief_dir),
+                # Share the run's stamp, so one sweep's evidence pack and its
+                # repair brief are named for the same date. Without this a
+                # `--date`-pinned run filed the pack under the pinned stamp and
+                # the brief under today's, which is exactly the pairing a
+                # reader needs to be able to trust.
+                date=args.date,
+                error=result.get("error"),
+            )
+            briefs.append(str(brief))
+
+    drift_events = collect_drift_events()
+
+    print("\n" + "=" * 68)
+    print("SWEEP SUMMARY")
+    print("=" * 68)
+    for result in results:
+        print(f"  {result['verdict']:6s}  {result['target']:28s} {result['table']}")
+    if drift_events:
+        print(f"\n  {len(drift_events)} accumulated recipe drift event(s):")
+        for event in drift_events[-10:]:
+            print(f"    - {event.get('observed_utc')} {event.get('source')}/"
+                  f"{event.get('recipe')}: {event.get('reason')}")
+    for brief in briefs:
+        print(f"\n  REPAIR BRIEF WRITTEN: {brief}")
+
+    failed = [r for r in results if r["verdict"] != "PASS"]
+    # Accumulated drift events fail the sweep even when every battery is green.
+    # They are evidence that a provider already changed; a green verdict beside
+    # an unread repair log is the shape of a problem going unnoticed.
+    if drift_events:
+        print(f"\n[sweep] FAIL — {len(drift_events)} unresolved recipe drift event(s)")
+    if failed:
+        print(f"\n[sweep] FAIL — {len(failed)} of {len(results)} target/table runs failed")
+    if failed or drift_events:
+        return 1
+    print(f"\n[sweep] PASS — {len(results)} target/table run(s) green")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,6 +1,6 @@
 # EVIDENCE — rest / open_meteo_berlin_hourly
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T03:02:16Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T03:36:45Z.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -18,7 +18,7 @@
 | source_endpoint | `recipe book open-meteo.yaml over geocoding-api.open-meteo.com, archive-api.open-meteo.com` |
 | source_timezone | `GMT` |
 | note | `data checks read pull 1; the serve gate, when run, reads the file as it stands after pull 2 (identical when the checksum check passes)` |
-| artifact.path | `/tmp/r64-factory/rest-openmeteo/arrow_out/open_meteo_berlin_hourly.arrow` |
+| artifact.path | `/tmp/r64-factory-sweep/rest-openmeteo/arrow_out/open_meteo_berlin_hourly.arrow` |
 | artifact.sha256_pull1 | `a16b8d2ed10a81a11ac9e7ddfb39e96d4afe0d6a22b8a1a3a4bcb61bf29870ca` |
 | artifact.sha256_pull2 | `a16b8d2ed10a81a11ac9e7ddfb39e96d4afe0d6a22b8a1a3a4bcb61bf29870ca` |
 | artifact.bytes | `36090` |
@@ -195,7 +195,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT count(*), min(time), max(time) FROM open_meteo_berlin_hourly",
   "addr": "127.0.0.1:8903",
-  "pid": 220303,
+  "pid": 273326,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -228,7 +228,7 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "b6ca849b5b56d5011fea4dbf0b6e473362717a65",
+    "commit": "400121a763434b2d65248ad858d08bff2083ebbd",
     "branch": "feat/meshforge-factory",
     "dirty": true
   }

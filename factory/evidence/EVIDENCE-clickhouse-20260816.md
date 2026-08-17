@@ -1,6 +1,6 @@
 # EVIDENCE — clickhouse / perf_1m
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T03:02:10Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T03:36:39Z.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -18,7 +18,7 @@
 | source_endpoint | `http://127.0.0.1:8123/ (database=meshbench, user=default)` |
 | source_timezone | `UTC` |
 | note | `data checks read pull 1; the serve gate, when run, reads the file as it stands after pull 2 (identical when the checksum check passes)` |
-| artifact.path | `/tmp/r64-factory/clickhouse-meshbench/arrow_out/perf_1m.arrow` |
+| artifact.path | `/tmp/r64-factory-sweep/clickhouse-meshbench/arrow_out/perf_1m.arrow` |
 | artifact.sha256_pull1 | `db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a` |
 | artifact.sha256_pull2 | `db2912dfbd6a42337704e121f6872484f2e51eca7439cfe223d4bb72cc73ea4a` |
 | artifact.bytes | `149806522` |
@@ -212,7 +212,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
   "addr": "127.0.0.1:8903",
-  "pid": 220005,
+  "pid": 273088,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -245,7 +245,7 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "b6ca849b5b56d5011fea4dbf0b6e473362717a65",
+    "commit": "400121a763434b2d65248ad858d08bff2083ebbd",
     "branch": "feat/meshforge-factory",
     "dirty": true
   },

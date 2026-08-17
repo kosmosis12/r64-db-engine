@@ -91,7 +91,10 @@ def test_markdown_cells_cannot_break_the_table() -> None:
         ]
     )
     md = evidence.render_markdown(pack)
-    row = next(line for line in md.splitlines() if "weird" in line and line.startswith("|"))
+    # Select the COMPARISON row by its escaped value, not by the label: a
+    # failing check now also names its failing comparisons in the detail line,
+    # so the label alone matches the summary row too.
+    row = next(line for line in md.splitlines() if "a\\|b" in line and line.startswith("|"))
     # The embedded pipes must be escaped and the newline flattened, so the row
     # still has exactly the five cells the header declares (six delimiters).
     assert "\\|" in row

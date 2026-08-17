@@ -81,6 +81,23 @@ class CheckResult:
     queries: list[str] = field(default_factory=list)
     observations: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """On FAIL, name the comparisons that moved, in the detail line.
+
+        Done once here rather than at each check's construction site so it can
+        never be forgotten by a new check. Without it a failing
+        `aggregate_parity` renders in the summary table and in the repair
+        brief's symptom section as its generic description — "12 aggregates vs
+        ground truth" — which is true and useless to anyone triaging. The
+        detail has to say WHICH comparison moved, not how many were made.
+        """
+        if self.status != FAIL:
+            return
+        failed = [c.label for c in self.comparisons if not c.ok]
+        if failed and "FAILED:" not in self.detail:
+            joined = ", ".join(failed)
+            self.detail = f"{self.detail} | FAILED: {joined}" if self.detail else f"FAILED: {joined}"
+
     @property
     def failed(self) -> bool:
         return self.status == FAIL
