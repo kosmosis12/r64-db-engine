@@ -577,34 +577,46 @@ def run_recipe(
     # it, so an error raised on page 7 still redacts a value first seen on
     # page 1. Scoped to this call — it goes out of scope with the recipe.
     scrubber = Scrubber()
+    exhausted = False
 
     for page in range(1, recipe.pagination.max_pages + 1):
-        # ONE boundary around the whole post-secret-load sequence. The secret is
-        # loaded inside `_request` and registered on the scrubber before any
-        # call is made, so anything raised from here onward is covered —
-        # including from code this module does not own.
+        # ONE CLOSING BRACE for the whole page. The boundary encloses the entire
+        # post-secret-load sequence — build_request, send, peer-check, read,
+        # decode, validate — AND the Link extraction and next-URL confinement
+        # that follow it. Both of those handle provider-controlled content: the
+        # header value and the candidate URL can each carry credential
+        # material, so neither is processed after the boundary closes.
         with scrub_boundary(scrubber, f"recipe {recipe.name!r} page {page}"):
             payload, response = _request(client, recipe, url, page_params, book, scrubber)
             validate_response(recipe, payload, book, page, scrubber)
             if first_payload is None:
                 first_payload = payload
             records.extend(_extract(recipe, payload))
+
             nxt = _next_page_params(recipe, payload, response, page)
-        if not nxt:
+            if not nxt:
+                exhausted = True
+            elif "__link__" in nxt:
+                link = nxt["__link__"]
+                if not link:
+                    exhausted = True
+                else:
+                    # DEFAULT-DENY. The next URL came from the PROVIDER, so it
+                    # is confined to the recipe's pinned endpoint: same scheme,
+                    # host and port exactly (no subdomain latitude here), the
+                    # pinned path or a declared `allowed_next_paths` entry, and
+                    # ONLY the query string adopted. Rebuilt from vetted parts
+                    # rather than approved in place, and a refusal names the
+                    # violated rule structurally rather than echoing the
+                    # candidate.
+                    url = confine_next_url(
+                        link, recipe.url, recipe.pagination.allowed_next_paths
+                    )
+            else:
+                page_params = {**page_params, **nxt}
+
+        if exhausted:
             break
-        if "__link__" in nxt:
-            link = nxt["__link__"]
-            if not link:
-                break
-            # DEFAULT-DENY. The next URL came from the PROVIDER, so it is
-            # confined to the recipe's pinned endpoint: same scheme, host and
-            # port exactly (no subdomain latitude on this path), the pinned
-            # path or a declared `allowed_next_paths` entry, and ONLY the query
-            # string adopted. The URL is rebuilt from vetted parts rather than
-            # approved in place.
-            url = confine_next_url(link, recipe.url, recipe.pagination.allowed_next_paths)
-        else:
-            page_params = {**page_params, **nxt}
     else:
         raise RecipeExecutionError(
             scrubber.scrub(

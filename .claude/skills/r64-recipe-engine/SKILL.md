@@ -162,18 +162,33 @@ the benign one.
    - **Read at call time from a 0600 path.** A group- or world-readable file is
      refused before any call is made.
    - **Header auth never reaches the query string** (and vice versa).
-   - **Validation errors are VALUE-FREE — this is the primary defence.**
-     A schema violation reports the instance PATH, the violated CONSTRAINT and
-     the schema path. It never reports the failing VALUE, and jsonschema's own
-     message (which embeds the instance) is never propagated. That kills the
-     credential-echo class outright: a provider echoing a submitted key back in
-     its response body is REMOTE behaviour the engine cannot control, so the
-     engine simply never puts response values into messages.
-   - **Scrubbing is the BACKSTOP, for everything that is not a schema
-     violation.** A single boundary encloses the whole post-secret-load path —
-     build_request, send, peer-check, read, decode, validate — so exceptions
-     nobody anticipated, including ones raised by httpx or the standard
-     library, are scrubbed on the way out. Literal replacement plus
+   - **Every engine-raised error that can carry provider-controlled content is
+     STRUCTURAL — this is the primary defence.** It reports the violated rule
+     and the offending component CATEGORY, never the content. Literal scrubbing
+     is the backstop, never the guarantee. Two families, one rule:
+
+     - *Validation errors.* A schema violation reports the instance PATH, the
+       violated CONSTRAINT and the schema path — never the failing VALUE.
+       jsonschema's own message embeds the instance and is never propagated.
+     - *Security refusals.* A refusal about a provider-controlled URL names the
+       rule and the category — `non-https scheme`, `userinfo present`,
+       `host outside pinned set: <canonicalized-host>`, `path outside the
+       declared set` — and never the candidate URL, its query, its path or its
+       userinfo. The candidate is not recorded anywhere. The canonicalized host
+       is the single permitted exception, because it is compared against
+       pinned-known values: naming it identifies which allowlist decision fired
+       without disclosing anything the provider chose freely.
+
+     This kills the credential-echo class outright. A provider echoing a
+     submitted key back — in a response body, or in a `Link: rel="next"` header
+     — is REMOTE behaviour the engine cannot control, so the engine simply never
+     puts provider-controlled content into messages.
+   - **Scrubbing is the BACKSTOP, for everything the structural rule does not
+     already cover.** A single boundary encloses the whole post-secret-load
+     path — build_request, send, peer-check, read, decode, validate, **plus
+     Link extraction and next-URL confinement** — so nothing provider-derived
+     is processed after it closes, and exceptions nobody anticipated (including
+     from httpx or the standard library) are scrubbed on the way out. Literal replacement plus
      URL-encoded forms plus redaction by parameter NAME (a client may re-encode
      the value; the name is stable). Scrubbed re-raises use `from None`, because
      chaining would print the unscrubbed original in the traceback.

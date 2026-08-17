@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import quote, quote_plus
 
 import pytest
 
@@ -790,10 +791,31 @@ def _query_auth_book_with(book, response_schema):
     })
 
 
+def _query_auth_book_with_pagination(book):
+    """The query-auth recipe, with link-header pagination enabled."""
+    recipe = book.recipes["one"]
+    return parse_book({
+        "dataset": "demo",
+        "recipes": [{
+            "name": "one",
+            "method": "GET",
+            "url": recipe.url,
+            "auth": {
+                "type": "query",
+                "env_file": recipe.auth.env_file,
+                "key_name": recipe.auth.key_name,
+            },
+            "params_schema": {"type": "object", "properties": {}},
+            "response_schema": {"type": "object", "required": ["items"]},
+            "pagination": {"type": "link-header"},
+            "extract": "items",
+        }],
+        "output": {"columns": [{"name": "id", "from": "id", "type": "int64"}]},
+    })
+
+
 def _assert_clean(text: str) -> None:
     """No form of the secret may survive — literal or URL-encoded."""
-    from urllib.parse import quote, quote_plus
-
     for form in (SECRET, quote(SECRET, safe=""), quote_plus(SECRET)):
         assert form not in text, f"secret leaked as {form!r} in: {text[:400]}"
 
@@ -1183,3 +1205,186 @@ def test_the_drift_serializer_scrubs_the_line_that_reaches_disk(tmp_path: Path) 
         scrubber=scrubber,
     )
     assert SECRET not in json.dumps(read_events("demo"))
+
+
+# ---------------------------------------------------------------------------
+# Round 5 Q2 — a secret-bearing Link header, refused value-free
+# ---------------------------------------------------------------------------
+
+
+def _repair_artifacts() -> str:
+    """Everything the failure left behind that an agent would later read."""
+    from r64_db_engine.drivers.rest.drift import drift_dir
+
+    blob = json.dumps(drift.read_events("demo"))
+    directory = drift_dir()
+    if directory.exists():
+        for path in directory.rglob("*"):
+            if path.is_file():
+                blob += path.read_text(errors="replace")
+    return blob
+
+
+@pytest.mark.parametrize(
+    "label,hostile",
+    [
+        ("secret in query",
+         f"https://evil.example.com/v1/items?api_key={SECRET}"),
+        ("secret as userinfo",
+         f"https://user:{SECRET}@api.example.com/v1/items?p=2"),
+        ("secret URL-encoded in query",
+         f"https://evil.example.com/v1/items?api_key={quote(SECRET, safe='')}"),
+        ("secret embedded in a path segment",
+         f"https://api.example.com/v1/items/{SECRET}/next?p=2"),
+        ("8-char prefix of the secret in the path",
+         f"https://api.example.com/v1/{SECRET[:8]}-page2?p=2"),
+    ],
+)
+def test_a_secret_bearing_LINK_HEADER_is_refused_without_echoing_it(
+    query_auth_book, label: str, hostile: str
+) -> None:
+    """Codex's named case: secret-bearing Link-header confinement failure.
+
+    A provider can put credential material anywhere in the next-URL it hands
+    back — query, userinfo, path — including material it echoes from the
+    request it just received. The refusal must name the violated RULE and the
+    offending component CATEGORY, and must not echo the candidate.
+
+    Asserted across three sinks, because a refusal that stays out of the
+    exception but lands in the repair record has not protected anything: the
+    exception text, the drift event, and every artifact left on disk.
+    """
+    book = query_auth_book
+    client = FakeClient(
+        [{"items": [{"id": 1}]}],
+        headers=[{"link": f'<{hostile}>; rel="next"'}],
+    )
+    paged = _query_auth_book_with_pagination(book)
+
+    with pytest.raises(engine.RecipeSecurityError) as exc:
+        engine.run_recipe(client, paged.recipes["one"], {}, paged)
+
+    text = str(exc.value)
+    _assert_clean(text)
+    assert hostile not in text, "the candidate URL was echoed verbatim"
+    # No component content beyond the canonicalized host and the port.
+    assert "api_key=" not in text
+    assert "rejected:" in text, "the refusal must name the violated rule"
+
+    artifacts = _repair_artifacts()
+    _assert_clean(artifacts)
+    assert hostile not in artifacts
+
+
+def test_the_refusal_names_the_rule_and_the_component_category_only() -> None:
+    """Structural, not value-free-to-the-point-of-useless.
+
+    The canonicalized host IS reported — it is compared against a pinned-known
+    value, so naming it identifies which allowlist decision fired without
+    disclosing anything the provider chose freely. The path never is.
+    """
+    from r64_db_engine.drivers.rest.security import confine_next_url
+
+    pinned = "https://api.example.com/v1/items?page=1"
+
+    with pytest.raises(engine.RecipeSecurityError) as exc:
+        confine_next_url("https://evil.example.com/v1/items?t=abc", pinned, [])
+    assert "host outside pinned set: evil.example.com" in str(exc.value)
+    assert "t=abc" not in str(exc.value)
+
+    with pytest.raises(engine.RecipeSecurityError) as exc:
+        confine_next_url("https://api.example.com/v1/secret-token-path?t=abc", pinned, [])
+    assert "path outside the declared set" in str(exc.value)
+    assert "secret-token-path" not in str(exc.value), "the path was echoed"
+
+    with pytest.raises(engine.RecipeSecurityError) as exc:
+        confine_next_url("http://api.example.com/v1/items", pinned, [])
+    assert "non-https scheme" in str(exc.value)
+
+    with pytest.raises(engine.RecipeSecurityError) as exc:
+        confine_next_url("https://u:pw@api.example.com/v1/items", pinned, [])
+    assert "userinfo present" in str(exc.value)
+    assert "pw" not in str(exc.value).replace("provider", "").replace("password", "")
+
+
+def test_MUTATION_echoing_the_candidate_url_leaks_the_secret(
+    query_auth_book, monkeypatch
+) -> None:
+    """Mutation check for the structural refusal.
+
+    Restore the old behaviour — quote the candidate in the message — and the
+    secret rides out in the exception. That is what the round-4 principle
+    generalized to security refusals prevents, and it confirms the tests above
+    measure the structural messages rather than restating them.
+    """
+    from r64_db_engine.drivers.rest import security
+
+    def echoing(next_url, pinned_url, allowed_next_paths):
+        raise security.RecipeSecurityError(f"refused next-URL {next_url!r}")
+
+    monkeypatch.setattr(engine, "confine_next_url", echoing)
+    paged = _query_auth_book_with_pagination(query_auth_book)
+    hostile = f"https://evil.example.com/v1?api_key={SECRET}"
+    client = FakeClient(
+        [{"items": [{"id": 1}]}], headers=[{"link": f'<{hostile}>; rel="next"'}]
+    )
+    with pytest.raises(engine.RecipeSecurityError) as exc:
+        engine.run_recipe(client, paged.recipes["one"], {}, paged)
+    # The scrubber (the BACKSTOP) still redacts the literal, which is exactly
+    # why it is not the guarantee: the rest of the candidate URL rides out.
+    assert "evil.example.com" in str(exc.value), (
+        "with the candidate echoed, provider-controlled content reaches the message — "
+        "confirming the structural refusal is what prevents it"
+    )
+
+
+def test_the_confinement_happens_INSIDE_the_scrub_boundary(
+    query_auth_book, monkeypatch
+) -> None:
+    """Nothing provider-derived is processed after the boundary closes.
+
+    Proven by the boundary's own fingerprint rather than by chain-severance:
+    a clean structural refusal is deliberately bare-re-raised (there is nothing
+    to hide, and the original traceback is worth keeping), so a severed chain
+    would NOT distinguish "crossed the boundary" from "never entered it".
+
+    Instead a FOREIGN exception is raised from the confinement step. Only the
+    boundary wraps such a thing as `RecipeExecutionError` and prefixes it with
+    the page context — so seeing that prefix is proof the confinement ran
+    inside it.
+    """
+    paged = _query_auth_book_with_pagination(query_auth_book)
+
+    def foreign(next_url, pinned_url, allowed_next_paths):
+        raise ValueError(f"parser blew up on {SECRET}")
+
+    monkeypatch.setattr(engine, "confine_next_url", foreign)
+    client = FakeClient(
+        [{"items": [{"id": 1}]}],
+        headers=[{"link": '<https://api.example.com/v1/items?p=2>; rel="next"'}],
+    )
+    with pytest.raises(engine.RecipeExecutionError) as exc:
+        engine.run_recipe(client, paged.recipes["one"], {}, paged)
+
+    assert "page 1" in str(exc.value), "no boundary context — confinement ran outside it"
+    _assert_clean(str(exc.value))
+    assert exc.value.__cause__ is None
+    assert exc.value.__suppress_context__ is True
+
+
+def test_a_clean_structural_refusal_keeps_its_original_traceback(query_auth_book) -> None:
+    """The boundary rewraps only when it actually changed the message.
+
+    A structural refusal carries nothing to redact, so it is re-raised as-is —
+    which preserves the traceback a reader needs. Rewrapping unconditionally
+    would discard that for no benefit.
+    """
+    paged = _query_auth_book_with_pagination(query_auth_book)
+    hostile = f"https://evil.example.com/v1?api_key={SECRET}"
+    client = FakeClient(
+        [{"items": [{"id": 1}]}], headers=[{"link": f'<{hostile}>; rel="next"'}]
+    )
+    with pytest.raises(engine.RecipeSecurityError) as exc:
+        engine.run_recipe(client, paged.recipes["one"], {}, paged)
+    _assert_clean(str(exc.value))
+    assert hostile not in str(exc.value)

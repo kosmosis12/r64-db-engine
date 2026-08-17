@@ -21,11 +21,19 @@ accepted. A security check with no failing fixture is decoration.
    routable, checked on resolution rather than on spelling.
 5. **Pagination confined to the pinned endpoint, query-only by default.** A
    provider-supplied next-URL goes through `confine_next_url`, which requires
-   scheme, host AND port to match the pinned URL *exactly* — subdomain latitude
-   is deliberately NOT available here, because this URL comes from the server
-   rather than the author — and adopts only the query string, rebuilding the
-   URL from vetted parts. Cross-path pagination requires an explicit
-   `allowed_next_paths` declaration in the recipe book; absent it, refused.
+   scheme, port and canonicalized host to match the pinned URL *exactly* —
+   subdomain latitude is deliberately NOT available here, because this URL comes
+   from the server rather than the author — and adopts only the query string,
+   rebuilding the URL from vetted parts so the candidate never reaches the
+   client. Cross-path pagination requires an explicit `allowed_next_paths`
+   declaration in the recipe book; absent it, refused.
+8. **Refusals about provider-controlled URLs are STRUCTURAL.** They name the
+   violated rule and the offending component CATEGORY, never the content — the
+   candidate URL, its query, its path and its userinfo are not reported and not
+   recorded. The canonicalized host is the one exception, because it is compared
+   against pinned-known values. This is the same principle as value-free
+   validation errors, generalized: literal scrubbing is the backstop, never the
+   guarantee.
 6. **No redirects.** A 302 is a destination change chosen by the remote end.
 7. **Rebinding closed at response time.** `engine._assert_connected_peer_was_vetted`
    reads the real peer off the live connection and requires it to be public AND
@@ -226,34 +234,71 @@ def confine_next_url(next_url: str, pinned_url: str, allowed_next_paths: list[st
     checked, whereas a string reassembled from vetted parts can only contain
     vetted parts.
     """
-    assert_https(next_url)
-
+    # STRUCTURAL REFUSALS — the candidate URL is never echoed.
+    #
+    # This URL is PROVIDER-CONTROLLED, so every component of it is untrusted
+    # content: the query can carry a submitted API key, the path can carry a
+    # token, and userinfo is credential material by definition. An error that
+    # quoted the candidate would put that straight into an exception message, a
+    # drift event, and a repair brief the next agent reads.
+    #
+    # So a refusal names the VIOLATED RULE and the offending COMPONENT
+    # CATEGORY, never the component's content. The canonicalized host is the
+    # one exception, and it is safe for a specific reason: it is compared
+    # against pinned-known values, so reporting it tells a reader which
+    # allowlist decision fired without revealing anything the provider chose
+    # freely. Port is numeric. Nothing else is reportable.
+    #
+    # This is round 4's value-free principle generalized from validation errors
+    # to security refusals: every engine-raised error that can carry
+    # provider-controlled content is structural. Literal scrubbing is the
+    # backstop, never the guarantee.
     pinned = urlsplit(pinned_url)
-    candidate = urlsplit(next_url)
+    try:
+        candidate = urlsplit(next_url)
+    except ValueError:
+        raise RecipeSecurityError(
+            "pagination next-URL rejected: malformed URL (not parseable)"
+        ) from None
+
+    if (candidate.scheme or "").lower() != "https":
+        raise RecipeSecurityError(
+            "pagination next-URL rejected: non-https scheme. The URL is not reported: it is "
+            "provider-controlled and may carry credential material."
+        )
 
     if candidate.username or candidate.password:
         raise RecipeSecurityError(
-            f"pagination next-URL carries credentials in its authority ({next_url!r}); refused"
+            "pagination next-URL rejected: userinfo present in authority. The value is not "
+            "reported — userinfo is credential material by definition."
         )
 
-    pinned_netloc = (pinned.hostname or "").lower().rstrip(".")
-    candidate_netloc = (candidate.hostname or "").lower().rstrip(".")
-    if candidate_netloc != pinned_netloc or candidate.port != pinned.port:
+    pinned_host = (pinned.hostname or "").lower().rstrip(".")
+    candidate_host = (candidate.hostname or "").lower().rstrip(".")
+    if not candidate_host:
+        raise RecipeSecurityError("pagination next-URL rejected: no host in authority")
+    if candidate_host != pinned_host:
+        # The canonicalized host is reportable: it is checked against a
+        # pinned-known value, so naming it identifies the decision without
+        # disclosing anything freely chosen.
         raise RecipeSecurityError(
-            f"pagination next-URL host {candidate_netloc!r}"
-            f"{f':{candidate.port}' if candidate.port else ''} does not EXACTLY match the "
-            f"recipe's pinned host {pinned_netloc!r}"
-            f"{f':{pinned.port}' if pinned.port else ''}. Subdomain latitude is deliberately "
-            f"not available on the pagination path: this URL came from the provider, not from "
-            f"the recipe author."
+            f"pagination next-URL rejected: host outside pinned set: {candidate_host}. "
+            f"Subdomain latitude is deliberately unavailable here — this URL came from the "
+            f"provider, not the recipe author."
+        )
+    if candidate.port != pinned.port:
+        raise RecipeSecurityError(
+            f"pagination next-URL rejected: port outside pinned set: {candidate.port}"
         )
 
     if candidate.path != pinned.path and candidate.path not in allowed_next_paths:
+        # The path itself is NOT reported: a provider can put a token in it.
         raise RecipeSecurityError(
-            f"pagination next-URL path {candidate.path!r} is neither the recipe's pinned path "
-            f"{pinned.path!r} nor one of its declared allowed_next_paths "
-            f"{sorted(allowed_next_paths)}. Cross-path pagination must be declared at "
-            f"authoring time; it is never inferred from what a provider sends."
+            f"pagination next-URL rejected: path outside the declared set "
+            f"({1 + len(allowed_next_paths)} permitted). Cross-path pagination must be "
+            f"declared at authoring time via allowed_next_paths; it is never inferred from "
+            f"what a provider sends. The candidate path is not reported — it is "
+            f"provider-controlled."
         )
 
     return urlunsplit((pinned.scheme, pinned.netloc, candidate.path, candidate.query, ""))

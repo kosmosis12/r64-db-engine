@@ -220,8 +220,12 @@ def test_a_subdomain_next_url_is_refused_even_though_the_host_rule_allows_it() -
     # The authored-URL rule would allow it...
     assert_host_allowed(steered, "api.example.com")
     # ...and the pagination rule does not.
-    with pytest.raises(RecipeSecurityError, match="EXACTLY match"):
+    with pytest.raises(RecipeSecurityError, match="host outside pinned set") as exc:
         confine_next_url(steered, PINNED, [])
+    # Structural: the canonicalized host is named (it is compared against a
+    # pinned-known value), the candidate URL is not.
+    assert "attacker.api.example.com" in str(exc.value)
+    assert steered not in str(exc.value)
 
 
 def test_a_different_path_is_refused_by_default() -> None:
@@ -238,7 +242,7 @@ def test_a_declared_path_is_permitted() -> None:
 
 def test_a_declared_path_does_not_widen_the_host_rule() -> None:
     """Declaring a path must not accidentally admit another host on that path."""
-    with pytest.raises(RecipeSecurityError, match="EXACTLY match"):
+    with pytest.raises(RecipeSecurityError, match="host outside pinned set"):
         confine_next_url(
             "https://evil.com/v1/items/page2?x=1", PINNED, ["/v1/items/page2"]
         )
