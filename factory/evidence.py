@@ -336,6 +336,74 @@ def implementation_digest() -> dict[str, Any]:
     }
 
 
+def _fsync_path(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_dir(path: Path) -> None:
+    """fsync the directory so a rename is durable, not just the data."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_copy_verified(src: Path, dest: Path, expected_sha256: str) -> str:
+    """Copy `src` onto `dest` atomically, then verify. Returns the final digest.
+
+    Written to `<dest>.tmp-<pid>`, fsynced, and `rename(2)`d into place — which
+    is atomic on POSIX within a filesystem — then the directory is fsynced so
+    the rename itself survives power loss.
+
+    The point is that `dest` is never a PARTIAL file. A plain `copy2` onto the
+    destination truncates it first, so a crash mid-copy leaves a half-written
+    file that still has the right NAME. For a preserved-corruption record that
+    is the worst possible outcome: the archive would appear to hold evidence of
+    what went wrong while actually holding a fragment of it.
+    """
+    tmp = dest.parent / f"{dest.name}.tmp-{os.getpid()}"
+    try:
+        shutil.copy2(src, tmp)
+        _fsync_path(tmp)
+        os.replace(tmp, dest)
+        _fsync_dir(dest.parent)
+    finally:
+        # A crash before the rename leaves only the tmp file, and `dest` keeps
+        # whatever it had. Cleaning up here means a failed attempt does not
+        # leave debris that a later run might mistake for a real entry.
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+    final = sha256_file(dest)
+    if final != expected_sha256:
+        raise CorruptStoredEvidenceError(
+            f"copy to {dest} verified as {final}, not the expected {expected_sha256}"
+        )
+    return final
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write text atomically. Same reasoning as `atomic_copy_verified`.
+
+    `Path.write_text` truncates before writing, so a crash between the two
+    leaves an empty or half-written file under the real name. For the manifest
+    route that would replace a valid manifest with a fragment.
+    """
+    tmp = path.parent / f"{path.name}.tmp-{os.getpid()}"
+    try:
+        tmp.write_text(text)
+        _fsync_path(tmp)
+        os.replace(tmp, path)
+        _fsync_dir(path.parent)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+
 class CorruptStoredEvidenceError(RuntimeError):
     """A content-addressed stored artifact no longer hashes to its own name."""
 
@@ -411,15 +479,26 @@ def record_artifact(
                 # complete repair. There is no ordering where the corrupted
                 # bytes are gone and nothing recorded them.
                 preserved = artifacts_dir / f"{digest}.corrupt-{actual}"
-                if not preserved.exists():
-                    shutil.copy2(stored, preserved)
-                    kept = sha256_file(preserved)
-                    if kept != actual:
-                        raise CorruptStoredEvidenceError(
-                            f"failed to preserve the corrupted bytes at {stored}: the copy "
-                            f"at {preserved} hashes to {kept}, not {actual}. Refusing to "
-                            f"repair, because the corruption would be destroyed unrecorded."
-                        )
+
+                # PRESERVATION IS VERIFIED, NEVER PRESUMED. An existing
+                # `preserved` file is not evidence that preservation COMPLETED:
+                # a previous run could have crashed mid-copy and left a
+                # fragment under the right name. Treating "the path exists" as
+                # "the corruption is recorded" would then let this run overwrite
+                # `stored`, destroying the corruption while the archive appeared
+                # to hold it.
+                #
+                # So it is hashed. Complete -> proceed. Missing, partial or
+                # mismatched -> preservation is redone atomically and
+                # re-verified. `stored` is not touched until a hash-verified
+                # preserved copy exists.
+                if preserved.exists() and sha256_file(preserved) == actual:
+                    preserved_state = "already complete"
+                else:
+                    preserved_state = "written" if not preserved.exists() else "completed"
+                    atomic_copy_verified(stored, preserved, actual)
+
+                # Only now, with the corruption provably recorded.
                 shutil.copy2(artifact_path, stored)
                 repaired = sha256_file(stored)
                 if repaired != digest:
@@ -435,6 +514,7 @@ def record_artifact(
                 record["store_corrupt_preserved_path"] = str(
                     preserved.relative_to(evidence_dir.parent.parent)
                 )
+                record["store_corrupt_preserved_state"] = preserved_state
             else:
                 raise CorruptStoredEvidenceError(
                     f"stored evidence at {stored} does not match its own content address.\n"
@@ -466,7 +546,9 @@ def record_artifact(
         record["path"] = str(stored.relative_to(evidence_dir.parent.parent))
     else:
         manifest = artifacts_dir / f"{digest}.manifest.json"
-        manifest.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        # Atomic: `write_text` truncates before writing, so a crash between the
+        # two would replace a valid manifest with a fragment under the real name.
+        atomic_write_text(manifest, json.dumps(record, indent=2, sort_keys=True) + "\n")
         # Hash-late for this route too: the manifest's OWN content address, read
         # back after writing, so the pack pins the bytes of the file it points at
         # rather than merely naming its path.
@@ -817,6 +899,8 @@ __all__ = [
     "TRACKED_PACKAGES",
     "CorruptStoredEvidenceError",
     "EvidencePack",
+    "atomic_copy_verified",
+    "atomic_write_text",
     "LaunderedInputError",
     "assert_inputs_outside_evidence",
     "build_pack",

@@ -825,3 +825,151 @@ def test_the_closure_boundary_states_packs_are_unsigned() -> None:
 
     md = evidence.render_markdown(_pack(dirty=False, allow_dirty=False))
     assert "unsigned" in md
+
+
+# ---------------------------------------------------------------------------
+# Round 5 Q1(a) — preservation is VERIFIED, never presumed
+# ---------------------------------------------------------------------------
+
+
+def test_a_TRUNCATED_preserved_copy_is_completed_before_any_overwrite(
+    tmp_path: Path,
+) -> None:
+    """Codex's named case: retry-after-partial-preservation.
+
+    A previous `--repair-store` crashed mid-copy and left a FRAGMENT under the
+    right name. "The path exists" is not evidence that preservation completed —
+    treating it as such would let this run overwrite `stored` while the archive
+    only appeared to hold the corruption.
+    """
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+    stored.write_bytes(b"CORRUPTED-PAYLOAD-LONG-ENOUGH-TO-TRUNCATE")
+    actual = hashlib.sha256(stored.read_bytes()).hexdigest()
+
+    # Simulate the crashed run: a partial preserved copy under the real name.
+    preserved = evidence_dir / "artifacts" / f"{first['sha256']}.corrupt-{actual}"
+    preserved.write_bytes(b"CORRUPTED-PAY")  # truncated
+    assert hashlib.sha256(preserved.read_bytes()).hexdigest() != actual
+
+    record = evidence.record_artifact(artifact, evidence_dir, repair_store=True)
+
+    assert preserved.read_bytes() == b"CORRUPTED-PAYLOAD-LONG-ENOUGH-TO-TRUNCATE"
+    assert hashlib.sha256(preserved.read_bytes()).hexdigest() == actual
+    assert record["store_corrupt_preserved_state"] == "completed"
+    assert stored.read_bytes() == artifact.read_bytes()
+
+
+def test_a_COMPLETE_preserved_copy_is_recognised_and_not_rewritten(tmp_path: Path) -> None:
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+    stored.write_bytes(b"CORRUPTED")
+    actual = hashlib.sha256(b"CORRUPTED").hexdigest()
+
+    evidence.record_artifact(artifact, evidence_dir, repair_store=True)
+    stored.write_bytes(b"CORRUPTED")  # corrupt again, identically
+    record = evidence.record_artifact(artifact, evidence_dir, repair_store=True)
+
+    assert record["store_corrupt_preserved_state"] == "already complete"
+    preserved = evidence_dir / "artifacts" / f"{first['sha256']}.corrupt-{actual}"
+    assert preserved.read_bytes() == b"CORRUPTED"
+
+
+def test_a_FAILED_preservation_leaves_stored_untouched(tmp_path: Path, monkeypatch) -> None:
+    """`stored` is not modified until a hash-verified preserved copy exists.
+
+    The copy is made to raise AFTER writing part of the temp file — the state a
+    real crash produces — and the assertion is that the corrupted bytes in
+    `stored` are still exactly as they were.
+    """
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+    stored.write_bytes(b"CORRUPTED")
+
+    real_copy = evidence.shutil.copy2
+
+    def partial_then_raise(src, dst, *args, **kwargs):
+        Path(dst).write_bytes(b"CORR")  # a partial write, as a crash would leave
+        raise OSError("crashed mid-copy")
+
+    monkeypatch.setattr(evidence.shutil, "copy2", partial_then_raise)
+    with pytest.raises(OSError, match="crashed mid-copy"):
+        evidence.record_artifact(artifact, evidence_dir, repair_store=True)
+
+    assert stored.read_bytes() == b"CORRUPTED", "stored was modified before preservation held"
+    assert real_copy is not None
+
+
+def test_a_failed_preservation_leaves_no_partial_file_under_the_real_name(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The atomic path means `preserved` is never a fragment: the partial write
+    lands on a `.tmp-<pid>` name and is cleaned up, so a later run cannot
+    mistake debris for a real entry."""
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+    stored.write_bytes(b"CORRUPTED")
+    actual = hashlib.sha256(b"CORRUPTED").hexdigest()
+
+    def partial_then_raise(src, dst, *args, **kwargs):
+        Path(dst).write_bytes(b"CO")
+        raise OSError("crashed mid-copy")
+
+    monkeypatch.setattr(evidence.shutil, "copy2", partial_then_raise)
+    with pytest.raises(OSError):
+        evidence.record_artifact(artifact, evidence_dir, repair_store=True)
+
+    preserved = evidence_dir / "artifacts" / f"{first['sha256']}.corrupt-{actual}"
+    assert not preserved.exists(), "a fragment was left under the real preserved name"
+    assert not list((evidence_dir / "artifacts").glob("*.tmp-*")), "temp debris left behind"
+
+
+def test_atomic_copy_verified_refuses_a_destination_that_does_not_match(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "src"
+    src.write_bytes(b"content")
+    with pytest.raises(evidence.CorruptStoredEvidenceError, match="verified as"):
+        evidence.atomic_copy_verified(src, tmp_path / "dest", "0" * 64)
+
+
+# ---------------------------------------------------------------------------
+# Round 5 Q1(b) — the manifest write is atomic
+# ---------------------------------------------------------------------------
+
+
+def test_a_crash_between_manifest_write_and_rename_leaves_the_prior_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`write_text` truncates before writing, so a crash between the two would
+    replace a valid manifest with a fragment under the real name."""
+    artifact = tmp_path / "big.arrow"
+    artifact.write_bytes(b"z" * (evidence.ARTIFACT_COPY_LIMIT_BYTES + 1))
+    evidence_dir = tmp_path / "evidence"
+
+    first = evidence.record_artifact(artifact, evidence_dir)
+    manifest = evidence_dir / "artifacts" / f"{first['sha256']}.manifest.json"
+    before = manifest.read_bytes()
+
+    def fail_before_rename(src, dst):
+        raise OSError("crashed between write and rename")
+
+    monkeypatch.setattr(evidence.os, "replace", fail_before_rename)
+    with pytest.raises(OSError, match="between write and rename"):
+        evidence.record_artifact(artifact, evidence_dir)
+
+    assert manifest.read_bytes() == before, "the prior manifest was destroyed"
+    assert json.loads(manifest.read_text())["sha256"] == first["sha256"]
+    assert not list((evidence_dir / "artifacts").glob("*.tmp-*"))
+
+
+def test_atomic_write_text_replaces_completely_or_not_at_all(tmp_path: Path) -> None:
+    target = tmp_path / "f.json"
+    target.write_text("original")
+    evidence.atomic_write_text(target, "replacement")
+    assert target.read_text() == "replacement"
+    assert not list(tmp_path.glob("*.tmp-*"))
