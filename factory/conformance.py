@@ -405,7 +405,17 @@ def apply_work_dir(doc: dict[str, Any], work_dir: Path | None) -> dict[str, Any]
 # ---------------------------------------------------------------------------
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace, argv: list[str] | None = None) -> int:
+    # BEFORE any work: a pack must ratify a commit whose content actually ran.
+    # Checked first so a dirty tree costs a second, not two million-row pulls.
+    try:
+        git_facts = evidence.assert_clean_tree(allow_dirty=args.allow_dirty)
+    except evidence.DirtyTreeError as exc:
+        # A refusal, not a crash. Rendered like every other loud refusal in
+        # this tool — message plus non-zero exit — rather than as a traceback
+        # that reads like a bug in the battery.
+        raise SystemExit(str(exc)) from exc
+
     config_path = Path(args.config).resolve()
     doc = load_yaml(config_path)
     declared = doc.get("dialect")
@@ -422,7 +432,17 @@ def run(args: argparse.Namespace) -> int:
     # signature declares instead of an Optional threaded through twelve calls.
     dialect: str = declared
 
+    spec_path = Path(args.spec).resolve() if args.spec else default_spec_path(config_path, dialect)
     spec = resolve_spec(config_path, dialect, Path(args.spec).resolve() if args.spec else None)
+    # A recipe-lane target names its book by path; a database target has none.
+    # Recorded either way so the pack states which inputs existed rather than
+    # leaving a reader to infer it from an absent key.
+    raw_book = (doc.get(dialect) or {}).get("recipe_book") if isinstance(doc.get(dialect), dict) else None
+    recipe_book_path: Path | None = None
+    if raw_book:
+        recipe_book_path = Path(raw_book)
+        if not recipe_book_path.is_absolute():
+            recipe_book_path = REPO_ROOT / recipe_book_path
     ground_truth_doc = json.loads(Path(args.ground_truth).read_text())
     if args.table not in ground_truth_doc.get("tables", {}):
         raise SystemExit(
@@ -645,9 +665,7 @@ def run(args: argparse.Namespace) -> int:
         invocation={
             "config": str(config_path),
             "ground_truth": str(Path(args.ground_truth).resolve()),
-            "spec": str(
-                Path(args.spec).resolve() if args.spec else default_spec_path(config_path, dialect)
-            ),
+            "spec": str(spec_path),
             "serve_gate": bool(args.serve_gate),
             "source_endpoint": probe_endpoint,
             "source_timezone": obs.source_timezone,
@@ -657,6 +675,26 @@ def run(args: argparse.Namespace) -> int:
             ),
         },
         container=ground_truth_doc.get("source", {}).get("container"),
+        provenance={
+            "git": git_facts,
+            "allow_dirty": bool(args.allow_dirty),
+            # The exact command, so the run is reproducible from the pack alone
+            # rather than from whatever the reader assumes was typed.
+            "command": " ".join(
+                [".venv/bin/python", "-m", "factory.conformance", *(argv or [])]
+            ),
+            # Every input the run consumed, pinned. A pack that named its inputs
+            # by path alone could be re-read against different content and still
+            # look like the same evidence.
+            "inputs": evidence.digest_inputs({
+                "target_config": config_path,
+                "recipe_book": recipe_book_path,
+                "schema_spec": spec_path,
+                "ground_truth": Path(args.ground_truth).resolve(),
+            }),
+            "implementation": evidence.implementation_digest(),
+            "artifact": evidence.record_artifact(artifact_path, Path(args.evidence_dir).resolve()),
+        },
     )
 
     json_path, md_path = evidence.write_pack(pack, Path(args.evidence_dir).resolve(), date=args.date)
@@ -667,10 +705,16 @@ def run(args: argparse.Namespace) -> int:
     tally = pack.tally
     print("", file=sys.stderr)
     print(
-        f"[conformance] VERDICT {pack.verdict} — {tally['PASS']} passed, "
+        f"[conformance] VERDICT {pack.verdict_line} — {tally['PASS']} passed, "
         f"{tally['FAIL']} failed, {tally['SKIPPED']} skipped",
         file=sys.stderr,
     )
+    if pack.allow_dirty:
+        print(
+            "[conformance] ALLOW-DIRTY: this pack ratifies NO commit — the tree did not "
+            "match HEAD. Do not use it to admit a driver.",
+            file=sys.stderr,
+        )
     print(f"[conformance] evidence: {json_path}", file=sys.stderr)
     print(f"[conformance] evidence: {md_path}", file=sys.stderr)
 
@@ -691,13 +735,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--work-dir", default=None, help="run-scoped dir for artifacts/state")
     p.add_argument("--date", default=None, help="YYYYMMDD stamp for the evidence filenames")
     p.add_argument("--serve-gate", action="store_true", help="run the zero-copy serve gate")
+    p.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help=(
+            "emit a pack from a dirty tree. The pack is stamped ALLOW-DIRTY in its verdict "
+            "line and header and explicitly ratifies NO commit — for local iteration only."
+        ),
+    )
     p.add_argument("--serve-addr", default=serve_gate.DEFAULT_ADDR)
     p.add_argument("--meshroad-binary", default=serve_gate.DEFAULT_BINARY)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
-    return run(build_parser().parse_args(argv))
+    effective = list(argv) if argv is not None else sys.argv[1:]
+    return run(build_parser().parse_args(effective), effective)
 
 
 if __name__ == "__main__":
