@@ -252,10 +252,21 @@ def sweep():
 
 
 def test_the_sweep_is_executable_and_tracked() -> None:
+    """Executable everywhere; repo-tracked only where there is a repo.
+
+    The tracked half is skipped off-checkout with a reason rather than failing:
+    `git ls-files` in a tree with no `.git` reports "not tracked" for
+    everything, which would be a finding about the environment dressed up as a
+    finding about the sweep.
+    """
     import os
     import subprocess
 
     assert os.access(SWEEP_PATH, os.X_OK), "the sweep must be executable"
+
+    if not (conformance.REPO_ROOT / ".git").exists():
+        pytest.skip("not a git checkout; tracked-ness is unknowable here")
+
     tracked = subprocess.run(
         ["git", "ls-files", "--error-unmatch", str(SWEEP_PATH.relative_to(conformance.REPO_ROOT))],
         cwd=conformance.REPO_ROOT, capture_output=True, check=False,
