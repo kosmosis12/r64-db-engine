@@ -1,8 +1,8 @@
 # EVIDENCE — clickhouse / perf_1m
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T14:49:52Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T15:34:28Z.
 
-> Ratifies `57bee40b1f7c` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
+> Ratifies `fae9c815d3aa` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -214,7 +214,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
   "addr": "127.0.0.1:8903",
-  "pid": 1255076,
+  "pid": 1322274,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -289,14 +289,14 @@ counter deltas from the server's own get_flight_info app_metadata
   "command": ".venv/bin/python -m factory.conformance --dialect clickhouse --config /home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml --ground-truth /home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json --table perf_1m --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence --work-dir /tmp/r64-factory-sweep/clickhouse-meshbench --serve-gate",
   "git": {
     "branch": "feat/meshforge-factory",
-    "commit": "57bee40b1f7c7e2501d12e96196e72077c8be6ed",
+    "commit": "fae9c815d3aa26bbff7e23c4b5734f3c4572ac0a",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"
   },
   "implementation": {
     "distribution_version": "0.1.0",
     "source_files": 46,
-    "source_sha256": "2f6af8200821dadb207b48d5876365bb903a3fd0482bf2e9c8d04933a8b75263"
+    "source_sha256": "b36424a4872fc26c39ac5f87fcef0d93149f4a186ae4901afd96c30229a34de4"
   },
   "inputs": {
     "ground_truth": {
@@ -354,7 +354,7 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "57bee40b1f7c7e2501d12e96196e72077c8be6ed",
+    "commit": "fae9c815d3aa26bbff7e23c4b5734f3c4572ac0a",
     "branch": "feat/meshforge-factory",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"

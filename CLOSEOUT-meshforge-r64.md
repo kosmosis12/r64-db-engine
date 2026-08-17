@@ -3,10 +3,10 @@
 Branch: `feat/meshforge-factory` (off `main` @ `7820d18`)
 Session: 2026-08-16 → 2026-08-17 · Brief: `CC-BRIEF-meshforge-r64.md` · Index: `docs/MESHFORGE-SKILL-INDEX.md`
 
-**Status: all four gates met. Codex rounds 1–5 remediated (§9–§13). Round 5:
-both questions BLOCK and both accepted as edge-completions of the round-4
-fixes. Re-pushed for round 6. NOT merged: merge remains blocked on the audit
-verdict per Law 2.**
+**Status: all four gates met. Codex rounds 1–6 remediated (§9–§14). Round 6:
+Q1 CLEAN with a note, Q2 BLOCK accepted — the round-5 canonicalized-host
+exception was itself the defect, now closed in terminal form. Re-pushed for
+round 7. NOT merged: merge remains blocked on the audit verdict per Law 2.**
 
 ---
 
@@ -400,6 +400,7 @@ timer file itself, because the person reading it at 2am is not reading this.
 | D-6 | **CI coverage for `factory/`** | Proposed, not applied — deviation 11. | Your call. |
 | D-7 | **`src/r64_db_engine/factory/` relocation** *(alternative you asked to be recorded)* | Would ship the conformance battery packaged with the engine instead of as repo tooling. Trade-off: it would weaken the Gate F1 property that core cannot import its own oracle. **Explicitly not acted on this session — your decision.** | Your call. |
 | D-8 | **mypy/numpy stub failure — LOCAL ONLY, rescoped** | `mypy src factory` cannot run in this 3.13 venv: numpy 2.5.2's stub uses PEP 695 syntax that mypy refuses to parse under `python_version = "3.11"`, and it aborts with "errors prevented further checking" — so locally mypy checks **nothing**. CI is unaffected (3.11 gets a parseable numpy). `follow_imports = "skip"` does not help: the stub is parsed to build the module either way. The real lever is `python_version`, and raising it changes what CI guarantees for a package whose `requires-python` is `>=3.11` — a judgment call, not a tidy-up, so **not taken**. Verified this session with a one-off `--python-version 3.13` override; config untouched. | Whenever the 3.11 floor is revisited, or a local mypy signal is wanted badly enough to justify the trade. |
+| D-13 | **Evidence pack PAIR atomicity** | Each pack form is now written atomically (temp → fsync → rename), so neither is ever a fragment under its real name. The PAIR is not atomic: a crash between the two calls leaves a complete `.json` and a stale or absent `.md`. Each file is individually whole — which is what matters for parsing, and the `.json` is the machine form the tooling reads — but the two can disagree by one run. Genuine pair atomicity needs a staging directory and a single rename. | Applied the per-file fix (Codex round 6, Q1 note); pair atomicity deferred as more machinery than the failure justifies. |
 | D-12 | **Bounded transport retry on the recipe lane** | The engine makes one attempt per page and fails. The skill previously claimed "retry the REQUEST on transport failure", which described code that does not exist (Codex round 2, Q4a); the claim was deleted rather than the behaviour assumed. Doctrine when it lands: retry the REQUEST, never the MEANING — a schema-invalid response is never retried differently. | Whenever a real source's flakiness makes one-shot pulls impractical. |
 | D-11 | ~~**CI red on `main`: golden `.ramdb` fixtures are gitignored**~~ **AUTHORIZED AND APPLIED, 2026-08-17** | `tests/core/test_ramdb_golden.py` compares against `tests/golden/ramdb/*.ramdb`, which `.gitignore:29` (`*.ramdb`) excluded, so the four fixtures existed only on this machine and CI had failed since 2026-08-14 — the `.ramdb` byte contract those tests call "release-blocking" was never actually guarded there. Fixed by a scoped negation (`!tests/golden/ramdb/*.ramdb`) plus the four files, 1866 bytes total. The single `*` does not cross `/`, so generated output under `tests/golden/ramdb/loading/` stays ignored — verified: a plain `git add` stages exactly the four fixtures and nothing else. All 7 tests in that file pass against the tracked fixtures. | **Done.** See the note below on `main`. |
 | D-9 | **DNS-rebinding window in the recipe lane** | Between resolve-and-validate and httpx's own resolution, DNS can change. Closing it means pinning the validated IP while carrying the hostname for TLS SNI — a transport change, not a tightening. **Stated in `security.py`'s docstring rather than papered over.** | If the recipe lane is ever pointed at a host whose DNS is not trusted. |
@@ -1090,4 +1091,98 @@ Remediation commits:
 ```
 57bee40 Q2(rest): confinement inside the boundary; security refusals go structural
 050ec9f Q1(evidence): preservation is verified, not presumed; manifest write is atomic
+```
+
+---
+
+## 14. Codex round 6 — verdicts and remediation
+
+Audit received 2026-08-17. **Q1 CLEAN + note · Q2 BLOCK, accepted** — and the
+root cause of Q2 was the operator's own round-5 specification. Addressed;
+branch re-pushed for round 7.
+
+| # | Question | Verdict | Remediation | SHA |
+|---|---|---|---|---|
+| **Q1** | Crash consistency | **CLEAN** + note (D-13) | atomic pack writes; broken test fixed | `e4db1e1` |
+| **Q2** | Provider bytes in refusals | **BLOCK, accepted** | zero provider-controlled bytes; no URLs anywhere | `fae9c81` |
+
+### The correction, and why it generalizes
+
+Round 5 permitted one exception to the value-free rule: the canonicalized
+candidate host could be printed, "because it is compared against pinned-known
+values." That reasoning was wrong, and the operator identified it as a defect in
+the round-5 spec rather than in its implementation:
+
+> **Being compared against a pinned value justifies the COMPARISON, not
+> PRINTING the thing compared.**
+
+A DNS label survives canonicalization untouched. So a secret prefix as a
+hostname label, or an entire credential as a subdomain, passed straight through
+the "canonicalized, therefore safe" argument and into the exception text. The
+exception was not a small allowance — it was the whole leak.
+
+**Terminal form, no exceptions:** refusals name the PINNED/AUTHORED side only —
+`host outside pinned set (pinned: <authored-host>)`, `path outside the declared
+set (declared: [...])` — and **no URL appears in any engine-raised message
+anywhere in `drivers/rest/`**. Ten sites eliminated.
+
+The HTTP-status case needed the rule rather than a filter, and is the clearest
+statement of why: a same-host `Link` passes confinement *legitimately*, but its
+query is provider-chosen and can place secret material in any **permitted**
+parameter. Redacting only the registered auth parameter is the round-1 substring
+game with the provider choosing the inputs. A test proves it — the scrubber
+catches the auth literal while a marker in another permitted parameter rides
+straight out.
+
+`recipes.py`'s load-time refusal was closed too, though it only ever handled the
+author's own book. One rule everywhere beats a rule that depends on whether the
+caller is handling authored or provider content, because the second kind is the
+kind that drifts. My own structural audit test caught that site — which is what
+it is for.
+
+### Q1's note, and the broken test
+
+**D-13** — both pack forms now use the temp → fsync → rename idiom already built
+for the manifest. What that does *not* give is recorded rather than implied: the
+PAIR is not atomic.
+
+The **broken provenance test** created its fixture inside the checkout, so it
+could not run against a read-only tree — the F-10 class again. It now builds a
+throwaway repository in `tmp_path` and monkeypatches `REPO_ROOT`, which is also
+the honest shape: the laundering rule is *relative to a repository root*, so the
+test should supply one rather than borrow the real one.
+
+**Why the off-host replay did not catch it** — the more useful question, and the
+answer is a gap in my own procedure: **the replay copies the tree to `/tmp` and
+runs there, and the copy is WRITABLE.** It varied the PATH but never the
+WRITABILITY, so creating a directory in the "checkout" simply worked. Verified
+directly: `mkdir` into a `chmod a-w` evidence directory raises `PermissionError`,
+the old test failed there, the new one passes. The replay procedure now has a
+read-only variant, and a guard test asserts the property directly rather than
+hoping an environment exposes it.
+
+### Verification after round 6
+
+| | result |
+|---|---|
+| Suite (local) | **861 passed / 66 skipped** |
+| Read-only + non-git checkout | 353 passed / 30 skipped, every skip stated |
+| `ruff` / `mypy` | clean / clean |
+| Both greps | **0** · `core/` untouched |
+| Residual URL interpolation in `drivers/rest/` | **none** (grep-level audit test enforces it) |
+| Both packs | ratify `fae9c81`, clean tree, all provenance flags |
+
+### Claims after round 6
+
+**MF-03**'s supporting guarantee is now at its terminal form: *engine-raised
+errors, drift events and repair artifacts contain no provider-controlled bytes;
+refusals name pinned/authored values only; scrubbing is defense-in-depth behind
+that guarantee, not the guarantee.* The claim text is unchanged from its round-2
+rescope. **MF-01** and **MF-02** unchanged. All three remain **FENCED**.
+
+Remediation commits:
+
+```
+fae9c81 Q2(rest): zero provider-controlled bytes in engine-raised errors — terminal form
+e4db1e1 D-13 + Q2(d): atomic pack writes; the laundering test stops writing to the checkout
 ```

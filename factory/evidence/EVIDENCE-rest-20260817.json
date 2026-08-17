@@ -10,7 +10,7 @@
   "dialect": "rest",
   "table": "open_meteo_berlin_hourly",
   "source": "open_meteo_berlin_hourly",
-  "generated_utc": "2026-08-17T14:49:58Z",
+  "generated_utc": "2026-08-17T15:34:34Z",
   "invocation": {
     "config": "/home/kos/builds/r64-db-engine/factory/targets/rest-openmeteo.yaml",
     "ground_truth": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-openmeteo.json",
@@ -22,7 +22,7 @@
   },
   "provenance": {
     "git": {
-      "commit": "57bee40b1f7c7e2501d12e96196e72077c8be6ed",
+      "commit": "fae9c815d3aa26bbff7e23c4b5734f3c4572ac0a",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -49,7 +49,7 @@
     },
     "implementation": {
       "distribution_version": "0.1.0",
-      "source_sha256": "2f6af8200821dadb207b48d5876365bb903a3fd0482bf2e9c8d04933a8b75263",
+      "source_sha256": "b36424a4872fc26c39ac5f87fcef0d93149f4a186ae4901afd96c30229a34de4",
       "source_files": 46
     },
     "toolchain": {
@@ -134,7 +134,7 @@
       "httpx": "0.28.1"
     },
     "git": {
-      "commit": "57bee40b1f7c7e2501d12e96196e72077c8be6ed",
+      "commit": "fae9c815d3aa26bbff7e23c4b5734f3c4572ac0a",
       "branch": "feat/meshforge-factory",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
@@ -452,7 +452,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: recipe URL must use https, got http:// in 'http://geocoding-api.open-meteo.com/v1/search'. Plaintext is refused outright rather than warned about: a recipe carries an API key, and there is no configuration under which sending it in the clear is the intended behaviour.",
+          "note": "RecipeSecurityError: URL must use https, got scheme 'http'. Plaintext is refused outright rather than warned about: a recipe carries an API key, and there is no configuration under which sending it in the clear is the intended behaviour. The URL is not reported.",
           "code": "recipe_security.mutation_accepted"
         },
         {
@@ -460,7 +460,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: recipe host 'evil-geocoding-api.open-meteo.com' is not 'geocoding-api.open-meteo.com' nor a subdomain of it. The URL is pinned at recipe creation and runtime inputs may populate declared body/query parameters only \u2014 never the host or the path.",
+          "note": "RecipeSecurityError: host is not the allowed host 'geocoding-api.open-meteo.com' nor a subdomain of it. The URL is pinned at recipe creation and runtime inputs may populate declared body/query parameters only \u2014 never the host or the path. The candidate host is not reported: it can carry provider-cho",
           "code": "recipe_security.mutation_accepted"
         },
         {
@@ -468,7 +468,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: recipe host 'evil-archive-api.open-meteo.com' is not 'archive-api.open-meteo.com' nor a subdomain of it. The URL is pinned at recipe creation and runtime inputs may populate declared body/query parameters only \u2014 never the host or the path.",
+          "note": "RecipeSecurityError: host is not the allowed host 'archive-api.open-meteo.com' nor a subdomain of it. The URL is pinned at recipe creation and runtime inputs may populate declared body/query parameters only \u2014 never the host or the path. The candidate host is not reported: it can carry provider-chose",
           "code": "recipe_security.mutation_accepted"
         },
         {
@@ -476,7 +476,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: recipes[geocode].url contains a template placeholder: 'https://geocoding-api.open-meteo.com/v1/search/{path}'. The URL is PINNED at recipe creation \u2014 runtime inputs may populate declared body/query parameters only, never the host or the path. A substitutable URL is a destination",
+          "note": "RecipeSecurityError: recipes[geocode].url contains a template placeholder. The URL is PINNED at recipe creation \u2014 runtime inputs may populate declared body/query parameters only, never the host or the path. A substitutable URL is a destination an input can steer. The URL is not reported.",
           "code": "recipe_security.mutation_accepted"
         },
         {
@@ -500,7 +500,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported \u2014 it is provider-controlled.",
+          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (declared: ['/v1/search']). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported.",
           "code": "recipe_security.mutation_accepted"
         },
         {
@@ -508,7 +508,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported \u2014 it is provider-controlled.",
+          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (declared: ['/v1/search']). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported.",
           "code": "recipe_security.mutation_accepted"
         },
         {
@@ -516,7 +516,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: pagination next-URL rejected: host outside pinned set: attacker.geocoding-api.open-meteo.com. Subdomain latitude is deliberately unavailable here \u2014 this URL came from the provider, not the recipe author.",
+          "note": "RecipeSecurityError: pagination next-URL rejected: host outside pinned set (pinned: geocoding-api.open-meteo.com). Subdomain latitude is deliberately unavailable here \u2014 this URL came from the provider, not the recipe author. The candidate host is not reported.",
           "code": "recipe_security.mutation_accepted"
         },
         {
@@ -524,7 +524,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported \u2014 it is provider-controlled.",
+          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (declared: ['/v1/archive']). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported.",
           "code": "recipe_security.mutation_accepted"
         },
         {
@@ -532,7 +532,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported \u2014 it is provider-controlled.",
+          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (declared: ['/v1/archive']). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported.",
           "code": "recipe_security.mutation_accepted"
         },
         {
@@ -540,7 +540,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: pagination next-URL rejected: host outside pinned set: attacker.archive-api.open-meteo.com. Subdomain latitude is deliberately unavailable here \u2014 this URL came from the provider, not the recipe author.",
+          "note": "RecipeSecurityError: pagination next-URL rejected: host outside pinned set (pinned: archive-api.open-meteo.com). Subdomain latitude is deliberately unavailable here \u2014 this URL came from the provider, not the recipe author. The candidate host is not reported.",
           "code": "recipe_security.mutation_accepted"
         },
         {
@@ -548,7 +548,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported \u2014 it is provider-controlled.",
+          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (declared: ['/v1/search']). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported.",
           "code": "recipe_security.mutation_accepted"
         },
         {
@@ -556,7 +556,7 @@
           "actual": "REFUSED",
           "expected": "REFUSED",
           "ok": true,
-          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (1 permitted). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported \u2014 it is provider-controlled.",
+          "note": "RecipeSecurityError: pagination next-URL rejected: path outside the declared set (declared: ['/v1/search']). Cross-path pagination must be declared at authoring time via allowed_next_paths; it is never inferred from what a provider sends. The candidate path is not reported.",
           "code": "recipe_security.mutation_accepted"
         }
       ],
@@ -642,7 +642,7 @@
         },
         "sql": "SELECT count(*), min(time), max(time) FROM open_meteo_berlin_hourly",
         "addr": "127.0.0.1:8903",
-        "pid": 1255399,
+        "pid": 1322530,
         "baseline": {
           "cache_hits": 0,
           "cache_misses": 0,
