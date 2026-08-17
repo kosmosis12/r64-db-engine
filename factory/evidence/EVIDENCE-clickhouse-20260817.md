@@ -1,8 +1,8 @@
 # EVIDENCE — clickhouse / perf_1m
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T11:25:58Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T11:27:13Z.
 
-> Ratifies `6655b9026f23` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
+> Ratifies `deb1710b6892` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -214,7 +214,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
   "addr": "127.0.0.1:8903",
-  "pid": 948795,
+  "pid": 950698,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -248,13 +248,14 @@ counter deltas from the server's own get_flight_info app_metadata
   "command": ".venv/bin/python -m factory.conformance --dialect clickhouse --config /home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml --ground-truth /home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json --table perf_1m --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence --work-dir /tmp/r64-factory-sweep/clickhouse-meshbench --serve-gate",
   "git": {
     "branch": "feat/meshforge-factory",
-    "commit": "6655b9026f23568889190ce845586e3dd1235a0d",
-    "dirty": false
+    "commit": "deb1710b6892d1bde16dc18dd22155e5bf05f84a",
+    "dirty": false,
+    "dirty_exemption": "factory/evidence/"
   },
   "implementation": {
     "distribution_version": "0.1.0",
     "source_files": 46,
-    "source_sha256": "0443a9a67f4f2520d910c076a9f14f8f4325a801d740f7ac0a16a34b95f332b8"
+    "source_sha256": "ee7cd7ba60560a403501d368e77eee4be49d13cb609bacfb05761ecc9437ffff"
   },
   "inputs": {
     "ground_truth": {
@@ -290,9 +291,10 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "6655b9026f23568889190ce845586e3dd1235a0d",
+    "commit": "deb1710b6892d1bde16dc18dd22155e5bf05f84a",
     "branch": "feat/meshforge-factory",
-    "dirty": true
+    "dirty": false,
+    "dirty_exemption": "factory/evidence/"
   },
   "container": {
     "name": "meshroad-ch",
