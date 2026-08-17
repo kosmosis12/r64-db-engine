@@ -336,7 +336,13 @@ def implementation_digest() -> dict[str, Any]:
     }
 
 
-def record_artifact(artifact_path: Path, evidence_dir: Path) -> dict[str, Any]:
+class CorruptStoredEvidenceError(RuntimeError):
+    """A content-addressed stored artifact no longer hashes to its own name."""
+
+
+def record_artifact(
+    artifact_path: Path, evidence_dir: Path, *, repair_store: bool = False
+) -> dict[str, Any]:
     """Content-address the produced artifact under `factory/evidence/artifacts/`.
 
     A pack that referenced `/tmp/...` pointed at something already deleted by
@@ -348,6 +354,31 @@ def record_artifact(artifact_path: Path, evidence_dir: Path) -> dict[str, Any]:
     committing them would bloat the repository without adding a check that the
     sha256 does not already provide. Which of the two happened is recorded, so
     a reader never has to guess whether bytes are present.
+
+    # VERIFY ON REUSE
+
+    A content-addressed filename is a CLAIM about the bytes inside it, not a
+    guarantee. The previous version reused an existing store entry whenever the
+    name matched — so a stored artifact that had been corrupted, truncated or
+    edited kept its filename and the pack went on asserting that content
+    address. The affirmative claim was being made about bytes nobody had read.
+
+    So a pre-existing destination is now HASHED before it is reused:
+
+    - match -> reuse, and the record carries `store_verified: true`. The pack's
+      content-address claim is emitted only after that check passes.
+    - mismatch -> hard refusal naming the path and both hashes. Corrupted
+      stored evidence is a provenance FINDING; silently overwriting it would
+      destroy the only trace that something had gone wrong with the archive.
+      `--repair-store` re-copies from the freshly-hashed produced artifact and
+      records `store_repaired: true` with both hashes, so the repair is itself
+      on the record.
+
+    The large-artifact MANIFEST route is structurally unaffected: it writes a
+    fresh manifest every run rather than reusing an existing file, so there is
+    no stale content to trust. The bytes it describes were never stored here to
+    begin with — the manifest is a statement about the produced artifact, which
+    was hashed this run.
     """
     artifacts_dir = evidence_dir / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -363,8 +394,42 @@ def record_artifact(artifact_path: Path, evidence_dir: Path) -> dict[str, Any]:
 
     if size <= ARTIFACT_COPY_LIMIT_BYTES:
         stored = artifacts_dir / f"{digest}{artifact_path.suffix}"
-        if not stored.exists():
+        if stored.exists():
+            actual = sha256_file(stored)
+            if actual == digest:
+                record["store_verified"] = True
+            elif repair_store:
+                shutil.copy2(artifact_path, stored)
+                repaired = sha256_file(stored)
+                if repaired != digest:
+                    raise CorruptStoredEvidenceError(
+                        f"--repair-store rewrote {stored} but it still hashes to {repaired}, "
+                        f"not {digest}. The store is not writable as expected; refusing to "
+                        f"claim a content address that does not hold."
+                    )
+                record["store_verified"] = True
+                record["store_repaired"] = True
+                record["store_previous_sha256"] = actual
+                record["store_repaired_sha256"] = repaired
+            else:
+                raise CorruptStoredEvidenceError(
+                    f"stored evidence at {stored} does not match its own content address.\n"
+                    f"  expected (filename): {digest}\n"
+                    f"  actual (on disk):    {actual}\n"
+                    f"The archive has been corrupted, truncated or edited since it was "
+                    f"written. This is a provenance FINDING, not a cache miss: overwriting "
+                    f"it silently would destroy the only trace that something went wrong.\n"
+                    f"Investigate, then re-run with --repair-store to re-copy from the "
+                    f"freshly-hashed produced artifact and record the repair in the pack."
+                )
+        else:
             shutil.copy2(artifact_path, stored)
+            written = sha256_file(stored)
+            if written != digest:
+                raise CorruptStoredEvidenceError(
+                    f"just-written {stored} hashes to {written}, not {digest}"
+                )
+            record["store_verified"] = True
         record["storage"] = "copied"
         record["path"] = str(stored.relative_to(evidence_dir.parent.parent))
     else:
@@ -372,10 +437,15 @@ def record_artifact(artifact_path: Path, evidence_dir: Path) -> dict[str, Any]:
         manifest.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
         record["storage"] = "content-addressed manifest"
         record["path"] = str(manifest.relative_to(evidence_dir.parent.parent))
+        # No verify-on-reuse here, and none is needed: the manifest is rewritten
+        # from scratch every run, so there is no pre-existing content being
+        # trusted. It describes the produced artifact, which was hashed above.
+        record["store_verified"] = True
         record["note"] = (
             f"artifact is {size} bytes, over the {ARTIFACT_COPY_LIMIT_BYTES}-byte copy "
             f"limit; the sha256 above is the content address and the bytes are not "
-            f"committed"
+            f"committed. The manifest is rewritten each run, so no stored bytes are "
+            f"reused and verify-on-reuse does not apply."
         )
     return record
 
@@ -697,6 +767,7 @@ __all__ = [
     "CLOSURE_BOUNDARY",
     "PROXY_ENV_VARS",
     "TRACKED_PACKAGES",
+    "CorruptStoredEvidenceError",
     "EvidencePack",
     "LaunderedInputError",
     "assert_inputs_outside_evidence",

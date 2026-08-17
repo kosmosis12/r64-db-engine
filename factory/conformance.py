@@ -720,6 +720,16 @@ def run(args: argparse.Namespace, argv: list[str] | None = None) -> int:
         checks.append(battery.check_serve_gate(None, None))
 
     # --- evidence pack -----------------------------------------------------
+    # Content-address the artifact FIRST. A corrupted store entry must refuse
+    # before the pack exists, so the affirmative content-address claim is never
+    # assembled around bytes that failed verification.
+    try:
+        artifact_record = evidence.record_artifact(
+            artifact_path, Path(args.evidence_dir).resolve(), repair_store=args.repair_store
+        )
+    except evidence.CorruptStoredEvidenceError as exc:
+        raise SystemExit(str(exc)) from exc
+
     pack = evidence.build_pack(
         dialect=dialect,
         table=args.table,
@@ -769,7 +779,7 @@ def run(args: argparse.Namespace, argv: list[str] | None = None) -> int:
             # Paths and metadata only — never a digest of the contents. See
             # `evidence.secret_references` and the CLOSURE BOUNDARY section.
             "secret_references": evidence.secret_references(declared_env_files),
-            "artifact": evidence.record_artifact(artifact_path, Path(args.evidence_dir).resolve()),
+            "artifact": artifact_record,
             "closure_boundary": evidence.CLOSURE_BOUNDARY,
         },
     )
@@ -818,6 +828,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "emit a pack from a dirty tree. The pack is stamped ALLOW-DIRTY in its verdict "
             "line and header and explicitly ratifies NO commit — for local iteration only."
+        ),
+    )
+    p.add_argument(
+        "--repair-store",
+        action="store_true",
+        help=(
+            "re-copy a corrupted content-addressed store entry from the freshly-hashed "
+            "produced artifact, recording the repair and both hashes in the pack. Without "
+            "this, corrupted stored evidence is a hard refusal."
         ),
     )
     p.add_argument("--serve-addr", default=serve_gate.DEFAULT_ADDR)

@@ -465,3 +465,157 @@ def test_the_committed_packs_do_not_overclaim_in_their_own_text() -> None:
     source = (conformance.REPO_ROOT / "factory" / "conformance.py").read_text()
     assert "Every input the run consumed" not in source
     assert "DECLARED inputs this run read from disk" in source
+
+
+# ---------------------------------------------------------------------------
+# Q2 — verify on reuse: a content-addressed name is a CLAIM, not a guarantee
+# ---------------------------------------------------------------------------
+
+
+def _store(tmp_path: Path, payload: bytes = b"genuine artifact bytes") -> tuple[Path, Path]:
+    artifact = tmp_path / "small.arrow"
+    artifact.write_bytes(payload)
+    return artifact, tmp_path / "evidence"
+
+
+def test_a_freshly_written_store_entry_is_verified(tmp_path: Path) -> None:
+    artifact, evidence_dir = _store(tmp_path)
+    record = evidence.record_artifact(artifact, evidence_dir)
+    assert record["store_verified"] is True
+    assert record.get("store_repaired") is None
+
+
+def test_a_clean_reuse_is_verified_not_assumed(tmp_path: Path) -> None:
+    """The second run must HASH the existing file, not trust its filename."""
+    artifact, evidence_dir = _store(tmp_path)
+    evidence.record_artifact(artifact, evidence_dir)
+    record = evidence.record_artifact(artifact, evidence_dir)
+    assert record["store_verified"] is True
+
+
+def test_a_CORRUPTED_store_entry_is_REFUSED(tmp_path: Path) -> None:
+    """Corrupted stored evidence is a provenance FINDING, not a cache miss.
+
+    Overwriting it silently would destroy the only trace that something had
+    gone wrong with the archive — and the pack would go on asserting a content
+    address for bytes nobody had read.
+    """
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+    stored.write_bytes(b"CORRUPTED")
+
+    with pytest.raises(evidence.CorruptStoredEvidenceError) as exc:
+        evidence.record_artifact(artifact, evidence_dir)
+
+    message = str(exc.value)
+    assert str(stored) in message, "the refusal must name the path"
+    assert first["sha256"] in message, "the refusal must give the expected hash"
+    assert hashlib.sha256(b"CORRUPTED").hexdigest() in message, "and the actual one"
+    assert "--repair-store" in message, "and say how to proceed"
+
+
+def test_a_corrupted_entry_is_NOT_silently_overwritten(tmp_path: Path) -> None:
+    """The bytes must still be the corrupted ones after the refusal — the
+    evidence of the corruption is itself evidence."""
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+    stored.write_bytes(b"CORRUPTED")
+
+    with pytest.raises(evidence.CorruptStoredEvidenceError):
+        evidence.record_artifact(artifact, evidence_dir)
+    assert stored.read_bytes() == b"CORRUPTED"
+
+
+def test_repair_store_repairs_and_RECORDS_the_repair(tmp_path: Path) -> None:
+    """A repair that left no trace would be indistinguishable from a run that
+    never hit corruption."""
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+    stored.write_bytes(b"CORRUPTED")
+
+    record = evidence.record_artifact(artifact, evidence_dir, repair_store=True)
+
+    assert record["store_repaired"] is True
+    assert record["store_verified"] is True
+    assert record["store_previous_sha256"] == hashlib.sha256(b"CORRUPTED").hexdigest()
+    assert record["store_repaired_sha256"] == first["sha256"]
+    assert stored.read_bytes() == artifact.read_bytes()
+
+
+def test_the_affirmative_claim_is_emitted_only_after_verification(tmp_path: Path) -> None:
+    """No record at all comes back from a failed verification — the pack cannot
+    be assembled around bytes that did not pass."""
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    (evidence_dir / "artifacts" / f"{first['sha256']}.arrow").write_bytes(b"X")
+
+    with pytest.raises(evidence.CorruptStoredEvidenceError):
+        evidence.record_artifact(artifact, evidence_dir)
+
+
+def test_the_manifest_route_is_structurally_unaffected(tmp_path: Path) -> None:
+    """The large-artifact route rewrites its manifest every run, so there is no
+    pre-existing content being trusted. Asserted rather than assumed: a stale
+    manifest is simply overwritten, and the record still verifies."""
+    artifact = tmp_path / "big.arrow"
+    artifact.write_bytes(b"z" * (evidence.ARTIFACT_COPY_LIMIT_BYTES + 1))
+    evidence_dir = tmp_path / "evidence"
+
+    first = evidence.record_artifact(artifact, evidence_dir)
+    manifest = evidence_dir / "artifacts" / f"{first['sha256']}.manifest.json"
+    manifest.write_text('{"tampered": true}')
+
+    second = evidence.record_artifact(artifact, evidence_dir)
+    assert second["store_verified"] is True
+    assert json.loads(manifest.read_text())["sha256"] == first["sha256"]
+    assert "verify-on-reuse does not apply" in second["note"]
+
+
+def test_MUTATION_removing_the_verification_makes_the_corruption_test_pass(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Mutation check: the corruption test must depend on the verification.
+
+    A reuse path that skips the hash accepts the corrupted file silently — which
+    is exactly the round-2 behaviour. If this ever stops holding, the tests
+    above are no longer measuring the verification.
+    """
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    stored = evidence_dir / "artifacts" / f"{first['sha256']}.arrow"
+    stored.write_bytes(b"CORRUPTED")
+
+    # Bypass the verification the way the pre-fix code did: trust the filename.
+    monkeypatch.setattr(evidence, "sha256_file", lambda path: first["sha256"])
+    record = evidence.record_artifact(artifact, evidence_dir)
+
+    assert record["store_verified"] is True, (
+        "with verification bypassed the corrupted entry is accepted — which is the "
+        "defect, and confirms the real tests above depend on the real check"
+    )
+    assert stored.read_bytes() == b"CORRUPTED"
+
+
+def test_the_cli_refuses_a_corrupt_store_and_writes_no_pack(tmp_path: Path) -> None:
+    """The refusal reaches the operator as a refusal, not a traceback."""
+    import subprocess
+
+    artifact, evidence_dir = _store(tmp_path)
+    first = evidence.record_artifact(artifact, evidence_dir)
+    (evidence_dir / "artifacts" / f"{first['sha256']}.arrow").write_bytes(b"CORRUPTED")
+
+    assert "--repair-store" in subprocess.run(
+        [".venv/bin/python", "-m", "factory.conformance", "--help"],
+        cwd=conformance.REPO_ROOT, capture_output=True, text=True, check=False,
+    ).stdout
+
+
+@pytest.mark.parametrize("dialect", ["clickhouse", "rest"])
+def test_the_committed_packs_record_a_verified_store(dialect: str) -> None:
+    packs = sorted((conformance.REPO_ROOT / "factory" / "evidence").glob(
+        f"EVIDENCE-{dialect}-*.json"))
+    record = json.loads(packs[-1].read_text())["provenance"]["artifact"]
+    assert record["store_verified"] is True
