@@ -1,8 +1,8 @@
 # EVIDENCE — clickhouse / perf_1m
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T15:34:28Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T15:54:00Z.
 
-> Ratifies `fae9c815d3aa` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
+> Ratifies `83391564824f` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -214,7 +214,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT status, sum(amount), count(*) FROM perf_1m GROUP BY status",
   "addr": "127.0.0.1:8903",
-  "pid": 1322274,
+  "pid": 1352576,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -288,8 +288,8 @@ counter deltas from the server's own get_flight_info app_metadata
   ],
   "command": ".venv/bin/python -m factory.conformance --dialect clickhouse --config /home/kos/builds/r64-db-engine/factory/targets/clickhouse-meshbench.yaml --ground-truth /home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-clickhouse.json --table perf_1m --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence --work-dir /tmp/r64-factory-sweep/clickhouse-meshbench --serve-gate",
   "git": {
-    "branch": "feat/meshforge-factory",
-    "commit": "fae9c815d3aa26bbff7e23c4b5734f3c4572ac0a",
+    "branch": "main",
+    "commit": "83391564824fd2ab5de487755fa355a9fe238f34",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"
   },
@@ -354,8 +354,8 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "fae9c815d3aa26bbff7e23c4b5734f3c4572ac0a",
-    "branch": "feat/meshforge-factory",
+    "commit": "83391564824fd2ab5de487755fa355a9fe238f34",
+    "branch": "main",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"
   },
