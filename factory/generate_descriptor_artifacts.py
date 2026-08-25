@@ -674,7 +674,21 @@ def render_index(
 
 def generate(repo_root: Path = REPO_ROOT) -> dict[Path, str]:
     """Build every artifact in memory. Pure: writes nothing, reads no clock."""
-    metas = descriptors()
+    # CANONICAL ORDER, imposed here rather than trusted from upstream.
+    #
+    # `drivers.descriptors()` sorts, and the registry's `__iter__` sorts, and
+    # both say so in their docstrings — and this seam still sorted nothing,
+    # which meant Law 1 held only for as long as every producer upstream kept
+    # its promise. An out-of-tree driver registered through the overlay, a test
+    # double, a future registry that returns an insertion-ordered mapping: any
+    # of them silently reorders the roster's `connectors` array and the index
+    # table, and a spurious diff in a committed artifact is how a real one gets
+    # waved through.
+    #
+    # Sorting at the point of USE makes the property a fact about the generator
+    # instead of an assumption about its input. It costs one sort and removes
+    # the whole class.
+    metas = dict(sorted(descriptors().items()))
     if not metas:
         raise GeneratorError(
             "the driver registry is empty. Refusing to emit: overwriting the roster with zero "

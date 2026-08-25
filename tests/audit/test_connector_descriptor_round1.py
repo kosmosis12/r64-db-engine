@@ -57,10 +57,6 @@ def test_provider_secret_cannot_reach_artifacts_through_operator_message(
     assert all(secret not in body for body in artifacts.values())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="NOTE(P1): roster and index trust incidental descriptor mapping order",
-)
 def test_generator_is_deterministic_when_registry_mapping_order_changes(monkeypatch) -> None:
     """Law 1 must hold even when registry construction order is shuffled."""
     baseline = gen.generate()
