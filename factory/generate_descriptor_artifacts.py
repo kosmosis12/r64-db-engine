@@ -51,11 +51,13 @@ consuming stays in meshroad.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
 import re
 import sys
+import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -439,12 +441,134 @@ def emit_scrubber(metas: dict[str, DriverMetadata]) -> Scrubber:
 
 
 
+# ---- extras ownership at the emit boundary ---------------------------
+
+
+def _normalized(name: str) -> str:
+    """PEP 503 distribution name: lowercase, runs of `-_.` collapsed to `-`."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+#: Import name -> distribution name, for the cases where they differ. Declared
+#: rather than derived, because deriving it means reading installed metadata and
+#: this check must answer from the SOURCE TREE alone: an artifact whose content
+#: depends on what happens to be installed is not deterministic, and `--check`
+#: would then go red in CI for a reason that has nothing to do with the tree.
+#: PEP 503 normalization already covers `clickhouse_connect`/`clickhouse-connect`
+#: and `prometheus_client`/`prometheus-client`; only genuine renames belong here.
+_DISTRIBUTION_OF_MODULE = {"yaml": "pyyaml"}
+
+
+def _requirement_name(requirement: str) -> str:
+    """The distribution a requirement string names, without extras or specifier.
+
+    `psycopg[binary]>=3.1` is psycopg. Deliberately blunt: this only ever reads
+    this project's own pyproject, whose requirements are plain names, and a full
+    PEP 508 parser here would be machinery bought for a case that does not exist.
+    """
+    return _normalized(re.split(r"[\[<>=!~;\s]", requirement.strip(), maxsplit=1)[0])
+
+
+def _dependency_sets(repo_root: Path) -> tuple[set[str], dict[str, set[str]]]:
+    """(base distributions, extra name -> the distributions it provides).
+
+    Read from pyproject, which is where the `pip install` line this generator
+    emits will actually be resolved. A missing or unparseable pyproject yields
+    empty sets, which disowns every extra — the safe direction, because the
+    failure it prevents is printing an install instruction that does not install
+    anything.
+    """
+    path = repo_root / "pyproject.toml"
+    try:
+        data = tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return set(), {}
+    project = data.get("project", {})
+    base = {_requirement_name(r) for r in project.get("dependencies", [])}
+    extras = {
+        name: {_requirement_name(r) for r in reqs}
+        for name, reqs in project.get("optional-dependencies", {}).items()
+    }
+    return base, extras
+
+
+def _driver_requirements(dialect: str, repo_root: Path) -> set[str]:
+    """The third-party distributions this driver's package actually imports.
+
+    An AST walk over the driver package, at EVERY scope — the client imports are
+    deliberately deferred inside `connect()` (D-2/a), so a module-scope-only scan
+    would conclude that no driver needs anything. Static, so it answers without
+    importing psycopg to find out that psycopg is imported.
+    """
+    package = repo_root / "src" / "r64_db_engine" / "drivers" / dialect
+    modules: set[str] = set()
+    for source in sorted(package.rglob("*.py")):
+        try:
+            tree = ast.parse(source.read_text())
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                modules.add(node.module.split(".")[0])
+    return {
+        _normalized(_DISTRIBUTION_OF_MODULE.get(module, module))
+        for module in modules
+        if module not in sys.stdlib_module_names and module != "r64_db_engine"
+    }
+
+
+def owned_extra(meta: DriverMetadata, repo_root: Path = REPO_ROOT) -> str | None:
+    """The extra this descriptor may advertise, or None when it may not.
+
+    # What existence proved, and what it did not
+
+    Gate check 4 asserts that a named `extras_package` is an extra pyproject
+    DEFINES. That catches a typo and nothing else. It does not ask the only
+    question an install instruction depends on: does that extra PROVIDE this
+    driver's dependency? `metrics` exists, so `pip install
+    'r64-db-engine[metrics]'` renders happily on the Postgres page and installs
+    prometheus_client — an operator following it gets no psycopg, and the driver
+    the page is about still does not work.
+
+    That is the Snowflake D-2/a discipline: a dependency claim is about
+    OWNERSHIP, not about a name resolving. An extra that does not carry the
+    driver is an uninstalled extra as far as this driver is concerned, and
+    naming it is a false instruction whether or not the name is real.
+
+    # The rule
+
+    An extra owns a driver when it provides at least one distribution the driver
+    imports and the BASE dependency set does not already carry. If the base set
+    covers everything, there is nothing for an extra to own and any extra named
+    is wrong — which is the case for every driver shipping today, and is exactly
+    why they all declare None (see `core/config.py::_registered_dialects` for why
+    their deps are in the base set at all).
+
+    Both inputs come from the source tree — pyproject and the driver package's
+    own imports — never from installed metadata, so the answer is a property of
+    the checkout and the artifact stays deterministic.
+    """
+    claimed = meta.extras_package
+    if not claimed:
+        return None
+    base, extras = _dependency_sets(repo_root)
+    provided = extras.get(claimed)
+    if not provided:
+        return None
+    unsatisfied = _driver_requirements(meta.dialect, repo_root) - base
+    return claimed if provided & unsatisfied else None
+
+
+
 # ---- Output A: the cockpit roster projection -------------------------
 
 
 def build_roster(
     metas: dict[str, DriverMetadata],
     states: dict[str, dict[str, Any]],
+    extras: dict[str, str | None],
 ) -> dict[str, Any]:
     """The chip list. Every registered driver, automatically.
 
@@ -466,7 +590,7 @@ def build_roster(
                 "engine_name": meta.engine_name,
                 "auth_mode": meta.auth_mode.value,
                 "config_profile": meta.config_profile,
-                "extras_package": meta.extras_package,
+                "extras_package": extras[dialect],
                 "capabilities": meta.as_dict()["capabilities"],
                 "doc": f"docs/connectors/{dialect}.md",
                 "conformance": states[dialect],
@@ -526,7 +650,7 @@ def _yesno(value: bool) -> str:
     return "yes" if value else "no"
 
 
-def render_doc(meta: DriverMetadata, state: dict[str, Any]) -> str:
+def render_doc(meta: DriverMetadata, state: dict[str, Any], extra: str | None) -> str:
     """One connector's documentation page, entirely from its descriptor."""
     caps = meta.capabilities
     lines: list[str] = [
@@ -558,9 +682,18 @@ def render_doc(meta: DriverMetadata, state: dict[str, Any]) -> str:
     lines += [f"**Auth mode:** `{meta.auth_mode.value}`", ""]
     lines += [f"**Config profile:** `{meta.config_profile}`", ""]
 
-    if meta.extras_package:
+    if extra:
+        lines += [f"**Install extra:** `pip install 'r64-db-engine[{extra}]'`", ""]
+    elif meta.extras_package:
+        # The claim is REFUSED, and refused without repeating it: naming the
+        # extra here would put the false install instruction on the page in
+        # prose instead of in a code fence, which is the same instruction.
         lines += [
-            f"**Install extra:** `pip install 'r64-db-engine[{meta.extras_package}]'`",
+            "**Install extra:** the extra this descriptor names is not rendered. It provides "
+            "no dependency this driver imports that the base set does not already carry, so "
+            "the install line would not install this driver — and an instruction that does "
+            "not work is worse than no instruction. Correct `extras_package` in the "
+            "descriptor.",
             "",
         ]
     else:
@@ -705,13 +838,17 @@ def generate(repo_root: Path = REPO_ROOT) -> dict[Path, str]:
                 f"chip and the config select different things"
             )
 
+    # Ownership is resolved once, here, and every surface that renders an
+    # install instruction reads the resolved value rather than the claim.
+    extras = {dialect: owned_extra(meta) for dialect, meta in metas.items()}
+
     briefs = _repair_briefs(repo_root)
     last_green_dir = repo_root / "factory" / "evidence" / "last-green"
     states = {d: conformance_state(d, last_green_dir, briefs) for d in metas}
 
     out: dict[Path, str] = {
         repo_root / "factory" / "artifacts" / "connector-roster.json": json.dumps(
-            build_roster(metas, states), indent=2, sort_keys=True
+            build_roster(metas, states, extras), indent=2, sort_keys=True
         )
         + "\n",
         repo_root / "factory" / "artifacts" / "factory-status.json": json.dumps(
@@ -721,7 +858,9 @@ def generate(repo_root: Path = REPO_ROOT) -> dict[Path, str]:
         repo_root / "docs" / "connectors" / "README.md": render_index(metas, states),
     }
     for dialect, meta in metas.items():
-        out[repo_root / "docs" / "connectors" / f"{dialect}.md"] = render_doc(meta, states[dialect])
+        out[repo_root / "docs" / "connectors" / f"{dialect}.md"] = render_doc(
+            meta, states[dialect], extras[dialect]
+        )
 
     # THE emit boundary. Everything above renders; nothing above is trusted to
     # have rendered only names. Applied to the finished text of every artifact

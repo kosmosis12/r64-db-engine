@@ -1,15 +1,18 @@
 """Codex round-1 adversarial reproducers for feat/connector-descriptor.
 
-These tests are strict xfails so the audit branch stays runnable while preserving
-the exact contracts the fix pass must make green.
+Landed as strict xfails so the audit branch stayed runnable while preserving the
+exact contracts the fix pass had to make green. All five are now GREEN and the
+markers are gone: these are the standing regression tests for the five round-1
+findings, and each one goes red again the moment its fix is backed out.
+
+Assertions are unchanged from the reproducers as written. Only the markers were
+removed — the contract is the audit's, not the fix pass's.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import replace
-
-import pytest
 
 from factory import generate_descriptor_artifacts as gen
 from r64_db_engine.core.descriptor import ErrorMap
@@ -72,10 +75,6 @@ def test_generator_is_deterministic_when_registry_mapping_order_changes(monkeypa
     assert shuffled == baseline
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="NOTE(P2): extras validation checks existence, not dependency ownership",
-)
 def test_descriptor_cannot_claim_an_unrelated_install_extra(monkeypatch, tmp_path) -> None:
     """A base-dependency Postgres driver must not advertise the metrics extra."""
     mislabeled = replace(POSTGRES, extras_package="metrics")
