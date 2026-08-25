@@ -18,6 +18,13 @@ the audit handoff after the complete suite has run.
   secret already present in static operator prose passes the interpolation check
   and is copied into generated status/docs.
 
+## Confirmed note reproducer
+
+- `test_generator_is_deterministic_when_registry_mapping_order_changes`:
+  reversing the descriptor mapping changes `connector-roster.json` and the
+  generated connector index. The JSON status projection remains identical only
+  because its source map is serialized with `sort_keys=True`.
+
 ## Firewall inventory
 
 - `src/r64_db_engine/core/config.py:134` — function-scoped
