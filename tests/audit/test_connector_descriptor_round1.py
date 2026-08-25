@@ -31,10 +31,6 @@ def test_forged_last_green_pack_cannot_create_a_passing_state(tmp_path) -> None:
     assert state["state"] != gen.PASSING
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BLOCK(c): emit-boundary validation only scans required_env_keys syntax",
-)
 def test_environment_value_cannot_reach_any_generated_projection(monkeypatch, tmp_path) -> None:
     """An uppercase env value is syntactically indistinguishable from a key today."""
     secret = "ULTRASECRET2026"
@@ -47,10 +43,6 @@ def test_environment_value_cannot_reach_any_generated_projection(monkeypatch, tm
     assert all(secret not in body for body in artifacts.values())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BLOCK(c): arbitrary descriptor prose is emitted without a value scan",
-)
 def test_provider_secret_cannot_reach_artifacts_through_operator_message(
     monkeypatch, tmp_path
 ) -> None:

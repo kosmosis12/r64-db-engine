@@ -53,13 +53,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from factory.evidence import atomic_write_text
 from r64_db_engine.core.descriptor import DriverMetadata
+from r64_db_engine.core.scrub import Scrubber
 from r64_db_engine.drivers import descriptors
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -226,6 +229,97 @@ def _assert_no_values(meta: DriverMetadata) -> None:
                 f"env-var NAME. Refusing to emit — these artifacts are committed and served, "
                 f"and a value here is a credential in public (Law 3)"
             )
+
+
+#: A field declared as PROSE must BE prose: two whitespace-separated words at
+#: the very least. The check is deliberately the same species as
+#: `_ENV_KEY_NAME` in `core.descriptor` — it requires the POSITIVE FORM of the
+#: thing, rather than hunting for known-bad content. A denylist finds only what
+#: it already knows, and the credential nobody has seen yet is the one that
+#: matters. A credential is a single opaque token; an operator message is a
+#: sentence written for a human to read. A bare token sitting in a prose slot is
+#: not a message, it is a value wearing a message's clothes.
+_PROSE = re.compile(r"\S+\s+\S+")
+
+
+def _prose_of(meta: DriverMetadata) -> Iterator[str]:
+    """Every free-prose string this descriptor contributes to an artifact.
+
+    Enumerated from the descriptor rather than from the rendered text, because
+    the shape question ("is this field prose?") is only answerable while the
+    field still knows which field it is.
+    """
+    yield meta.doc_summary
+    yield from meta.notes
+    for tm in meta.type_mappings:
+        yield tm.note
+    for em in meta.custom_errors:
+        yield em.operator_message
+
+
+def emit_scrubber(metas: dict[str, DriverMetadata]) -> Scrubber:
+    """Build THE boundary for this generation run. Registers, never renders.
+
+    # Why one boundary and not two guards
+
+    Two value-leak paths were found in round 1, and they are the same defect
+    seen from two sides:
+
+      * `required_env_keys` was checked for name SYNTAX only, and a live
+        credential value is syntactically indistinguishable from a key —
+        `ULTRASECRET2026` matches `^[A-Z][A-Z0-9_]*$` exactly as well as
+        `PGPASSWORD` does. Shape cannot separate them; only the environment can.
+      * authored PROSE — `doc_summary`, `notes`, type-map notes, operator
+        messages — was emitted with no value scan at all. `ErrorMap` rejects
+        interpolation PLACEHOLDERS, which stops a provider value being spliced
+        in at runtime; it says nothing about a secret already sitting in the
+        authored string.
+
+    A guard per path closes one and leaves the other bleeding, and then leaves
+    the NEXT field somebody adds unguarded too. So this is one boundary over the
+    whole post-descriptor-load emit path, and it covers every field of
+    `connector-roster.json`, `factory-status.json` and every generated doc page
+    alike — projection fields and free prose, no distinction. That is round 6's
+    ruling applied here: one rule everywhere beats a rule that depends on which
+    kind of field the caller happens to be holding, because the second kind is
+    the kind that drifts.
+
+    # What it registers
+
+    Two mechanisms, mirroring the `Scrubber`'s own two:
+
+    1. **Every live environment VALUE.** Names reach these artifacts by design;
+       values must not, and the only thing that can tell one from the other is
+       the environment itself. Consulted to SUBTRACT from the output, never to
+       add to it — no environment value is ever a source of emitted content, so
+       Law 1 stands and the clean case is a byte-for-byte no-op.
+    2. **Any prose field that is not prose.** See `_PROSE`.
+
+    Registration is separated from scrubbing on purpose: this function decides
+    what must not appear, and `generate()` applies it to the FINAL SERIALIZED
+    TEXT of every artifact — the same belt-and-braces shape `emit_drift` uses,
+    for the same reason. Scrubbing fields one at a time depends on every current
+    and future field being remembered; scrubbing the serialized output is a
+    property of the output.
+
+    # The declared limit
+
+    `Scrubber.MIN_SCRUBBABLE_LENGTH` still applies, so a credential under eight
+    characters is not registered, and a secret embedded INSIDE an otherwise
+    well-formed authored sentence is not detectable by shape. Both are stated
+    rather than papered over. Neither is what this boundary is for: it is
+    defence in depth behind descriptor-time validation and behind review of
+    authored descriptors, exactly as round 6 settled for the recipe lane.
+    """
+    scrubber = Scrubber()
+    for value in os.environ.values():
+        scrubber.register_secret(value)
+    for meta in metas.values():
+        for prose in _prose_of(meta):
+            if prose.strip() and not _PROSE.search(prose):
+                scrubber.register_secret(prose)
+    return scrubber
+
 
 
 # ---- Output A: the cockpit roster projection -------------------------
@@ -497,7 +591,13 @@ def generate(repo_root: Path = REPO_ROOT) -> dict[Path, str]:
     }
     for dialect, meta in metas.items():
         out[repo_root / "docs" / "connectors" / f"{dialect}.md"] = render_doc(meta, states[dialect])
-    return out
+
+    # THE emit boundary. Everything above renders; nothing above is trusted to
+    # have rendered only names. Applied to the finished text of every artifact
+    # rather than field by field, so a field added later is covered without
+    # anybody remembering to cover it.
+    scrubber = emit_scrubber(metas)
+    return {path: scrubber.scrub(text) for path, text in out.items()}
 
 
 def main(argv: list[str] | None = None) -> int:

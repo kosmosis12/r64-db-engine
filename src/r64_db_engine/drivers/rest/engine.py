@@ -21,14 +21,13 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, quote_plus
 
+from r64_db_engine.core.scrub import Scrubber
 from r64_db_engine.drivers.rest.drift import DriftEvent, emit_drift
 from r64_db_engine.drivers.rest.recipes import Recipe, RecipeBook
 from r64_db_engine.drivers.rest.security import (
@@ -59,77 +58,12 @@ class EngineInvariantError(RecipeExecutionError):
     """
 
 
-class Scrubber:
-    """Removes credential material from anything the engine is about to surface.
-
-    # Why this exists (Law 3 enforcement, not cosmetics)
-
-    Credentials never enter model context. A recipe's secret is read at call
-    time from a 0600 file and placed in a header or a query parameter — and
-    then, if the call fails, it can come straight back out inside an exception
-    message or an httpx repr, which for query auth includes the full URL with
-    the key in it.
-
-    That matters more here than in an ordinary service, because **drift events
-    and repair briefs are AGENT-READ**. A leaked key in a `ResponseValidationError`
-    does not merely land in a log an operator might scroll past; it lands in the
-    structured repair record that the next agent opens in order to fix the
-    connector. Scrubbing is where Law 3 is actually enforced.
-
-    Two mechanisms, because one is not enough:
-
-    1. **Literal replacement** of the secret and its URL-encoded forms. Catches
-       the common case where the value is echoed verbatim.
-    2. **Query-parameter redaction by NAME** for query auth. Catches the forms
-       literal matching misses — percent-encoding, `+` for space, or a client
-       that re-serialized the value — because the parameter name is stable even
-       when its rendering is not.
-
-    Registered secrets are held only for the duration of the call.
-    """
-
-    __slots__ = ("_secrets", "_auth_keys")
-
-    REDACTED = "«redacted»"
-
-    def __init__(self) -> None:
-        self._secrets: set[str] = set()
-        self._auth_keys: set[str] = set()
-
-    #: Secrets shorter than this are NOT registered for literal scrubbing.
-    #: Replacing a short string across arbitrary error text corrupts unrelated
-    #: content and produces confusing, wrong diagnostics — a redaction that
-    #: eats the word "table" is worse than useless. The floor is DECLARED
-    #: rather than tuned silently, and it is why value-free errors are the
-    #: primary defence and scrubbing only the backstop: a credential short
-    #: enough to fall under this floor is still never placed into a message,
-    #: because the message never carries instance values in the first place.
-    MIN_SCRUBBABLE_LENGTH = 8
-
-    def register_secret(self, value: str) -> None:
-        if value and len(value) >= self.MIN_SCRUBBABLE_LENGTH:
-            self._secrets.add(value)
-
-    def register_auth_key(self, key: str) -> None:
-        if key:
-            self._auth_keys.add(key)
-
-    def scrub(self, text: str) -> str:
-        out = str(text)
-        for secret in self._secrets:
-            for form in (secret, quote(secret, safe=""), quote_plus(secret)):
-                if form:
-                    out = out.replace(form, self.REDACTED)
-        for key in self._auth_keys:
-            out = re.sub(
-                rf"([?&]{re.escape(key)}=)[^&\s\"'\)\]]*",
-                rf"\1{self.REDACTED}",
-                out,
-            )
-        return out
-
-    def scrubbed(self, exc: BaseException) -> str:
-        return self.scrub(f"{type(exc).__name__}: {exc}")
+# `Scrubber` lives in `core.scrub` — the same class, moved rather than copied
+# when the descriptor-artifact emit boundary needed it too. It is re-exported
+# from this module (see `__all__`) because this is where it was built and where
+# every caller and test already reaches for it. What it is, why it has two
+# mechanisms, and why its length floor is declared rather than tuned are all
+# documented there.
 
 
 @contextmanager
