@@ -1,0 +1,100 @@
+{
+  "connectors": [
+    {
+      "auth_mode": "password",
+      "capabilities": {
+        "stable_scan_order": false,
+        "supports_arrow": false,
+        "supports_catalog": false,
+        "supports_incremental": false,
+        "supports_streaming": false,
+        "tz_sensitive": false
+      },
+      "config_profile": "clickhouse",
+      "conformance": {
+        "evidence": {
+          "commit": "83391564824fd2ab5de487755fa355a9fe238f34",
+          "generated_utc": "2026-08-17T15:54:00Z",
+          "ratifies_head": true,
+          "table": "perf_1m",
+          "tally": {
+            "FAIL": 0,
+            "PASS": 9,
+            "SKIPPED": 1
+          },
+          "verdict": "PASS"
+        },
+        "label": "drifted \u2014 repair brief open",
+        "note": "This dialect has passed conformance before, but a repair brief is open against it, so the green shown is stale. The last green is reported rather than hidden \u2014 the useful question during a drift is what changed since it.",
+        "open_repair_briefs": [
+          "REPAIR-BRIEF-clickhouse-20260823.md"
+        ],
+        "state": "drifted"
+      },
+      "dialect": "clickhouse",
+      "doc": "docs/connectors/clickhouse.md",
+      "engine_name": "ClickHouse",
+      "extras_package": null
+    },
+    {
+      "auth_mode": "password",
+      "capabilities": {
+        "stable_scan_order": true,
+        "supports_arrow": false,
+        "supports_catalog": false,
+        "supports_incremental": true,
+        "supports_streaming": false,
+        "tz_sensitive": false
+      },
+      "config_profile": "postgres",
+      "conformance": {
+        "evidence": null,
+        "label": "declared, pending conformance",
+        "note": "No conformance evidence pack has been committed for this dialect. The driver declares its shape; nothing has yet checked that shape against a real source.",
+        "open_repair_briefs": [],
+        "state": "pending"
+      },
+      "dialect": "postgres",
+      "doc": "docs/connectors/postgres.md",
+      "engine_name": "PostgreSQL",
+      "extras_package": null
+    },
+    {
+      "auth_mode": "none",
+      "capabilities": {
+        "stable_scan_order": true,
+        "supports_arrow": false,
+        "supports_catalog": false,
+        "supports_incremental": false,
+        "supports_streaming": false,
+        "tz_sensitive": false
+      },
+      "config_profile": "rest",
+      "conformance": {
+        "evidence": {
+          "commit": "e6f6e585131e77bcb16eeb569f9bd050eb0d4298",
+          "generated_utc": "2026-08-23T11:30:39Z",
+          "ratifies_head": true,
+          "table": "open_meteo_berlin_hourly",
+          "tally": {
+            "FAIL": 0,
+            "PASS": 9,
+            "SKIPPED": 1
+          },
+          "verdict": "PASS"
+        },
+        "label": "conformance-passing",
+        "note": "Checksum-backed verdict from the conformance battery against a live source.",
+        "open_repair_briefs": [],
+        "state": "passing"
+      },
+      "dialect": "rest",
+      "doc": "docs/connectors/rest.md",
+      "engine_name": "REST (recipe lane)",
+      "extras_package": null
+    }
+  ],
+  "generator": "factory/generate_descriptor_artifacts.py",
+  "note": "Projection, not an API. The cockpit reads this file and nothing else: it does not import the driver registry and does not reach the live control plane. Emitted by r64-db-engine, consumed by meshroad.",
+  "schema": "connector-roster/v1"
+}
