@@ -16,10 +16,6 @@ from r64_db_engine.core.descriptor import ErrorMap
 from r64_db_engine.drivers.postgres.descriptor import POSTGRES
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BLOCK(d): an unverified author-written JSON pack currently creates green",
-)
 def test_forged_last_green_pack_cannot_create_a_passing_state(tmp_path) -> None:
     """Green must require oracle evidence, not merely a writable PASS-shaped JSON file."""
     last_green = tmp_path / "last-green"

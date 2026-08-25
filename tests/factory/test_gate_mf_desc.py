@@ -710,20 +710,44 @@ def test_9_fixture_is_red(tmp_path: Path) -> None:
     """
     last_green = tmp_path / "last-green"
     last_green.mkdir()
+
+    # A pack the ORACLE could have written: per-check records the verdict is
+    # re-derived from, a tally that is the tally of those records, a passing
+    # `checksum` check, and the two pull digests that check proved equal. The
+    # fixture carries all of it because the emit boundary authenticates against
+    # the oracle's output rather than against the shape of a file — see
+    # `gen._unauthenticated`.
+    digest = "a" * 64
     (last_green / "EVIDENCE-fixture.json").write_text(
         json.dumps(
             {
                 "dialect": "fixture",
                 "verdict": "PASS",
+                "verdict_status": "PASS",
                 "generated_utc": "2026-08-23T11:30:39Z",
                 "table": "t",
-                "tally": {"passed": 9, "failed": 0, "skipped": 1},
+                "tally": {"PASS": 2, "FAIL": 0, "SKIPPED": 1},
                 "ratifies_head": True,
                 "provenance": {"git": {"commit": "0" * 40}},
+                "artifact": {"sha256_pull1": digest, "sha256_pull2": digest},
+                "checks": [
+                    {"name": "registry_admission", "status": "PASS"},
+                    {"name": "checksum", "status": "PASS"},
+                    {"name": "zero_copy_serve_gate", "status": "SKIPPED"},
+                ],
             }
         )
     )
     assert gen.conformance_state("fixture", last_green, briefs={})["state"] == gen.PASSING
+
+    # And the anti-proxy last mile: strip the oracle's output and the SAME pack,
+    # still claiming PASS, no longer creates green. Green must originate from a
+    # battery run, never from a writable file that says the right word.
+    (last_green / "EVIDENCE-asserted.json").write_text(json.dumps({"verdict": "PASS"}))
+    asserted = gen.conformance_state("asserted", last_green, briefs={})
+    assert asserted["state"] == gen.PENDING
+    assert asserted["evidence"] is None
+    assert "NOT validated oracle output" in asserted["note"]
 
     # An open repair brief demotes that same green to drifted.
     drifted = gen.conformance_state("fixture", last_green, briefs={"fixture": ["R.md"]})

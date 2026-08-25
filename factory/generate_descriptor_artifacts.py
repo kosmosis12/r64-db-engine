@@ -60,6 +60,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from factory.battery import FAIL, PASS, SKIPPED
 from factory.evidence import atomic_write_text
 from r64_db_engine.core.descriptor import DriverMetadata
 from r64_db_engine.core.scrub import Scrubber
@@ -141,6 +142,106 @@ def _last_green(dialect: str, last_green_dir: Path) -> dict[str, Any] | None:
         ) from exc
 
 
+#: The battery check that computes the lane-scoped checksum and the two-pull
+#: byte identity behind it. Its PASS is the one that makes a verdict
+#: CHECKSUM-BACKED rather than merely asserted, which is the property the emit
+#: boundary authenticates against.
+_CHECKSUM_CHECK = "checksum"
+
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _unauthenticated(pack: dict[str, Any]) -> str | None:
+    """Why this pack is not validated oracle output, or None when it is.
+
+    # The hole this closes
+
+    The emit boundary read `pack["verdict"]` and rendered green on the strength
+    of it. That made GREEN A FUNCTION OF A WRITABLE FILE: anybody who could
+    place `{"verdict": "PASS"}` into `last-green/` — a well-meaning hand edit, a
+    half-finished sweep, a generated fixture that escaped its test — created a
+    passing state for a driver nothing had ever run. The whole consolidation
+    rests on descriptor-existence never reading as conformance, and this was the
+    same proxy pattern one level out: EVIDENCE-existence reading as conformance.
+
+    # What is checked instead
+
+    Not a richer SHAPE — a richer shape is the same mistake with more fields.
+    The verdict is RE-DERIVED from the oracle's own per-check output, using the
+    oracle's own rule (`EvidencePack.verdict`: FAIL if any check failed), and
+    the pack's claims must AGREE with that re-derivation:
+
+      * `checks` must be the battery's records, each naming a check and a status;
+      * the re-derived verdict must be PASS, and must equal the recorded one;
+      * the re-derived tally must equal the recorded tally;
+      * the `checksum` check must be present and PASS — this is what makes the
+        verdict checksum-backed rather than asserted;
+      * the artifact must carry two pull digests that are well-formed sha256 and
+        EQUAL, which is the byte-identity that check actually proved.
+
+    A pack that satisfies all of that had a battery run behind it. A file
+    somebody wrote does not, and cannot be made to without running one.
+
+    # Why this returns a reason instead of raising
+
+    An unreadable pack still raises — it is a corrupted verdict, and treating it
+    as absent would silently downgrade a real one. But a pack that simply does
+    not carry oracle evidence is a COULD-NOT-OBSERVE: nothing has been proven
+    about this dialect, which is precisely what `pending` means and exactly the
+    state a driver with no pack at all renders. Refusing to emit the whole
+    roster because one dialect's evidence is unauthenticated would take the
+    cockpit down over a state the cockpit is designed to display. The reason is
+    carried into the rendered note, so it is declared, not hidden.
+    """
+    checks = pack.get("checks")
+    if not isinstance(checks, list) or not checks:
+        return (
+            "the pack carries no `checks` array, so there is no oracle output to authenticate "
+            "against — its verdict is asserted rather than earned"
+        )
+    if not all(isinstance(c, dict) and isinstance(c.get("status"), str) for c in checks):
+        return "the pack's `checks` are not battery check records (each needs a `status`)"
+
+    statuses = [c["status"] for c in checks]
+    derived_verdict = FAIL if FAIL in statuses else PASS
+    if derived_verdict != PASS:
+        return "re-deriving the verdict from the pack's own checks gives FAIL, not PASS"
+
+    recorded_status = pack.get("verdict_status")
+    if recorded_status != derived_verdict:
+        return (
+            f"the pack records verdict_status {recorded_status!r} but its checks derive "
+            f"{derived_verdict!r} — the claim and the evidence disagree"
+        )
+
+    derived_tally = {s: statuses.count(s) for s in (PASS, FAIL, SKIPPED)}
+    if pack.get("tally") != derived_tally:
+        return (
+            f"the pack's recorded tally {pack.get('tally')!r} is not the tally of its own "
+            f"checks {derived_tally!r}"
+        )
+
+    by_name = {c.get("name"): c["status"] for c in checks}
+    if by_name.get(_CHECKSUM_CHECK) != PASS:
+        return (
+            f"the pack carries no passing '{_CHECKSUM_CHECK}' check, so its verdict is not "
+            f"checksum-backed"
+        )
+
+    artifact = pack.get("artifact")
+    if not isinstance(artifact, dict):
+        return "the pack records no artifact, so the checksum check has nothing behind it"
+    first, second = artifact.get("sha256_pull1"), artifact.get("sha256_pull2")
+    if not (isinstance(first, str) and _SHA256.match(first)):
+        return "the pack's artifact carries no well-formed sha256 for the first pull"
+    if first != second:
+        return (
+            "the pack's two pull digests differ, so the byte-identity its checksum check "
+            "claims to have proved does not hold in the pack itself"
+        )
+    return None
+
+
 def conformance_state(
     dialect: str,
     last_green_dir: Path,
@@ -176,6 +277,22 @@ def conformance_state(
             f"non-PASS pack in that directory means the sweep wrote somewhere it should not "
             f"have, and emitting around it would launder a failure into a status page"
         )
+
+    unauthenticated = _unauthenticated(pack)
+    if unauthenticated is not None:
+        return {
+            "state": PENDING,
+            "label": STATE_LABEL[PENDING],
+            "evidence": None,
+            "open_repair_briefs": open_briefs,
+            "note": (
+                f"An evidence pack is present for this dialect but is NOT validated oracle "
+                f"output: {unauthenticated}. Green originates from a battery run against a "
+                f"real source, never from the presence or the shape of a file, so this renders "
+                f"as pending — the same state a dialect with no pack at all renders, because "
+                f"the same amount has been proven."
+            ),
+        }
 
     evidence = {
         "verdict": verdict,
