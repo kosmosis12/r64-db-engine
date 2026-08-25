@@ -1,8 +1,25 @@
-"""Health endpoint tests."""
+"""Health endpoint tests.
+
+Every case here binds a real loopback listener and talks HTTP to it, so the
+substrate under test is the host's TCP stack rather than anything this repo
+ships. That substrate is not universally present: a network namespace with no
+configured loopback, a locked-down container, or an execution wrapper that
+isolates the network all make the bind fail — and a bind that fails renders an
+`OSError` out of `_free_port()` or a connection refusal out of `_fetch()`,
+which reads as a REGRESSION in this driver rather than as a context that could
+not run the check.
+
+That is the COULD-NOT-OBSERVE doctrine inverted, and it is the failure this
+guard exists to end: a check that cannot observe must record COULD-NOT-OBSERVE,
+never absence and never presence. So the substrate is PROBED — with the same
+operation the tests perform, because a probe that checks something adjacent is
+a guess — and an unreachable one produces a skip with a reason, not a red.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import socket
 import urllib.request
@@ -10,6 +27,43 @@ import urllib.request
 import pytest
 
 from r64_db_engine.core.health import HealthServer
+
+
+@functools.lru_cache(maxsize=1)
+def _loopback_unreachable() -> str | None:
+    """Why loopback TCP cannot carry these tests here, or None when it can.
+
+    Bind AND connect, because the two fail independently: a namespace can offer
+    an address to bind that nothing may then reach. Cached, so the probe costs
+    one socket pair for the whole module rather than one per case.
+    """
+    try:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            with socket.create_connection(("127.0.0.1", listener.getsockname()[1]), timeout=2):
+                pass
+    except OSError as exc:
+        return (
+            f"loopback TCP is unreachable in this context ({type(exc).__name__}: {exc}). "
+            f"These tests bind a real HealthServer and fetch from it; without a usable "
+            f"loopback the check cannot be observed here, and an unobservable check is "
+            f"recorded as a skip rather than asserted either way."
+        )
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _require_loopback() -> None:
+    """Skip, never fail, when the substrate these tests need is absent.
+
+    Autouse and module-wide on purpose: a per-test decorator is a promise every
+    future case in this file remembers to repeat, which is the same promise the
+    round-4 outer boundary declined to rely on.
+    """
+    reason = _loopback_unreachable()
+    if reason is not None:
+        pytest.skip(reason)
 
 
 def _free_port() -> int:

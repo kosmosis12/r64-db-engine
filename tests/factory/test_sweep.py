@@ -11,9 +11,11 @@ against the live container, plus the recipe lane against the live API.
 from __future__ import annotations
 
 import configparser
+import functools
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -62,6 +64,59 @@ DEPLOYED_PYTHON = DEPLOYMENT_ROOT / ".venv" / "bin" / "python"
 ON_DEPLOYMENT_HOST = DEPLOYMENT_ROOT == conformance.REPO_ROOT
 
 
+#: A unit systemd-analyze has nothing to complain about. Deliberately minimal:
+#: everything it declares is either mandatory or trivially satisfiable, so any
+#: complaint the verifier raises against it is about the SUBSTRATE and not about
+#: the unit — which is the whole point of probing with it.
+_PROBE_UNIT = """[Unit]
+Description=r64 substrate probe
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+"""
+
+
+@functools.lru_cache(maxsize=1)
+def _systemd_analyze_unusable() -> str | None:
+    """Why `systemd-analyze verify` cannot render a verdict here, or None.
+
+    `shutil.which` proves the BINARY is on PATH. It does not prove the binary
+    can do its job: `verify` reads the system's unit search path, resolves
+    ExecStart against the real filesystem, and in a container or an execution
+    wrapper without a reachable systemd it emits complaints that have nothing
+    to do with the units under test. The assertions below then read as a
+    REGRESSION in units that are in fact fine — a check that could not observe
+    reporting absence, which is exactly what the COULD-NOT-OBSERVE doctrine
+    forbids.
+
+    So the probe runs the SAME operation on a unit that is known good. Anything
+    other than a silent success means this context cannot verify units, and the
+    honest record is a skip. Detecting rather than assuming also means this
+    needs no allowlist of sandbox names: it asks the tool.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = Path(tmp) / "r64-substrate-probe.service"
+        probe.write_text(_PROBE_UNIT)
+        try:
+            result = subprocess.run(
+                ["systemd-analyze", "verify", f"./{probe.name}"],
+                cwd=tmp, capture_output=True, text=True, check=False, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"systemd-analyze could not be executed here ({type(exc).__name__}: {exc})"
+    if result.returncode != 0 or result.stderr.strip():
+        detail = result.stderr.strip().splitlines()
+        return (
+            f"systemd-analyze verify cannot reach systemd in this context "
+            f"(rc={result.returncode} on a known-good probe unit"
+            + (f"; first complaint: {detail[0]}" if detail else "")
+            + "). The units are not observable here, so this is recorded as a skip "
+            "rather than as a failure of units this context never actually checked."
+        )
+    return None
+
+
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze not present")
 @pytest.mark.skipif(
     not DEPLOYED_PYTHON.exists(),
@@ -72,6 +127,9 @@ ON_DEPLOYMENT_HOST = DEPLOYMENT_ROOT == conformance.REPO_ROOT
 )
 @pytest.mark.parametrize("unit", ["r64-factory-conformance.service", "r64-factory-conformance.timer"])
 def test_units_pass_systemd_analyze_verify(unit: str) -> None:
+    unusable = _systemd_analyze_unusable()
+    if unusable is not None:
+        pytest.skip(unusable)
     result = subprocess.run(
         ["systemd-analyze", "verify", f"./{unit}"],
         cwd=SYSTEMD_DIR, capture_output=True, text=True, check=False,
