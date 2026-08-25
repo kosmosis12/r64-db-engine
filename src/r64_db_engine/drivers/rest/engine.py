@@ -152,16 +152,18 @@ def scrub_boundary(scrubber: Scrubber, context: str) -> Iterator[None]:
     """
     try:
         yield
-    except (RecipeSecurityError, EngineInvariantError, ResponseValidationError,
-            RecipeExecutionError) as exc:
+    except (
+        RecipeSecurityError,
+        EngineInvariantError,
+        ResponseValidationError,
+        RecipeExecutionError,
+    ) as exc:
         cleaned = scrubber.scrub(str(exc))
         if cleaned == str(exc):
             raise
         raise type(exc)(cleaned) from None
     except Exception as exc:  # noqa: BLE001 - re-raised scrubbed, never chained
-        raise RecipeExecutionError(
-            f"{context}: {scrubber.scrubbed(exc)}"
-        ) from None
+        raise RecipeExecutionError(f"{context}: {scrubber.scrubbed(exc)}") from None
 
 
 def read_secret(env_file: str) -> str:
@@ -257,7 +259,10 @@ def describe_violation(exc: Any) -> str:
 
 
 def validate_response(
-    recipe: Recipe, payload: Any, book: RecipeBook, page: int,
+    recipe: Recipe,
+    payload: Any,
+    book: RecipeBook,
+    page: int,
     scrubber: Scrubber | None = None,
 ) -> None:
     """Per-pull `response_schema` validation. Failure is a repair signal.
@@ -507,9 +512,7 @@ def _request(
         # just the registered auth parameter is the round-1 substring game —
         # a same-host Link can place secret prefixes in any permitted param.
         raise RecipeExecutionError(
-            scrubber.scrub(
-                f"recipe {recipe.name!r} page {page} transport failure: "
-            )
+            scrubber.scrub(f"recipe {recipe.name!r} page {page} transport failure: ")
             + scrubber.scrubbed(exc)
         ) from None
     try:
@@ -596,9 +599,7 @@ def run_recipe(
         # header value and the candidate URL can each carry credential
         # material, so neither is processed after the boundary closes.
         with scrub_boundary(scrubber, f"recipe {recipe.name!r} page {page}"):
-            payload, response = _request(
-                client, recipe, url, page_params, book, scrubber, page
-            )
+            payload, response = _request(client, recipe, url, page_params, book, scrubber, page)
             validate_response(recipe, payload, book, page, scrubber)
             if first_payload is None:
                 first_payload = payload
@@ -620,9 +621,7 @@ def run_recipe(
                     # rather than approved in place, and a refusal names the
                     # violated rule structurally rather than echoing the
                     # candidate.
-                    url = confine_next_url(
-                        link, recipe.url, recipe.pagination.allowed_next_paths
-                    )
+                    url = confine_next_url(link, recipe.url, recipe.pagination.allowed_next_paths)
             else:
                 page_params = {**page_params, **nxt}
 
@@ -707,8 +706,9 @@ def records_to_frame(records: list[dict[str, Any]], book: RecipeBook) -> Any:
             parsed = pd.to_datetime(pd.Series(values, dtype="object"), utc=True, format="ISO8601")
             data[column.name] = parsed.dt.tz_localize(None).astype("datetime64[us]")
         else:
-            data[column.name] = pd.array([None if v is None else str(v) for v in values],
-                                         dtype="string")
+            data[column.name] = pd.array(
+                [None if v is None else str(v) for v in values], dtype="string"
+            )
     return pd.DataFrame(data, columns=[c.name for c in book.output])
 
 

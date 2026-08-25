@@ -84,7 +84,9 @@ def emit_drift(event: DriftEvent, scrubber: Any | None = None) -> Path | None:
         line = scrub(json.dumps(event.as_dict(), sort_keys=True))
         with open(path, "a") as handle:
             handle.write(line + "\n")
-        log.error("rest_drift source=%s recipe=%s reason=%s", event.source, event.recipe, event.reason)
+        log.error(
+            "rest_drift source=%s recipe=%s reason=%s", event.source, event.recipe, event.reason
+        )
     except OSError as exc:
         log.error("rest_drift: could not write repair event: %s", exc)
 
@@ -103,13 +105,21 @@ def _notify(event: DriftEvent, scrub: Any = None) -> None:
         log.warning("rest_drift: %s not present, skipping ntfy alert", NTFY_BINARY)
         return
     title = scrub(f"r64 recipe drift: {event.source}/{event.recipe}")
-    body = scrub(
-        f"{event.reason} — {event.detail[:400]}. Re-research and re-admit; do not retry."
-    )
+    body = scrub(f"{event.reason} — {event.detail[:400]}. Re-research and re-admit; do not retry.")
     try:
         subprocess.run(
-            [NTFY_BINARY, "publish", "--title", title, "--priority", "high",
-             "--tags", "rotating_light", "kosmesh-9f46768cb4bd14b3", body],
+            [
+                NTFY_BINARY,
+                "publish",
+                "--title",
+                title,
+                "--priority",
+                "high",
+                "--tags",
+                "rotating_light",
+                "kosmesh-9f46768cb4bd14b3",
+                body,
+            ],
             capture_output=True,
             timeout=20,
             check=False,

@@ -12,10 +12,10 @@ import os
 import time
 from typing import Any
 
-import clickhouse_connect
 import pandas as pd
 
 from r64_db_engine.core.coercion import apply_coercion
+from r64_db_engine.core.descriptor import DriverMetadata
 from r64_db_engine.core.driver import (
     ColumnMetadata,
     Driver,
@@ -41,6 +41,14 @@ class ClickHouseDriver(Driver):
     def dialect_name(cls) -> str:
         return "clickhouse"
 
+    @classmethod
+    def descriptor(cls) -> DriverMetadata:
+        # Imported from a sibling module that pulls in no client library, so a
+        # roster sweep over every registered driver stays free of heavy deps.
+        from r64_db_engine.drivers.clickhouse.descriptor import CLICKHOUSE
+
+        return CLICKHOUSE
+
     async def connect(self, config: dict[str, Any]) -> None:
         host = config.get("host") or "localhost"
         port = int(config.get("port") or _DEFAULT_PORT)
@@ -64,6 +72,12 @@ class ClickHouseDriver(Driver):
             kwargs["username"] = username
         if password:
             kwargs["password"] = password
+
+        # Imported here, not at module scope: sweeping every registered
+        # driver's descriptor and validating a dialect name are both name-level
+        # questions, and neither should pull a database client into the process
+        # to answer them (the D-2/a lazy-enumeration requirement).
+        import clickhouse_connect
 
         client = await asyncio.to_thread(clickhouse_connect.get_client, **kwargs)
         await asyncio.to_thread(client.command, "SELECT 1")
@@ -145,9 +159,7 @@ class ClickHouseDriver(Driver):
         for col in cols_to_validate:
             meta = col_map.get(col)
             if meta and meta.pandas_dtype == "unsupported":
-                errors.append(
-                    f"column '{col}' has unsupported ClickHouse type {meta.source_type}"
-                )
+                errors.append(f"column '{col}' has unsupported ClickHouse type {meta.source_type}")
 
         if table_config.get("mode") == "incremental":
             incr_key = table_config.get("incremental_key")
@@ -158,9 +170,7 @@ class ClickHouseDriver(Driver):
             else:
                 key_type = col_map[incr_key].source_type
                 if not ch_coercion.is_orderable_type(key_type):
-                    errors.append(
-                        f"incremental_key '{incr_key}' has non-orderable type {key_type}"
-                    )
+                    errors.append(f"incremental_key '{incr_key}' has non-orderable type {key_type}")
                 sorting_key = await self._sorting_key(database, table)
                 if sorting_key and incr_key not in _extract_sorting_key_columns(sorting_key):
                     warnings.append(
@@ -311,7 +321,11 @@ class ClickHouseDriver(Driver):
         max_rows: int | None,
     ) -> tuple[str, dict[str, Any]]:
         selected = ", ".join(_quote_ident(col) for col in columns) if columns else "*"
-        base = f"({source}) AS sub" if _is_inline_sql(source) else _quote_qualified(source, self._database)
+        base = (
+            f"({source}) AS sub"
+            if _is_inline_sql(source)
+            else _quote_qualified(source, self._database)
+        )
         sql = f"SELECT {selected} FROM {base}"
         params: dict[str, Any] = {}
 
