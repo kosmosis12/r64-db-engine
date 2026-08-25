@@ -86,3 +86,18 @@ def test_generator_is_deterministic_when_registry_mapping_order_changes(monkeypa
     shuffled = gen.generate()
 
     assert shuffled == baseline
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="NOTE(P2): extras validation checks existence, not dependency ownership",
+)
+def test_descriptor_cannot_claim_an_unrelated_install_extra(monkeypatch, tmp_path) -> None:
+    """A base-dependency Postgres driver must not advertise the metrics extra."""
+    mislabeled = replace(POSTGRES, extras_package="metrics")
+    monkeypatch.setattr(gen, "descriptors", lambda: {"postgres": mislabeled})
+
+    artifacts = gen.generate(tmp_path)
+    postgres_doc = artifacts[tmp_path / "docs/connectors/postgres.md"]
+
+    assert "r64-db-engine[metrics]" not in postgres_doc
