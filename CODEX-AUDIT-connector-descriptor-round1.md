@@ -24,6 +24,10 @@ the audit handoff after the complete suite has run.
   reversing the descriptor mapping changes `connector-roster.json` and the
   generated connector index. The JSON status projection remains identical only
   because its source map is serialized with `sort_keys=True`.
+- `test_descriptor_cannot_claim_an_unrelated_install_extra`: validation accepts
+  `postgres` claiming the existing but unrelated `metrics` extra and generates
+  a false installation instruction. It verifies extra-name existence, not that
+  the connector dependency belongs to that extra.
 
 ## Firewall inventory
 
