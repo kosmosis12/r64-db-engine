@@ -38,3 +38,44 @@ the audit handoff after the complete suite has run.
 
 No concrete driver package import exists in `core/`, and the audited diff changes
 neither inventory site.
+
+## Final disposition
+
+| Priority | Finding | Scope | Bar |
+|---|---|---|---|
+| P0 | A forged `last-green` JSON file creates `passing` without oracle validation | in diff | BLOCK (d) |
+| P0 | Environment/credential values can be copied through env-key or prose fields into generated artifacts | in diff | BLOCK (c) |
+| P1 | Shuffled descriptor mapping order changes the roster and connector index bytes | in diff | NOTE |
+| P2 | `extras_package` validates name existence but not connector/dependency ownership | in diff | NOTE |
+| P2 | Two function-scoped `core/` registry imports remain | inherited PG-010 | NOTE, forward-file |
+
+Verdict: **BLOCK**.
+
+The fix pass contract is that all five strict xfails in
+`tests/audit/test_connector_descriptor_round1.py` convert to PASS while the
+existing suite remains at least 906 passing / 66 skipped. In particular, green
+must require validated oracle provenance rather than a PASS-shaped file, the
+emit boundary must reject any live environment/credential value across every
+emitted descriptor field, and ordering must be canonicalized inside the
+generator rather than relying on the current registry implementation.
+
+## Passing probes and replay axes
+
+- Focused gate: 57 passed / 3 integration skips.
+- Full suite before the last two audit-only xfails: 906 passed / 66 skipped / 3
+  strict xfails. The final focused audit file reports five strict xfails.
+- Cold descriptor sweep: fresh interpreter, `PYTHONNOUSERSITE=1`, empty prior
+  import state; no database client or driver module imported.
+- YAML config load: fresh interpreter and empty prior import state; no database
+  client or driver module imported.
+- Generator path replay: repo-root and `/tmp` working directories; `--check`
+  succeeded in both. Interpreter and filesystem writability were unchanged.
+- Existing-file regeneration: two writes were byte-identical, retained all
+  generated banners, and left the worktree clean.
+- Real state tree: `rest=passing`, `clickhouse=drifted`, `postgres=pending`,
+  computed from the current evidence/brief tree.
+- Error-map adversary: matching provider text containing a secret returned only
+  `bool`, and a fixed clean operator message did not echo the match.
+- Partial-output honesty: the gate test explicitly records that meshroad is not
+  checked out and that only the emitting half is asserted; no cockpit claim was
+  counted as observed.
