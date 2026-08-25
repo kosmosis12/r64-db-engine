@@ -21,8 +21,8 @@ here rather than in a commit message because the next person to read Superset
 will want to add them back:
 
   * **`supports_url()` URI routing.** Superset identifies an engine by parsing a
-    SQLAlchemy URI. Our sources include a REST recipe lane where a URI is simply
-    the wrong key — `open-meteo` is a *book of calls*, not a connection string.
+    SQLAlchemy URI. Our sources include an HTTP recipe lane where a URI is
+    simply the wrong key — a book of calls is not a connection string.
     The dialect key plus the `sources/*.yaml` config profile is strictly more
     general, and it is what PG-010 already established. Keep the dialect key.
   * **A capability score ("159/201").** That number is a public-matrix marketing
