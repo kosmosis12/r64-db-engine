@@ -182,8 +182,29 @@ def _unauthenticated(pack: dict[str, Any]) -> str | None:
       * the artifact must carry two pull digests that are well-formed sha256 and
         EQUAL, which is the byte-identity that check actually proved.
 
-    A pack that satisfies all of that had a battery run behind it. A file
-    somebody wrote does not, and cannot be made to without running one.
+    # What this DOES and DOES NOT establish (corrected, round 2)
+
+    This function's original commit message claimed that "a pack that satisfies
+    all of that had a battery run behind it… and cannot be made to without
+    running one." **That overclaimed and the claim is withdrawn.** Round 2
+    demonstrated both halves failing: a hand-authored pack for a dialect that
+    never existed is accepted, and a real pack tampered post-production is
+    accepted. Every input to the agreement above is a field of the same
+    writable file, so what is checked is the pack against ITSELF.
+
+    What it does establish is a FLOOR, and the floor is worth having: the
+    round-1 hole — a bare `{"verdict": "PASS"}` creating green — is closed, and
+    a forgery now has to reproduce the oracle's whole output shape rather than
+    one key. That is the difference between an accident and an act.
+
+    What it does not establish is unforgeability. Packs are ATTESTATION, not
+    AUTHENTICATION — the limit is declared in `factory/evidence.py`'s limits
+    table under "concurrent local mutation of the store or of the pack itself",
+    and it is deliberate: authentication's trust anchor is operator merge
+    provenance, not a mark inside the repo, because any key the sweep can sign
+    with is writable by whatever writes the packs. `tests/audit/
+    test_connector_descriptor_round2.py::test_packs_are_attestation_not_authentication`
+    asserts this limit in the positive so it cannot drift back into a claim.
 
     # Why this returns a reason instead of raising
 

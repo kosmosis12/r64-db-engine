@@ -273,17 +273,18 @@ unchanged.
 Remediation ran on `feat/connector-descriptor` from `08240fa`, with both
 reproducers cherry-picked (`f924333`, `f836bbb`).
 
-**The contracted gate — 913 passed / 66 skipped / 0 xfailed — was NOT reached.**
-P1 is fixed. **P2 is escalated to the operator rather than fixed**, for the
-reason set out below. The suite stands at:
+```
+913 passed, 66 skipped, 0 xfailed
+```
 
-```
-912 passed, 66 skipped, 1 xfailed
-```
+**Read that 913 correctly.** It is 911 baseline + one fixed guard (P1) + **one
+test that DOCUMENTS A LIMIT (P2), not a second fixed guard.** P2 was confirmed
+reproducible and then ruled a declared limit rather than a defect; its test
+asserts the forged and tampered packs ARE accepted. Counting it as a closed
+finding would be the proxy pattern this whole effort exists to end.
 
 The 911 is intact — no previously-passing test was modified, loosened, or
-skipped to accommodate the fix, and `--check` still reports all 6 generated
-artifacts byte-identical.
+skipped — and `--check` still reports all 6 generated artifacts byte-identical.
 
 ## P1 — CONFIRMED, FIXED
 
@@ -307,58 +308,59 @@ original exception is re-raised untouched, same type and traceback. That is why
 the 911 did not move.
 
 **Failing branch demonstrable:** backing the fix out returns the reproducer to
-red (verified by stashing the fix: `2 xfailed`).
+red (verified by stashing the fix).
 
-## P2 — CONFIRMED, NOT FIXED — operator scope call
+## P2 — CONFIRMED REPRODUCIBLE, RULED A DECLARED LIMIT
 
-**Reproducer:** `f836bbb`, left as a strict xfail on both branches.
+**Operator decision (2026-08-26): the declared limit stands. Evidence packs are
+attestation, not authentication.**
 
-The finding stands exactly as reported: a hand-authored pack renders green, and
-a tampered real pack renders green with its tampered fields on the cockpit card.
-It is not fixed here because **every available fix is a change to the factory's
-declared trust model, which is not a fix-pass decision.**
+The reproduction is not disputed and is recorded in full above: a hand-authored
+pack for `forgedsql` renders green, and a tampered real pack renders green with
+its tampered fields on the cockpit card. What changed is the ruling on what that
+means.
 
-The branch already states the limit, in `factory/evidence.py:687`:
+**The doctrine.** Authentication's trust anchor is **operator merge provenance**
+— a human merging from a fresh shell. It is not a mark inside the repo, because
+any key the sweep can sign with is writable by the same process that writes the
+packs; signing would add ceremony without separation. That is the identity
+dominance test, decided the same way as PARTFORGE v0. The limit is already
+declared in `factory/evidence.py` under "concurrent local mutation of the store
+or of the pack itself": packs *"attest generation-time state; they are unsigned
+and do not defend against… mutation of the pack itself."*
 
-> "packs attest generation-time state; **they are unsigned and do not defend
-> against concurrent local mutation of the store or of the pack itself**. An
-> attacker with local write access can rewrite the pack more easily than the
-> bytes it points at, so verification here establishes what was true when the
-> pack was written — not what is true when it is read."
-
-So P2 arm 2 is a declared, accepted limit of the evidence system rather than an
-undeclared defect. What is genuinely wrong is narrower and is a
-**documentation-vs-code mismatch**: `460ee1a`'s commit message claims
+**So the correction is owed to the overclaim, not to the guard.** `460ee1a`'s
+commit message said:
 
 > "A pack that satisfies all of that had a battery run behind it. A file
 > somebody wrote does not, and cannot be made to without running one."
 
-That claim is false, and it is the claim the fix was sold on. `460ee1a` did
-raise the bar — a naive `{"verdict": "PASS"}` no longer creates green, which is
-the round-1 finding and is genuinely closed — but it does not deliver
-unforgeability, and `tests/factory/test_gate_mf_desc.py::test_9_fixture_is_red`
-is a working forgery committed as a passing test.
+That is false and **the claim is withdrawn**. The guard itself is sound and
+stays: it closed round 1's real hole — a bare `{"verdict": "PASS"}` no longer
+creates green — and it raises a forgery's cost from one key to the oracle's
+whole output shape, which is the difference between an accident and an act. It
+simply never delivered unforgeability, and no longer says it does.
 
-**Why no fix was attempted.** Making green unforgeable requires binding the
-verdict to something the pack's writer does not control. Every route is a new
-abstraction or a scope decision:
+**Where the correction was applied.** The pushed commit message is immutable
+history; this report is the record of correction. Beyond it:
 
-| Route | What it costs |
+| Location | Change |
 |---|---|
-| Sign packs (HMAC / asymmetric) | a key, key storage, a signing step in the sweep, a verifying step in CI — and a new interaction with Law 3, since the signing key is a credential |
-| Require the pack to match its committed git blob | makes `generate()` read git state, breaking its documented contract ("Pure: writes nothing, reads no clock") and its behaviour in a tarball export or a git-less CI |
-| Recompute digests from the artifact bytes | impossible at emit time — packs point at transient `/tmp/r64-factory-sweep/...` paths |
-| Reject unregistered dialects | closes arm 1 only; arm 2 forges against a registered dialect and is unaffected. A proxy fix, and it would be §13 |
+| `factory/generate_descriptor_artifacts.py` — `_unauthenticated()` docstring | the overclaim quoted and explicitly withdrawn; replaced with what the guard does establish (a floor) and does not (unforgeability) |
+| `docs/conformance/gate-mf-desc.md` — check 9 | "with evidence" defined precisely; attestation-vs-authentication stated with the trust anchor |
+| `tests/audit/test_connector_descriptor_round2.py` | reproducer converted to `test_packs_are_attestation_not_authentication` |
 
-The last row is the one worth naming explicitly: it would turn the reproducer
-green without closing the finding, which is the proxy pattern this whole
-descriptor effort exists to end.
+**The test is positive, deliberately.** It asserts the forged and tampered packs
+ARE accepted, and it carries the limit, the declaring line, and the compensating
+control in its docstring. It is not `xfail(strict=False)`, because a silent
+expected-failure is exactly how a declared limit rots back into an assumed
+guarantee. It also re-asserts that the round-1 hole stays closed, so the floor
+is guarded rather than merely described.
 
-**What the operator is being asked to decide:** whether the factory's evidence
-packs move from *attestation* to *authentication* — and if so, which of the
-routes above, and who holds the key. Until then the honest state of the code is
-the one `factory/evidence.py` already declares, and the correction owed is to
-`460ee1a`'s overclaim rather than to the guard itself.
+**If that test ever goes RED, that is the desired signal** — it means somebody
+added real authentication to the evidence path. The instruction, carried in the
+test itself: verify the new mechanism, then update the test docstring, the
+limits table in `factory/evidence.py`, and this report. Do not "fix" the test.
 
 ## FORWARD-FILED, untouched
 
@@ -366,12 +368,14 @@ the one `factory/evidence.py` already declares, and the correction owed is to
 `PGDATABASE=postgres` makes `--check` fail with 4 STALE artifacts and rewrites
 `"config_profile": "postgres"` to `"config_profile": "«redacted»"`. Full
 evidence in the section above. Distinct class from P1 and P2 (over-scrubbing,
-not under-scrubbing), and it needs its own scope call because the plausible
-fixes each change what the boundary is for.
+not under-scrubbing), untouched by decision, and it needs its own scope call
+because the plausible fixes each change what the boundary is for.
 
 ## Branch state
 
-- `audit/connector-descriptor-round2` — `b20e005`: two reproducers + this
-  report. **Unpushed** (push blocked in-session; needs operator approval).
-- `feat/connector-descriptor` — reproducers, the P1 fix, this report.
-  **Unpushed**, and NOT merged. Merge is blocked on the P2 decision.
+- `audit/connector-descriptor-round2` — `b20e005`: the two reproducers as
+  found, plus this report's Phase A sections. Preserved as the audit record.
+- `feat/connector-descriptor` — reproducers, the P1 fix, the P2 limit test, the
+  overclaim correction, this report. Green at 913/66/0. **Not merged** — merge
+  is the operator's, from a fresh shell, which is precisely the trust anchor
+  P2's ruling rests on.

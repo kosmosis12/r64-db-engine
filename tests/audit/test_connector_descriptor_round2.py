@@ -8,8 +8,10 @@ its own observation. P1 and P2 below were specified by a third agent and
 executed here. The auditor-of-record is therefore the spec-plus-execution pair,
 not an independent second model, and that is weaker than the round-1 lineage.
 
-Both are strict xfails: they encode contracts the fix pass must satisfy, and
-they go red again the moment their fix is backed out.
+P1 was a real defect and is fixed; its test is a standing regression test and
+goes red the moment the fix is backed out. P2 was confirmed as reproducible but
+ruled a DECLARED LIMIT rather than a defect, so its test now asserts the limit
+in the positive — see its docstring.
 """
 
 from __future__ import annotations
@@ -133,32 +135,72 @@ def _oracle_shaped_pack(dialect: str, digest: str) -> dict[str, object]:
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BLOCK(r2-p2): _unauthenticated checks the pack against itself, and every "
-    "input to that consistency is under the writer's control",
-)
-def test_green_cannot_be_authored_by_hand_or_survive_tampering(tmp_path) -> None:
-    """Green must originate from oracle evidence, not from a self-consistent file.
+def test_packs_are_attestation_not_authentication(tmp_path) -> None:
+    """A self-consistent evidence pack IS accepted. That is the declared limit.
 
-    Arm 1 forges a pack no battery ever produced. Arm 2 takes a REAL pack and
-    tampers evidence fields post-production. If either renders passing, the
-    authentication is a shape check — a richer one than reading
-    `pack["verdict"]`, but the same species, because every input to its
-    consistency is under the writer's control.
+    # What this asserts and why it is asserted in the positive
+
+    `_unauthenticated()` re-derives the verdict from the pack's own `checks` and
+    requires the pack's claims to agree. Every input to that agreement is a
+    field of the same writable file, so the pack is checked against ITSELF: a
+    hand-authored pack for a dialect that never existed is accepted, and a real
+    pack tampered post-production is accepted. Round 2 confirmed both.
+
+    This is not a defect. It is the evidence system's declared boundary, stated
+    in `factory/evidence.py:687` — the limits table entry for "concurrent local
+    mutation of the store or of the pack itself":
+
+        "packs attest generation-time state; they are unsigned and do not
+        defend against concurrent local mutation of the store or of the pack
+        itself. An attacker with local write access can rewrite the pack more
+        easily than the bytes it points at, so verification here establishes
+        what was true when the pack was written — not what is true when it is
+        read."
+
+    Packs are ATTESTATION. They record what a battery run observed. They are
+    not AUTHENTICATION and were never claimed to be by the limits table.
+
+    # The compensating control
+
+    Authentication's trust anchor is OPERATOR MERGE PROVENANCE — a human
+    merging from a fresh shell — not a mark inside the repo. Signing in-repo
+    would add ceremony without separation: any key the sweep can sign with is
+    writable by the same process that writes the packs, so it fails the
+    identity dominance test the same way PARTFORGE v0 did. A forged pack still
+    has to survive review to reach `main`.
+
+    # What `460ee1a` did and did not deliver
+
+    It genuinely closed round 1's finding: a bare `{"verdict": "PASS"}` no
+    longer creates green, and that arm is still guarded (see
+    `test_connector_descriptor_round1.py`). What its commit message overclaimed
+    is unforgeability — "cannot be made to without running one". A
+    self-consistent file can be made without running one, as below. The
+    correction is recorded in `CODEX-AUDIT-connector-descriptor-round2.md`;
+    the commit message itself is immutable history.
+
+    # If this test goes RED
+
+    That is the DESIRED signal, not a regression: it means somebody added real
+    authentication to the evidence path. Do not "fix" this test — verify the
+    new mechanism, then update this docstring, the limits table entry at
+    `factory/evidence.py:687`, and the round-2 report.
     """
     last_green = tmp_path / "last-green"
     last_green.mkdir()
 
-    # -- arm 1: a dialect that has never existed, digests over a literal ----
+    # -- a dialect that has never existed, digests over a literal ----------
     forged = _oracle_shaped_pack(
         "forgedsql", hashlib.sha256(b"nothing was ever pulled").hexdigest()
     )
     (last_green / "EVIDENCE-forgedsql.json").write_text(json.dumps(forged))
     state = gen.conformance_state("forgedsql", last_green, briefs={})
-    assert state["state"] != gen.PASSING, "a hand-authored pack created green"
+    assert state["state"] == gen.PASSING, (
+        "a self-consistent hand-authored pack was rejected — if this is real "
+        "authentication rather than an accident, see this test's docstring"
+    )
 
-    # -- arm 2: a real pack, tampered, with no mark left to detect it -------
+    # -- a real pack, tampered, with no mark left to detect it -------------
     real_path = Path("factory/evidence/last-green/EVIDENCE-clickhouse.json")
     tampered = json.loads(real_path.read_text())
     # The byte-identity the `checksum` check proved, re-pointed at bytes that
@@ -170,4 +212,12 @@ def test_green_cannot_be_authored_by_hand_or_survive_tampering(tmp_path) -> None
     tampered["provenance"]["git"]["commit"] = "0" * 40
     (last_green / "EVIDENCE-clickhouse.json").write_text(json.dumps(tampered))
     state = gen.conformance_state("clickhouse", last_green, briefs={})
-    assert state["state"] != gen.PASSING, "a tampered pack still rendered green"
+    assert state["state"] == gen.PASSING, (
+        "a tampered pack was rejected — see this test's docstring before "
+        "treating this as a failure"
+    )
+
+    # The round-1 finding remains closed: a pack carrying no oracle output at
+    # all is still refused. Attestation is a floor, not the absence of one.
+    (last_green / "EVIDENCE-asserted.json").write_text(json.dumps({"verdict": "PASS"}))
+    assert gen.conformance_state("asserted", last_green, briefs={})["state"] != gen.PASSING

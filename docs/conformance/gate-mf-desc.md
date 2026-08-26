@@ -51,6 +51,20 @@ Its red fixture proves the green is reachable, because without that arm the
 check would be satisfied by a generator that returned `pending` unconditionally
 and told the operator nothing.
 
+**What "with evidence" means, precisely.** The pack must carry the oracle's own
+per-check output and agree with it — which closes the round-1 hole where a bare
+`{"verdict": "PASS"}` file created green. It does **not** make green
+unforgeable: the pack is checked against itself, and every input to that check
+is a field of the same writable file. Evidence packs are ATTESTATION, not
+AUTHENTICATION; the limit is declared in `factory/evidence.py`'s limits table
+under "concurrent local mutation of the store or of the pack itself".
+Authentication's trust anchor is operator merge provenance — a human merging
+from a fresh shell — not a mark inside the repo, since any key the sweep could
+sign with is writable by whatever writes the packs. See
+`tests/audit/test_connector_descriptor_round2.py::test_packs_are_attestation_not_authentication`,
+which asserts the limit in the positive so it cannot quietly drift back into a
+claim.
+
 ## Three states, never two
 
 FV-2 could-not-observe discipline. The tree exercises all three right now with
