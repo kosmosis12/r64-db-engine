@@ -70,11 +70,6 @@ class _StripFails(str):
         raise RuntimeError("scrubber machinery failure")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BLOCK(r2-p1): the emit scrub boundary wraps only generate()'s success "
-    "return; every refusal above it interpolates descriptor content verbatim",
-)
 def test_no_emit_path_exception_surfaces_provider_shaped_content(monkeypatch, tmp_path) -> None:
     """The scrub boundary must cover the emit path's FAILURES, not only its return.
 

@@ -59,6 +59,7 @@ import re
 import sys
 import tomllib
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -332,6 +333,18 @@ def conformance_state(
 _VALUE_SHAPED = re.compile(r"[=:/@\s]")
 
 
+def _not_a_name(key: str) -> bool:
+    """Is this `required_env_keys` entry something other than a bare env-var NAME?
+
+    Factored out so the guard that REFUSES over a key and the boundary that
+    REDACTS it cannot drift apart. They have to agree: the boundary's whole job
+    is to have registered a value before the guard composes a message quoting
+    it, and a boundary working from a second, slightly different rule would
+    register the wrong set.
+    """
+    return bool(_VALUE_SHAPED.search(key)) or not key.isupper()
+
+
 def _assert_no_values(meta: DriverMetadata) -> None:
     """Refuse to emit a descriptor whose env keys look like values.
 
@@ -342,7 +355,7 @@ def _assert_no_values(meta: DriverMetadata) -> None:
     appeal to one upstream that a refactor could route around.
     """
     for key in meta.required_env_keys:
-        if _VALUE_SHAPED.search(key) or not key.isupper():
+        if _not_a_name(key):
             raise GeneratorError(
                 f"descriptor '{meta.dialect}' required_env_keys entry {key!r} is not a bare "
                 f"env-var NAME. Refusing to emit — these artifacts are committed and served, "
@@ -437,8 +450,91 @@ def emit_scrubber(metas: dict[str, DriverMetadata]) -> Scrubber:
         for prose in _prose_of(meta):
             if prose.strip() and not _PROSE.search(prose):
                 scrubber.register_secret(prose)
+        # 3. Any env key that is not a NAME. `_assert_no_values` is about to
+        #    refuse over exactly these and to QUOTE the offender while doing
+        #    it, and a value sitting in a name slot is the one case that guard
+        #    exists for — so the value has to be unspeakable before the refusal
+        #    is composed, not after. Same species as (2): the descriptor
+        #    declared a shape, the field is not that shape, so it is treated as
+        #    content rather than as a label.
+        for key in meta.required_env_keys:
+            if _not_a_name(key):
+                scrubber.register_secret(key)
     return scrubber
 
+
+
+@contextmanager
+def _scrubbed_failures(scrubber: Scrubber) -> Iterator[None]:
+    """THE boundary, in its other half: what the emit path RAISES.
+
+    # Why this exists
+
+    Round 2 found that "one outer boundary over the whole descriptor emit path"
+    had been implemented as a boundary over `generate()`'s RETURN VALUE:
+
+        return {path: scrubber.scrub(text) for path, text in out.items()}
+
+    That covers the path that succeeds. The path that FAILS left the function
+    with no boundary at all, and the refusals quote descriptor content
+    verbatim — `_assert_no_values` interpolates the offending
+    `required_env_keys` entry with `{key!r}`, which is precisely the slot a
+    credential occupies when that guard fires, and `main()` prints the result
+    straight to stderr. The guard whose stated purpose is keeping a credential
+    out of a committed, served artifact echoed it into the operator's terminal
+    on the one occasion it caught one.
+
+    A returned dict and a raised exception are both things that LEAVE the emit
+    path, so the boundary is over the scope, not over one of its two exits.
+    Scattering `from None` across the raise sites would be the field-by-field
+    mistake again, one level out: it depends on every current and future raise
+    site being remembered.
+
+    # Why the chain is dropped
+
+    `from None`. An exception's `__cause__`/`__context__` chain is rendered by
+    `traceback.format_exception` and by every default handler, so re-raising a
+    scrubbed message while keeping the chain would carry the unscrubbed
+    original out underneath it. (Measured, not assumed: the `from exc`
+    re-chaining already in `_last_green` does NOT leak today, because
+    `JSONDecodeError.__str__` reports position rather than document content.
+    It would start to the moment this boundary re-raised without `from None`.)
+
+    # Why it is invisible unless it redacts
+
+    When scrubbing changes nothing, the original exception is re-raised
+    untouched — same type, same traceback, same message. The boundary is
+    therefore not a behaviour change for any path that was never leaking; it
+    only intervenes where it has something to remove. That keeps a diagnostic
+    intact for every ordinary failure and keeps this from becoming a
+    refactor of the generator's error contract.
+
+    # The declared limit
+
+    A scrubber can only remove what was registered, and registration happens
+    in `emit_scrubber` BEFORE the boundary opens — so a failure inside the
+    scrubber's own construction is outside it. That is not a gap this can
+    close from the inside: the thing that would do the scrubbing is the thing
+    that failed. Measured and stated rather than papered over — an exception
+    raised in `emit_scrubber` carries no descriptor content today, because
+    tracebacks do not render locals.
+    """
+    try:
+        yield
+    except GeneratorError as exc:
+        scrubbed = scrubber.scrub(str(exc))
+        if scrubbed == str(exc):
+            raise
+        raise GeneratorError(scrubbed) from None
+    except Exception as exc:
+        rendered = f"{type(exc).__name__}: {exc}"
+        scrubbed = scrubber.scrub(rendered)
+        if scrubbed == rendered:
+            raise
+        raise GeneratorError(
+            f"the descriptor emit path failed, and the failure carried registered "
+            f"credential material that has been removed: {scrubbed}"
+        ) from None
 
 
 # ---- extras ownership at the emit boundary ---------------------------
@@ -829,6 +925,23 @@ def generate(repo_root: Path = REPO_ROOT) -> dict[Path, str]:
             "rather than 'nothing was found'"
         )
 
+    # THE boundary, opened HERE rather than at the return, because a refusal is
+    # one of the two ways this function can hand something to an operator. Built
+    # before the first guard runs, so the values those guards refuse over are
+    # already registered by the time a guard composes a message quoting one.
+    scrubber = emit_scrubber(metas)
+    with _scrubbed_failures(scrubber):
+        return _generate_within_boundary(repo_root, metas, scrubber)
+
+
+def _generate_within_boundary(
+    repo_root: Path, metas: dict[str, DriverMetadata], scrubber: Scrubber
+) -> dict[Path, str]:
+    """The emit path proper. Only ever called inside `_scrubbed_failures`.
+
+    Split out so the boundary wraps a whole scope with one `with`, rather than
+    an indented body that a later edit could append past.
+    """
     for dialect, meta in metas.items():
         _assert_no_values(meta)
         if meta.dialect != dialect:
@@ -862,11 +975,9 @@ def generate(repo_root: Path = REPO_ROOT) -> dict[Path, str]:
             meta, states[dialect], extras[dialect]
         )
 
-    # THE emit boundary. Everything above renders; nothing above is trusted to
-    # have rendered only names. Applied to the finished text of every artifact
-    # rather than field by field, so a field added later is covered without
-    # anybody remembering to cover it.
-    scrubber = emit_scrubber(metas)
+    # The same boundary, applied to the other exit: the finished text of every
+    # artifact, rather than field by field, so a field added later is covered
+    # without anybody remembering to cover it.
     return {path: scrubber.scrub(text) for path, text in out.items()}
 
 
