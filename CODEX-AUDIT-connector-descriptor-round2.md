@@ -265,3 +265,113 @@ does not control.
 Proceeding to remediation on `feat/connector-descriptor` against the contract:
 final suite must be **913 passed / 66 skipped / 0 xfailed**, with the 911
 unchanged.
+
+---
+
+# Round-2 close-out
+
+Remediation ran on `feat/connector-descriptor` from `08240fa`, with both
+reproducers cherry-picked (`f924333`, `f836bbb`).
+
+**The contracted gate — 913 passed / 66 skipped / 0 xfailed — was NOT reached.**
+P1 is fixed. **P2 is escalated to the operator rather than fixed**, for the
+reason set out below. The suite stands at:
+
+```
+912 passed, 66 skipped, 1 xfailed
+```
+
+The 911 is intact — no previously-passing test was modified, loosened, or
+skipped to accommodate the fix, and `--check` still reports all 6 generated
+artifacts byte-identical.
+
+## P1 — CONFIRMED, FIXED
+
+**Commit:** `f3fdbac`.
+
+**Root cause.** "One outer boundary over the whole emit path" was implemented as
+a boundary over `generate()`'s return value, so the path that raises had no
+boundary at all and the refusals quoted descriptor content verbatim.
+
+**Mechanism of the fix.** The boundary now wraps the emit path's *scope*
+(`_scrubbed_failures`), scrubbing the exception on the way out and re-raising
+with `from None` so the chain cannot carry the unscrubbed original underneath.
+`emit_scrubber` moved ahead of the first guard and gained a third registration —
+an env key that is not a NAME — so the values the guards refuse over are
+unspeakable before a guard composes a message quoting one. `_not_a_name()` is
+now one predicate shared by the guard that refuses and the boundary that
+redacts, so the two cannot drift.
+
+The boundary is invisible unless it redacts: where scrubbing changes nothing the
+original exception is re-raised untouched, same type and traceback. That is why
+the 911 did not move.
+
+**Failing branch demonstrable:** backing the fix out returns the reproducer to
+red (verified by stashing the fix: `2 xfailed`).
+
+## P2 — CONFIRMED, NOT FIXED — operator scope call
+
+**Reproducer:** `f836bbb`, left as a strict xfail on both branches.
+
+The finding stands exactly as reported: a hand-authored pack renders green, and
+a tampered real pack renders green with its tampered fields on the cockpit card.
+It is not fixed here because **every available fix is a change to the factory's
+declared trust model, which is not a fix-pass decision.**
+
+The branch already states the limit, in `factory/evidence.py:687`:
+
+> "packs attest generation-time state; **they are unsigned and do not defend
+> against concurrent local mutation of the store or of the pack itself**. An
+> attacker with local write access can rewrite the pack more easily than the
+> bytes it points at, so verification here establishes what was true when the
+> pack was written — not what is true when it is read."
+
+So P2 arm 2 is a declared, accepted limit of the evidence system rather than an
+undeclared defect. What is genuinely wrong is narrower and is a
+**documentation-vs-code mismatch**: `460ee1a`'s commit message claims
+
+> "A pack that satisfies all of that had a battery run behind it. A file
+> somebody wrote does not, and cannot be made to without running one."
+
+That claim is false, and it is the claim the fix was sold on. `460ee1a` did
+raise the bar — a naive `{"verdict": "PASS"}` no longer creates green, which is
+the round-1 finding and is genuinely closed — but it does not deliver
+unforgeability, and `tests/factory/test_gate_mf_desc.py::test_9_fixture_is_red`
+is a working forgery committed as a passing test.
+
+**Why no fix was attempted.** Making green unforgeable requires binding the
+verdict to something the pack's writer does not control. Every route is a new
+abstraction or a scope decision:
+
+| Route | What it costs |
+|---|---|
+| Sign packs (HMAC / asymmetric) | a key, key storage, a signing step in the sweep, a verifying step in CI — and a new interaction with Law 3, since the signing key is a credential |
+| Require the pack to match its committed git blob | makes `generate()` read git state, breaking its documented contract ("Pure: writes nothing, reads no clock") and its behaviour in a tarball export or a git-less CI |
+| Recompute digests from the artifact bytes | impossible at emit time — packs point at transient `/tmp/r64-factory-sweep/...` paths |
+| Reject unregistered dialects | closes arm 1 only; arm 2 forges against a registered dialect and is unaffected. A proxy fix, and it would be §13 |
+
+The last row is the one worth naming explicitly: it would turn the reproducer
+green without closing the finding, which is the proxy pattern this whole
+descriptor effort exists to end.
+
+**What the operator is being asked to decide:** whether the factory's evidence
+packs move from *attestation* to *authentication* — and if so, which of the
+routes above, and who holds the key. Until then the honest state of the code is
+the one `factory/evidence.py` already declares, and the correction owed is to
+`460ee1a`'s overclaim rather than to the guard itself.
+
+## FORWARD-FILED, untouched
+
+**A live environment value silently corrupts committed artifacts** —
+`PGDATABASE=postgres` makes `--check` fail with 4 STALE artifacts and rewrites
+`"config_profile": "postgres"` to `"config_profile": "«redacted»"`. Full
+evidence in the section above. Distinct class from P1 and P2 (over-scrubbing,
+not under-scrubbing), and it needs its own scope call because the plausible
+fixes each change what the boundary is for.
+
+## Branch state
+
+- `audit/connector-descriptor-round2` — `b20e005`: two reproducers + this
+  report. **Unpushed** (push blocked in-session; needs operator approval).
+- `feat/connector-descriptor` — reproducers, the P1 fix, this report.
+  **Unpushed**, and NOT merged. Merge is blocked on the P2 decision.
