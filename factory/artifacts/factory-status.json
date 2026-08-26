@@ -1,0 +1,415 @@
+{
+  "counts": {
+    "drifted": 1,
+    "passing": 1,
+    "pending": 1,
+    "registered": 3
+  },
+  "descriptor_digest": "8c252752ee91b5f83c870501e4621f18a1b24343810c87e27e2157845ab48508",
+  "generator": "factory/generate_descriptor_artifacts.py",
+  "note": "`declared` is what the driver says about itself; `conformance` is what the checksum-backed battery proved against a real source. They are separate fields because a declaration is not evidence, and a card that let the first colour the second would be measuring the wrong thing.",
+  "schema": "factory-status/v1",
+  "sources": {
+    "clickhouse": {
+      "conformance": {
+        "evidence": {
+          "commit": "83391564824fd2ab5de487755fa355a9fe238f34",
+          "generated_utc": "2026-08-17T15:54:00Z",
+          "ratifies_head": true,
+          "table": "perf_1m",
+          "tally": {
+            "FAIL": 0,
+            "PASS": 9,
+            "SKIPPED": 1
+          },
+          "verdict": "PASS"
+        },
+        "label": "drifted \u2014 repair brief open",
+        "note": "This dialect has passed conformance before, but a repair brief is open against it, so the green shown is stale. The last green is reported rather than hidden \u2014 the useful question during a drift is what changed since it.",
+        "open_repair_briefs": [
+          "REPAIR-BRIEF-clickhouse-20260823.md"
+        ],
+        "state": "drifted"
+      },
+      "declared": {
+        "auth_mode": "password",
+        "capabilities": {
+          "stable_scan_order": false,
+          "supports_arrow": false,
+          "supports_catalog": false,
+          "supports_incremental": false,
+          "supports_streaming": false,
+          "tz_sensitive": false
+        },
+        "config_profile": "clickhouse",
+        "custom_errors": [
+          {
+            "operator_message": "ClickHouse rejected the credentials. Permanent, so the daemon fails fast instead of retrying. Check the user and password in the configured env-file. One local trap presents identically: when this instance runs in Docker and the bridge-allow config is missing from users.d, a correct password is still reported as incorrect \u2014 see the committed bridge-allow XML and the recovery procedure in the bench notes before assuming the credential is wrong.",
+            "pattern": "AUTHENTICATION_FAILED|Code:\\s*516|password is incorrect|default:\\s*Authentication failed",
+            "reason_code": "auth_failed"
+          },
+          {
+            "operator_message": "The ClickHouse endpoint was unreachable or dropped the connection. Transient, so it is retried and the table is marked disconnected. Note that an unreachable source does not always fail fast \u2014 a client retrying against a dead endpoint can hang to the run cap, which the sweep reports as a RED run rather than a skip.",
+            "pattern": "Connection refused|Connection reset|NETWORK_ERROR|SOCKET_TIMEOUT|Read timed out",
+            "reason_code": "source_disconnected"
+          },
+          {
+            "operator_message": "The configured source table is not present in this database. Permanent. Verify the database and table names in the config.",
+            "pattern": "UNKNOWN_TABLE|Code:\\s*60\\b|Table .* does not exist",
+            "reason_code": "table_missing"
+          }
+        ],
+        "dialect": "clickhouse",
+        "doc_summary": "Column-store source, discovered through system.tables and system.columns and pulled over clickhouse-connect. This is the driver the benchmark lane runs against: meshbench.perf_1m is the million-row table the checksum and zero-copy serve gates are proven on, which makes ClickHouse the connector whose type verdicts are the most heavily exercised. Full-refresh only \u2014 there is no watermark mode here, and a config asking for one is refused at validation rather than quietly downgraded to a full pull.",
+        "engine_name": "ClickHouse",
+        "extras_package": null,
+        "notes": [
+          "stable_scan_order is False, and deliberately so. A MergeTree scan order depends on part layout, which background merges rewrite without warning, so repeatability across two pulls is not something to lean on. The lane checksum is order-sensitive, so a target here should pin an explicit ORDER BY rather than trust the scan.",
+          "supports_incremental is False: no watermark mode is implemented. PG-011 requires that a config requesting one be refused loudly, which the battery asserts.",
+          "clickhouse-connect is a base dependency, not an extra, for the reason core/config.py::_registered_dialects documents."
+        ],
+        "required_env_keys": [
+          "CLICKHOUSE_HOST",
+          "CLICKHOUSE_PORT",
+          "CLICKHOUSE_DATABASE",
+          "CLICKHOUSE_USER",
+          "CLICKHOUSE_PASSWORD"
+        ],
+        "type_mappings": [
+          {
+            "arrow_type": "int64",
+            "note": "",
+            "source_type": "Int64",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "int64",
+            "note": "",
+            "source_type": "Int32",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "float64",
+            "note": "",
+            "source_type": "Float64",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "string",
+            "note": "",
+            "source_type": "String",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "datetime64[ns]",
+            "note": "",
+            "source_type": "DateTime",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "float64",
+            "note": "Lands as float64, losing exactness beyond a double's significant digits. The same trade the Postgres numeric mapping documents.",
+            "source_type": "Decimal",
+            "verdict": "coerced"
+          },
+          {
+            "arrow_type": "T",
+            "note": "The Nullable wrapper is unwrapped and nullability is carried as a mask rather than as part of the type. RF-002 exists because of the discriminator this leaves behind: null and NaN are distinguishable at the source and must stay distinguishable in the artifact, so the battery asserts the null count explicitly instead of inferring it.",
+            "source_type": "Nullable(T)",
+            "verdict": "coerced"
+          },
+          {
+            "arrow_type": "int64",
+            "note": "A UInt64 above the signed int64 maximum has no lossless landing place, and the int32 codec ceiling (RF-001) applies below that anyway. Refused at the writer rather than wrapped to a negative number.",
+            "source_type": "UInt64",
+            "verdict": "refused"
+          },
+          {
+            "arrow_type": "int64",
+            "note": "RF-001, and this is the driver where it bites hardest: 90.74% of meshbench rows exceed the signed int32 range, so the row64tools 1.0.x codec's silent narrowing would have been the normal path rather than an edge case. The writer refuses the write.",
+            "source_type": "Int64 (above signed int32)",
+            "verdict": "refused"
+          },
+          {
+            "arrow_type": "string",
+            "note": "Rendered as text. Element access and length are gone downstream.",
+            "source_type": "Array(T)",
+            "verdict": "string"
+          },
+          {
+            "arrow_type": "string",
+            "note": "Serialized to text; no Arrow map type is produced, so key lookups downstream are string operations.",
+            "source_type": "Map(K,V)",
+            "verdict": "string"
+          }
+        ]
+      }
+    },
+    "postgres": {
+      "conformance": {
+        "evidence": null,
+        "label": "declared, pending conformance",
+        "note": "No conformance evidence pack has been committed for this dialect. The driver declares its shape; nothing has yet checked that shape against a real source.",
+        "open_repair_briefs": [],
+        "state": "pending"
+      },
+      "declared": {
+        "auth_mode": "password",
+        "capabilities": {
+          "stable_scan_order": true,
+          "supports_arrow": false,
+          "supports_catalog": false,
+          "supports_incremental": true,
+          "supports_streaming": false,
+          "tz_sensitive": false
+        },
+        "config_profile": "postgres",
+        "custom_errors": [
+          {
+            "operator_message": "Postgres rejected the credentials. This is permanent, not transient, so the daemon fails fast at startup rather than retrying against a source that will keep saying no. Check the user and password in the configured env-file, and that the role exists and may log in.",
+            "pattern": "\\b(28000|28P01)\\b|password authentication failed|role .* does not exist",
+            "reason_code": "auth_failed"
+          },
+          {
+            "operator_message": "The connection to Postgres dropped mid-pull. Treated as transient and retried, and the table is marked disconnected rather than failed. If it persists, check network reachability and any pooler or proxy in the path.",
+            "pattern": "\\b08[0-9A-Z]{3}\\b|server closed the connection|connection is closed",
+            "reason_code": "source_disconnected"
+          },
+          {
+            "operator_message": "The configured source table or view is not visible to this role. Permanent: retrying will not make it appear. Verify the schema-qualified name in the config and the role's grants.",
+            "pattern": "\\b42P01\\b|relation .* does not exist",
+            "reason_code": "table_missing"
+          }
+        ],
+        "dialect": "postgres",
+        "doc_summary": "The reference driver, and the one every other connector is measured against. Pulls a table or an inline SQL source over psycopg 3, coerces the frame to ramdb-safe dtypes, and writes it atomically. Supports watermarked incremental pulls: a bounded incremental pull is ordered by its cursor and, where a tie breaker is configured, by a second unique column, so rows sharing a timestamp at the watermark boundary are neither replayed nor dropped. Connection shape beyond the plain case is handled by a connection profile rather than by this driver \u2014 see the Supabase profile, which refuses transaction-mode pooling outright because server-side prepared statements do not survive it.",
+        "engine_name": "PostgreSQL",
+        "extras_package": null,
+        "notes": [
+          "stable_scan_order is an OBSERVATION, not a guarantee Postgres makes (D-5). A sequential scan of an unmodified heap has been repeatable across pulls here, which is why the lane checksum is meaningful; it is not promised by the engine and would not survive a concurrent VACUUM or a plan flipping to a parallel scan. Incremental pulls do not rely on it \u2014 they impose an explicit ORDER BY.",
+          "tz_sensitive is False because timestamptz values are normalized to UTC during coercion rather than rendered through a session timezone.",
+          "psycopg is in the base dependency set, not behind an extra, because validating any config consults the driver registry (see core/config.py::_registered_dialects)."
+        ],
+        "required_env_keys": [
+          "PGHOST",
+          "PGPORT",
+          "PGDATABASE",
+          "PGUSER",
+          "PGPASSWORD"
+        ],
+        "type_mappings": [
+          {
+            "arrow_type": "int64",
+            "note": "",
+            "source_type": "bigint",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "int64",
+            "note": "",
+            "source_type": "integer",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "bool",
+            "note": "",
+            "source_type": "boolean",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "string",
+            "note": "",
+            "source_type": "text",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "float64",
+            "note": "",
+            "source_type": "double precision",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "datetime64[ns]",
+            "note": "",
+            "source_type": "date",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "float64",
+            "note": "Decimal lands as float64. Exact for the everyday scales; a numeric(38,15) carrying more significant digits than a double holds does not survive the Decimal -> float64 -> Decimal round trip. Money columns wide enough to matter should be pulled as text and reconstructed downstream.",
+            "source_type": "numeric",
+            "verdict": "coerced"
+          },
+          {
+            "arrow_type": "datetime64[ns]",
+            "note": "Normalized to UTC and the offset dropped, because the ramdb has no tz-aware type. The instant is preserved; the original offset is not.",
+            "source_type": "timestamptz",
+            "verdict": "coerced"
+          },
+          {
+            "arrow_type": "string",
+            "note": "Serialized to its JSON text. Readable, not queryable \u2014 Arrow has no variant type here, so any downstream filter on a key inside the document is a string operation, not a structured one.",
+            "source_type": "jsonb",
+            "verdict": "string"
+          },
+          {
+            "arrow_type": "string",
+            "note": "Arrays land as their text rendering. The elements are legible but the column is no longer a list; length and element access are gone.",
+            "source_type": "integer[]",
+            "verdict": "string"
+          },
+          {
+            "arrow_type": "string",
+            "note": "Rendered as text rather than carried as binary. Non-UTF8 payloads should be encoded at the source before the pull rather than relied on here.",
+            "source_type": "bytea",
+            "verdict": "string"
+          },
+          {
+            "arrow_type": "string",
+            "note": "No Arrow equivalent; lands as the printed address.",
+            "source_type": "inet",
+            "verdict": "string"
+          },
+          {
+            "arrow_type": "string",
+            "note": "A time-of-day with no date has no Arrow timestamp to land in; carried as text.",
+            "source_type": "time",
+            "verdict": "string"
+          },
+          {
+            "arrow_type": "int64",
+            "note": "Carried as microseconds, and therefore subject to the int32 ceiling below: an interval whose microsecond count exceeds signed int32 is refused at the coercer rather than truncated.",
+            "source_type": "interval",
+            "verdict": "refused"
+          },
+          {
+            "arrow_type": "int64",
+            "note": "RF-001. The row64tools 1.0.x codec narrows int64 to signed int32 on store, silently, so a bigint above 2147483647 came back as a different number. The writer now refuses the write instead. This is not a rare edge: 90.74% of meshbench rows exceed the int32 range, so the silent-truncation path would have been the normal path. A refusal an operator sees beats a wrong number they find in a dashboard six weeks later.",
+            "source_type": "bigint (above signed int32)",
+            "verdict": "refused"
+          }
+        ]
+      }
+    },
+    "rest": {
+      "conformance": {
+        "evidence": {
+          "commit": "e6f6e585131e77bcb16eeb569f9bd050eb0d4298",
+          "generated_utc": "2026-08-23T11:30:39Z",
+          "ratifies_head": true,
+          "table": "open_meteo_berlin_hourly",
+          "tally": {
+            "FAIL": 0,
+            "PASS": 9,
+            "SKIPPED": 1
+          },
+          "verdict": "PASS"
+        },
+        "label": "conformance-passing",
+        "note": "Checksum-backed verdict from the conformance battery against a live source.",
+        "open_repair_briefs": [],
+        "state": "passing"
+      },
+      "declared": {
+        "auth_mode": "none",
+        "capabilities": {
+          "stable_scan_order": true,
+          "supports_arrow": false,
+          "supports_catalog": false,
+          "supports_incremental": false,
+          "supports_streaming": false,
+          "tz_sensitive": false
+        },
+        "config_profile": "rest",
+        "custom_errors": [
+          {
+            "operator_message": "The API rejected the request's credentials. Permanent \u2014 retrying with the same key will keep failing. Check the key in the recipe's env-file, that the file is still mode 0600, and that the key has not been rotated or scoped away from this endpoint.",
+            "pattern": "\\b401\\b|\\b403\\b|Unauthorized|Forbidden|invalid[_ ]api[_ ]key",
+            "reason_code": "auth_failed"
+          },
+          {
+            "operator_message": "The API rate-limited the pull. Transient. If it recurs at the configured cadence, the cadence is wrong for this provider's quota and belongs in the recipe's pagination and pacing spec rather than in a retry loop.",
+            "pattern": "\\b429\\b|rate limit|too many requests",
+            "reason_code": "rate_limited"
+          },
+          {
+            "operator_message": "The response no longer matches the schema the recipe declared. This is the drift signal the lane exists to catch, and it is deliberately not recoverable in place: the pull exits non-zero and emits a repair event rather than guessing at a new interpretation of the payload. The recipe book is re-researched and re-admitted through the battery.",
+            "pattern": "response failed schema validation|ValidationError|does not match declared response_schema",
+            "reason_code": "response_schema_drift"
+          },
+          {
+            "operator_message": "A request tried to leave the host, scheme, or address space the recipe pinned at authoring time. Refused before the request was made. This is an invariant, not a setting: if the provider genuinely moved, the recipe is re-authored and reviewed, never widened at runtime.",
+            "pattern": "destination pinning|host not permitted|scheme must be https|refused private address",
+            "reason_code": "destination_pin_violation"
+          }
+        ],
+        "dialect": "rest",
+        "doc_summary": "The long-tail lane: one generic driver that executes a compiled recipe book instead of speaking a wire protocol. A recipe is a single call with its method and URL pinned at authoring time, its auth supplied as a path to a 0600 env-file, and its request and response schemas declared; a book is an ordered set of recipes plus the threading that feeds one call's output into the next. The book is compiled once and executed by hand-written code \u2014 no model sits in the pull path, which is what makes the lane auditable. Security invariants are enforced in code and proven by test rather than documented as intent: HTTPS only, hostname fixed per recipe with real subdomain matching so a lookalike domain is not a suffix match, private and loopback and link-local address space refused, redirects not followed because a followed redirect is an SSRF bypass around the pinning, and response size and time capped. Every pull validates the response against the declared schema; a validation failure emits a structured repair event and exits non-zero, and never retries with a reinterpretation.",
+        "engine_name": "REST (recipe lane)",
+        "extras_package": null,
+        "notes": [
+          "auth_mode is NONE because the admitted book \u2014 open-meteo \u2014 is a zero-credential public API. The lane itself supports keyed APIs; auth is declared per recipe as a path to a 0600 env-file, and the KEY NAME reaches config while the value never leaves the file (Law 3).",
+          "stable_scan_order is True as an OBSERVATION about this lane's shape rather than a promise any provider makes: a recipe book's output order is the order the engine walks its recipes and rows, which is deterministic for a fixed book and a fixed response. A provider that reorders its own payload between calls would break it, which is what the pull-to-pull checksum comparison is there to detect.",
+          "supports_incremental is False. Some APIs expose a cursor that would support a watermark, but nothing in the compiled-book path implements one yet, and declaring a capability with no fixture exercising it is exactly the untested claim the merge bar blocks on."
+        ],
+        "required_env_keys": [],
+        "type_mappings": [
+          {
+            "arrow_type": "int64",
+            "note": "",
+            "source_type": "JSON number (integral)",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "float64",
+            "note": "",
+            "source_type": "JSON number (fractional)",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "string",
+            "note": "",
+            "source_type": "JSON string",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "bool",
+            "note": "",
+            "source_type": "JSON boolean",
+            "verdict": "native"
+          },
+          {
+            "arrow_type": "datetime64[ns]",
+            "note": "Parsed from text into a timestamp by the extraction step. The source's timezone is whatever the recipe declared it to request, so the book pins it explicitly rather than accepting a provider default that could change.",
+            "source_type": "ISO-8601 timestamp string",
+            "verdict": "coerced"
+          },
+          {
+            "arrow_type": "null mask",
+            "note": "A JSON null becomes a real null rather than a sentinel. RF-002: null and NaN must stay distinguishable in the artifact, so a dataset declares its expected null count and the battery asserts it rather than inferring it from whatever landed.",
+            "source_type": "JSON null",
+            "verdict": "coerced"
+          },
+          {
+            "arrow_type": "string",
+            "note": "A nested object that no JSONPath extract flattens lands as its serialized text. The fix is normally a better extract in the recipe, not a downstream string parse.",
+            "source_type": "JSON object",
+            "verdict": "string"
+          },
+          {
+            "arrow_type": "string",
+            "note": "Same as objects: an array not unrolled into rows by the recipe lands as text.",
+            "source_type": "JSON array",
+            "verdict": "string"
+          },
+          {
+            "arrow_type": "int64",
+            "note": "RF-001 applies to this lane exactly as it does to the databases: the row64tools 1.0.x codec narrows int64 to signed int32 on store, so a large identifier from an API is refused at the writer rather than silently becoming a different number.",
+            "source_type": "JSON number (above signed int32)",
+            "verdict": "refused"
+          }
+        ]
+      }
+    }
+  }
+}

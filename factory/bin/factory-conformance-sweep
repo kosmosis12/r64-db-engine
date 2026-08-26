@@ -27,6 +27,38 @@ stops working rather than only in hindsight.
 A stopped container or an unreachable source turns the sweep red. Silently
 skipping a target whose source is down would turn the timer into decoration:
 the one week the sweep quietly checks nothing is the week you needed it.
+
+# Why the sweep commits its own packs (`--auto-commit`)
+
+Doctrine is artifact-before-handoff: *nothing exists until it is a committed
+file*, and evidence packs are committed artifacts rather than build output. A
+weekly timer that regenerates packs and leaves them dirty in the working tree
+inverts that — the record of the last four green sweeps is indistinguishable
+from an uncommitted local experiment, and `git log` cannot answer "when did
+this last pass".
+
+So a green sweep commits its own evidence subtree, and a red one NEVER does.
+That asymmetry is the whole point: a failing pack belongs beside a repair brief
+that a human reads, not auto-filed into history where it reads as a record of
+work rather than an alarm.
+
+Three fences make the commit safe to run unattended:
+
+1. **Pathspec-limited.** `git add`/`git commit` are both scoped to the evidence
+   directory. An unattended `git commit -a` on a timer would sweep up whatever
+   a human happened to be editing at 04:00 on a Sunday.
+2. **In-repo only.** An `--evidence-dir` outside the checkout is refused, not
+   silently skipped — it means the caller asked for something that cannot be
+   done, and the test suite's `tmp_path` runs simply never pass the flag.
+3. **Size-fenced.** `_COMMIT_MAX_BYTES` refuses an unexpectedly large payload.
+   The packs are ~30 KB and the one stored artifact is 36 KB, but a future
+   target storing a meshbench-sized artifact (~150 MB) would otherwise bloat
+   the repo permanently, on a timer, with nobody watching.
+
+One inherent wrinkle, stated rather than hidden: a pack records the commit that
+was HEAD when the battery ran, and committing the pack moves HEAD past it. A
+committed pack therefore names its own parent. A file cannot contain its own
+hash; the pairing is still exact, one commit apart.
 """
 
 from __future__ import annotations
@@ -238,6 +270,161 @@ def last_green(dialect: str, evidence_dir: Path) -> dict[str, Any] | None:
         return None
 
 
+# The evidence subtree is small by design: two packs per dialect (~30 KB each)
+# plus whatever `--repair-store` pins. 8 MiB is roughly two orders of magnitude
+# of headroom over today's 148 KB and still two orders BELOW a meshbench
+# artifact, so it catches the failure mode (a large artifact landing in the
+# committed tree) without tripping on ordinary growth.
+_COMMIT_MAX_BYTES = 8 * 1024 * 1024
+
+
+class AutoCommitRefused(RuntimeError):
+    """The commit was asked for and could not be done. Never downgraded to a skip."""
+
+
+def _git(*argv: str, repo_root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *argv], cwd=repo_root, capture_output=True, text=True, check=False
+    )
+
+
+def should_auto_commit(
+    results: list[dict[str, Any]], drift_events: list[dict[str, Any]]
+) -> tuple[bool, str]:
+    """Decide whether this sweep's evidence may be auto-committed, and say why.
+
+    Split out as a pure function because the rule it encodes — failures never
+    auto-commit — is the one thing here that must be testable without a git
+    repository, a live source, or a timer.
+
+    A refusal always carries its reason: "I did not commit" and "there was
+    nothing to commit" are different answers, and only the second is a no-op.
+    """
+    if drift_events:
+        return False, (
+            f"{len(drift_events)} unresolved recipe drift event(s) — the batteries may be "
+            f"green but a provider has already changed, so this is not a green sweep"
+        )
+    failed = [r for r in results if r["verdict"] != "PASS"]
+    if failed:
+        listing = ", ".join(f"{r['target']}/{r['table']}={r['verdict']}" for r in failed)
+        return False, (
+            f"{len(failed)} of {len(results)} run(s) not PASS ({listing}) — a failing pack "
+            f"belongs beside its repair brief for a human to read, never auto-filed into history"
+        )
+    if not results:
+        return False, "the sweep produced no results at all"
+    return True, f"{len(results)}/{len(results)} PASS"
+
+
+def commit_message(stamp: str, results: list[dict[str, Any]], scope: str | None) -> str:
+    """Build the commit message. Subject is the fixed pattern; body carries the findings.
+
+    `git log` is where a future reader learns what the factory was doing, so the
+    body names every target/table that was green and the ground truth it was
+    gated against, rather than leaving the subject line to stand alone.
+    """
+    total = len(results)
+    subject = f"evidence: sweep {stamp}, {total}/{total} PASS"
+    lines = [subject, ""]
+    if scope:
+        lines.append(f"Scoped to a single target (--target {scope}).")
+        lines.append("")
+    lines.append("Green target/table runs, auto-committed by the conformance sweep:")
+    for result in results:
+        lines.append(
+            f"  - {result['target']}/{result['table']} ({result['dialect']}): {result['verdict']}"
+        )
+    lines.append("")
+    lines.append(
+        "Packs record the commit that was HEAD when the battery ran, so they name "
+        "this commit's parent. A file cannot contain its own hash."
+    )
+    return "\n".join(lines)
+
+
+def auto_commit_green(
+    evidence_dir: Path, message: str, repo_root: Path = REPO_ROOT
+) -> str | None:
+    """Commit the evidence subtree. Returns the new commit sha, or None if unchanged.
+
+    Raises `AutoCommitRefused` for anything the caller asked for and could not
+    get. The caller turns that into a red sweep: a pack that failed to become a
+    committed artifact is exactly the artifact-before-handoff failure the flag
+    exists to prevent, and swallowing it would leave the timer looking healthy
+    while the record it maintains quietly stopped being maintained.
+    """
+    evidence_dir = evidence_dir.resolve()
+    repo_root = repo_root.resolve()
+
+    # Fence 2: in-repo only. `relative_to` is the check — an evidence dir under
+    # a pytest `tmp_path` lands here only if someone passed --auto-commit with
+    # it, which is a misconfiguration worth naming rather than ignoring.
+    try:
+        pathspec = evidence_dir.relative_to(repo_root)
+    except ValueError:
+        raise AutoCommitRefused(
+            f"--auto-commit needs an --evidence-dir inside the checkout, but "
+            f"{evidence_dir} is outside {repo_root}. Either drop --auto-commit or point "
+            f"--evidence-dir at the repo's own evidence directory."
+        ) from None
+
+    inside = _git("rev-parse", "--is-inside-work-tree", repo_root=repo_root)
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        raise AutoCommitRefused(
+            f"--auto-commit was requested but {repo_root} is not a git work tree "
+            f"(git said: {inside.stderr.strip() or inside.stdout.strip() or 'nothing'})."
+        )
+
+    # `-uall` is load-bearing for the size fence below, not a preference. Plain
+    # `--porcelain` COLLAPSES a fully-untracked directory to a single `?? dir/`
+    # entry, which is not a file, so the payload measured 0 and a 150 MB
+    # artifact under a brand-new evidence dir sailed straight past the cap.
+    # Caught by the fence's own test. `-uall` expands to individual files.
+    status = _git("status", "--porcelain", "-uall", "--", str(pathspec), repo_root=repo_root)
+    if status.returncode != 0:
+        raise AutoCommitRefused(f"git status failed over {pathspec}: {status.stderr.strip()}")
+    if not status.stdout.strip():
+        return None
+
+    # Fence 3: size. Measured on the working-tree files git reports as changed
+    # or untracked, before anything is staged.
+    payload = 0
+    for line in status.stdout.splitlines():
+        # Porcelain v1: two status chars, a space, then the path. Renames carry
+        # `old -> new`; the post-rename path is the one with bytes on disk.
+        raw = line[3:].split(" -> ")[-1].strip().strip('"')
+        candidate = repo_root / raw
+        if candidate.is_file():
+            payload += candidate.stat().st_size
+    if payload > _COMMIT_MAX_BYTES:
+        raise AutoCommitRefused(
+            f"refusing to auto-commit {payload} bytes under {pathspec} (cap "
+            f"{_COMMIT_MAX_BYTES}). The evidence subtree is meant to hold packs and small "
+            f"pinned artifacts; something large landed there. Commit it by hand after "
+            f"deciding it belongs in history, or store it outside the repo."
+        )
+
+    # Fence 1: pathspec-limited, both halves. `git add` is needed because a new
+    # date-stamped pack is UNTRACKED and a pathspec-limited commit alone would
+    # not pick it up; `git commit -- <pathspec>` then takes the working-tree
+    # content of exactly those paths and leaves any unrelated staged file of
+    # Kos's alone, staged and uncommitted, rather than silently absorbing it.
+    added = _git("add", "--", str(pathspec), repo_root=repo_root)
+    if added.returncode != 0:
+        raise AutoCommitRefused(f"git add failed over {pathspec}: {added.stderr.strip()}")
+
+    committed = _git("commit", "-m", message, "--", str(pathspec), repo_root=repo_root)
+    if committed.returncode != 0:
+        raise AutoCommitRefused(
+            f"git commit failed over {pathspec}: "
+            f"{committed.stderr.strip() or committed.stdout.strip()}"
+        )
+
+    head = _git("rev-parse", "HEAD", repo_root=repo_root)
+    return head.stdout.strip() if head.returncode == 0 else None
+
+
 def collect_drift_events() -> list[dict[str, Any]]:
     """Recipe-lane repair events accumulated since anyone last looked.
 
@@ -271,6 +458,14 @@ def main(argv: list[str] | None = None) -> int:
         help="pass --repair-store to each battery run (see factory.conformance)",
     )
     parser.add_argument("--date", default=None)
+    parser.add_argument(
+        "--auto-commit", action="store_true",
+        help=(
+            "commit the evidence subtree when the sweep is fully green (never on failure). "
+            "OFF by default so a hand-run sweep does not create surprise commits; the "
+            "systemd unit passes it, because the timer IS the evidence cadence."
+        ),
+    )
     parser.add_argument(
         "--per-target-timeout", type=int, default=1800,
         help=(
@@ -325,6 +520,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n  REPAIR BRIEF WRITTEN: {brief}")
 
     failed = [r for r in results if r["verdict"] != "PASS"]
+
+    # Auto-commit runs BEFORE the verdict is printed and can itself turn the
+    # sweep red. A pack that was generated but never became a committed file
+    # has not, by this project's own doctrine, been produced at all.
+    commit_refused: str | None = None
+    if args.auto_commit:
+        allowed, reason = should_auto_commit(results, drift_events)
+        if not allowed:
+            print(f"\n[sweep] auto-commit SKIPPED — {reason}")
+        else:
+            stamp = args.date or datetime.now().strftime("%Y%m%d")
+            try:
+                sha = auto_commit_green(
+                    evidence_dir, commit_message(stamp, results, args.target)
+                )
+            except AutoCommitRefused as exc:
+                commit_refused = str(exc)
+                print(f"\n[sweep] auto-commit REFUSED — {exc}", file=sys.stderr)
+            else:
+                if sha is None:
+                    print("\n[sweep] auto-commit: evidence unchanged, nothing to commit")
+                else:
+                    print(f"\n[sweep] auto-commit: {sha[:12]} evidence: sweep {stamp}, "
+                          f"{len(results)}/{len(results)} PASS")
+
     # Accumulated drift events fail the sweep even when every battery is green.
     # They are evidence that a provider already changed; a green verdict beside
     # an unread repair log is the shape of a problem going unnoticed.
@@ -332,7 +552,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n[sweep] FAIL — {len(drift_events)} unresolved recipe drift event(s)")
     if failed:
         print(f"\n[sweep] FAIL — {len(failed)} of {len(results)} target/table runs failed")
-    if failed or drift_events:
+    if commit_refused:
+        print("\n[sweep] FAIL — every battery was green but the evidence could not be "
+              "committed, so this sweep produced no durable record")
+    if failed or drift_events or commit_refused:
         return 1
     print(f"\n[sweep] PASS — {len(results)} target/table run(s) green")
     return 0

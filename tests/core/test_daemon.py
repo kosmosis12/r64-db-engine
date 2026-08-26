@@ -18,6 +18,7 @@ from r64_db_engine.core import daemon as daemon_mod
 from r64_db_engine.core import ramdb_writer as rw
 from r64_db_engine.core.config import Config
 from r64_db_engine.core.daemon import Daemon
+from r64_db_engine.core.descriptor import AuthMode, DriverMetadata
 from r64_db_engine.core.driver import (
     ColumnMetadata,
     Driver,
@@ -41,6 +42,23 @@ class StubDriver(Driver):
     @classmethod
     def dialect_name(cls) -> str:
         return "stub"
+
+    @classmethod
+    def descriptor(cls) -> DriverMetadata:
+        # Deliberately minimal, and that is the point being demonstrated: the
+        # base absorbs the common case, so a driver with nothing unusual to say
+        # declares its name, its auth, its keys, its profile and its prose, and
+        # inherits every capability default. Superset's Principle 4 — only
+        # three of its ~fifty specs override column types.
+        return DriverMetadata(
+            dialect="stub",
+            engine_name="Stub",
+            auth_mode=AuthMode.NONE,
+            required_env_keys=(),
+            config_profile="stub",
+            doc_summary="In-memory test double. Returns scripted PullResults.",
+            capabilities=cls.default_capabilities,
+        )
 
     async def connect(self, config: dict[str, Any]) -> None:
         self.connected = True

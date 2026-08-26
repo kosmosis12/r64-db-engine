@@ -23,9 +23,17 @@ Environment=PYTHONNOUSERSITE=1
 # The venv interpreter explicitly. The sweep re-execs itself under it if
 # invoked otherwise, but naming it here means the unit does not depend on that
 # fallback behaving.
+# --auto-commit: a green sweep commits its own evidence subtree, pathspec-limited
+# to factory/evidence/ and size-fenced. This unit is the evidence CADENCE, so it
+# is the one caller that should be filing packs into history unattended; a
+# hand-run sweep leaves the flag off and creates no surprise commits. A red sweep
+# never commits — a failing pack belongs beside its repair brief, read by a
+# human, not auto-filed where it reads as a record of work rather than an alarm.
+# The commit is local only. Nothing here pushes.
 ExecStart=/home/kos/builds/r64-db-engine/.venv/bin/python \
     /home/kos/builds/r64-db-engine/factory/bin/factory-conformance-sweep \
     --serve-gate \
+    --auto-commit \
     --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence \
     --brief-dir /home/kos/builds/r64-db-engine
 

@@ -1,8 +1,8 @@
 # EVIDENCE — rest / open_meteo_berlin_hourly
 
-**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-17T15:54:06Z.
+**VERDICT: PASS** — 9 passed, 0 failed, 1 skipped. Generated 2026-08-23T11:30:39Z.
 
-> Ratifies `83391564824f` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
+> Ratifies `e6f6e585131e` from a clean tree: the code that ran is the code at that commit, and every input below is pinned by sha256.
 
 > This pack is the review artifact (Law 2). Every comparison below records BOTH sides, passing ones included, so that a reviewer can ratify the driver from this file without reading the diff.
 
@@ -205,7 +205,7 @@ counter deltas from the server's own get_flight_info app_metadata
   },
   "sql": "SELECT count(*), min(time), max(time) FROM open_meteo_berlin_hourly",
   "addr": "127.0.0.1:8903",
-  "pid": 1352865,
+  "pid": 166374,
   "baseline": {
     "cache_hits": 0,
     "cache_misses": 0,
@@ -277,8 +277,8 @@ counter deltas from the server's own get_flight_info app_metadata
   ],
   "command": ".venv/bin/python -m factory.conformance --dialect rest --config /home/kos/builds/r64-db-engine/factory/targets/rest-openmeteo.yaml --ground-truth /home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-openmeteo.json --table open_meteo_berlin_hourly --evidence-dir /home/kos/builds/r64-db-engine/factory/evidence --work-dir /tmp/r64-factory-sweep/rest-openmeteo --serve-gate",
   "git": {
-    "branch": "main",
-    "commit": "83391564824fd2ab5de487755fa355a9fe238f34",
+    "branch": "chore/park-snowflake-and-sweep-autocommit",
+    "commit": "e6f6e585131e77bcb16eeb569f9bd050eb0d4298",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"
   },
@@ -335,7 +335,7 @@ counter deltas from the server's own get_flight_info app_metadata
 ```json
 {
   "python": "3.13.12",
-  "platform": "Linux-7.1.5-1-cachyos-x86_64-with-glibc2.44",
+  "platform": "Linux-7.1.8-1-cachyos-x86_64-with-glibc2.44",
   "packages": {
     "pyarrow": "25.0.0",
     "pandas": "3.0.5",
@@ -346,8 +346,8 @@ counter deltas from the server's own get_flight_info app_metadata
     "httpx": "0.28.1"
   },
   "git": {
-    "commit": "83391564824fd2ab5de487755fa355a9fe238f34",
-    "branch": "main",
+    "commit": "e6f6e585131e77bcb16eeb569f9bd050eb0d4298",
+    "branch": "chore/park-snowflake-and-sweep-autocommit",
     "dirty": false,
     "dirty_exemption": "factory/evidence/"
   }

@@ -10,14 +10,27 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
-import psycopg
-from psycopg import sql
-from psycopg.rows import dict_row
+
+# psycopg is NOT imported at module scope, and the reason is a factory
+# invariant rather than a style preference. `core.config` validates a config by
+# asking the driver registry which dialects exist, and the roster generator
+# sweeps every registered driver's `descriptor()`. Both of those are pure
+# name-level questions, but with the client imported up here both dragged the
+# whole of psycopg into the process to answer them — the D-2/a lazy-enumeration
+# defect. The import now lives in the three functions that actually talk to
+# Postgres, so importing this module costs nothing but reading it.
+#
+# The annotations below are safe because `from __future__ import annotations`
+# makes them strings; only real call sites need the local import.
+if TYPE_CHECKING:
+    import psycopg
+    from psycopg import sql
 
 from r64_db_engine.core.coercion import apply_coercion
+from r64_db_engine.core.descriptor import DriverMetadata
 from r64_db_engine.core.driver import (
     ColumnMetadata,
     Driver,
@@ -75,6 +88,14 @@ class PostgresDriver(Driver):
     def dialect_name(cls) -> str:
         return "postgres"
 
+    @classmethod
+    def descriptor(cls) -> DriverMetadata:
+        # Imported from a sibling module that pulls in no client library, so a
+        # roster sweep over every registered driver stays free of heavy deps.
+        from r64_db_engine.drivers.postgres.descriptor import POSTGRES
+
+        return POSTGRES
+
     async def connect(self, config: dict[str, Any]) -> None:
         host = config.get("host") or "localhost"
         port = int(config.get("port") or _DEFAULT_PORT)
@@ -86,9 +107,7 @@ class PostgresDriver(Driver):
         sslmode = config.get("sslmode", "prefer")
         connect_timeout = int(config.get("connect_timeout") or _DEFAULT_CONNECT_TIMEOUT)
         app_name = config.get("application_name") or _DEFAULT_APP_NAME
-        statement_timeout = int(
-            config.get("statement_timeout") or _DEFAULT_STATEMENT_TIMEOUT_S
-        )
+        statement_timeout = int(config.get("statement_timeout") or _DEFAULT_STATEMENT_TIMEOUT_S)
         # `None` is meaningful here (never prepare) and must survive, so this
         # reads the key rather than using `or`, which would fold None into the
         # default and silently re-enable preparing behind a pooler.
@@ -214,9 +233,7 @@ class PostgresDriver(Driver):
                     cols = await _fetch_columns(conn, schema, name)
                     match = next((c for c in cols if c.name == incr_key), None)
                     if not match:
-                        errors.append(
-                            f"incremental_key '{incr_key}' not in {schema}.{name}"
-                        )
+                        errors.append(f"incremental_key '{incr_key}' not in {schema}.{name}")
                     elif match.source_type not in {
                         "timestamp",
                         "timestamp without time zone",
@@ -244,6 +261,8 @@ class PostgresDriver(Driver):
         max_rows = table_config.get("max_rows")
         ascii_sanitize = table_config.get("ascii_sanitize", True)
 
+        from psycopg.rows import dict_row
+
         started = time.monotonic()
         async with await self._open() as conn, conn.cursor(row_factory=dict_row) as cur:
             tie_breaker = None
@@ -268,9 +287,7 @@ class PostgresDriver(Driver):
                 max_rows=max_rows,
                 tie_breaker=tie_breaker,
             )
-            await cur.execute(
-                f"SET LOCAL statement_timeout = {self._statement_timeout_ms}"
-            )
+            await cur.execute(f"SET LOCAL statement_timeout = {self._statement_timeout_ms}")
             await cur.execute(query, params)
             rows = await cur.fetchall()
             # column metadata for dtype inference
@@ -279,9 +296,7 @@ class PostgresDriver(Driver):
         df = _rows_to_dataframe(rows, col_types)
         df = apply_coercion(
             df,
-            column_dtypes={
-                col: pg_coercion.pandas_dtype_for(t) for col, t in col_types.items()
-            },
+            column_dtypes={col: pg_coercion.pandas_dtype_for(t) for col, t in col_types.items()},
             ascii_sanitize=ascii_sanitize,
         )
 
@@ -302,6 +317,8 @@ class PostgresDriver(Driver):
     # ---- internals --------------------------------------------------
 
     async def _open(self) -> psycopg.AsyncConnection:
+        import psycopg
+
         if not self._conninfo:
             raise RuntimeError("PostgresDriver.connect() not called")
         # `prepare_threshold` is a psycopg-level kwarg, not a libpq connection
@@ -353,9 +370,7 @@ async def _fetch_columns(
     return cols
 
 
-async def _estimate_rowcount(
-    conn: psycopg.AsyncConnection, schema: str, name: str
-) -> int | None:
+async def _estimate_rowcount(conn: psycopg.AsyncConnection, schema: str, name: str) -> int | None:
     sql = """
         SELECT reltuples::bigint
         FROM pg_class c
@@ -392,9 +407,7 @@ async def _fetch_single_primary_key(
     return str(rows[0][0])
 
 
-async def _fetch_inline_column_types(
-    conn: psycopg.AsyncConnection, source: str
-) -> dict[str, str]:
+async def _fetch_inline_column_types(conn: psycopg.AsyncConnection, source: str) -> dict[str, str]:
     """Return {column_name: postgres_type_name} for the result set."""
     if not _is_inline_sql(source):
         schema, name = _split_qualified(source)
@@ -413,9 +426,7 @@ async def _fetch_inline_column_types(
         type_oids = list({oid for _, oid in oids})
         if not type_oids:
             return {n: "text" for n, _ in oids}
-        await cur.execute(
-            "SELECT oid, typname FROM pg_type WHERE oid = ANY(%s)", (type_oids,)
-        )
+        await cur.execute("SELECT oid, typname FROM pg_type WHERE oid = ANY(%s)", (type_oids,))
         oid_to_name: dict[int, str] = dict(await cur.fetchall())
 
     result: dict[str, str] = {}
@@ -424,9 +435,7 @@ async def _fetch_inline_column_types(
     return result
 
 
-def _rows_to_dataframe(
-    rows: list[dict[str, Any]], col_types: dict[str, str]
-) -> pd.DataFrame:
+def _rows_to_dataframe(rows: list[dict[str, Any]], col_types: dict[str, str]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame({c: pd.Series([], dtype="object") for c in col_types})
 
@@ -438,9 +447,7 @@ def _rows_to_dataframe(
         for col, val in row.items():
             stype = col_types.get(col, "text")
             new_row[col] = (
-                pg_coercion.coerce_value(val, stype)
-                if _needs_value_prepass(stype, val)
-                else val
+                pg_coercion.coerce_value(val, stype) if _needs_value_prepass(stype, val) else val
             )
         pre.append(new_row)
     return pd.DataFrame(pre)
@@ -465,6 +472,8 @@ def _build_query(
     tie_breaker: str | None = None,
 ) -> tuple[sql.Composed, list[Any]]:
     """Compose the SELECT for a pull, plus parameters."""
+    from psycopg import sql
+
     base = (
         sql.SQL("({}) sub").format(sql.SQL(source))
         if _is_inline_sql(source)
@@ -502,6 +511,8 @@ def _build_query(
 
 
 def _quote_ident(qualified: str) -> sql.Composed:
+    from psycopg import sql
+
     parts = qualified.split(".")
     return sql.SQL(".").join(sql.Identifier(p) for p in parts)
 

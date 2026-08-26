@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from r64_db_engine.core.descriptor import DriverMetadata
 from r64_db_engine.core.driver import (
     ColumnMetadata,
     Driver,
@@ -67,6 +68,14 @@ class RestDriver(Driver):
     @classmethod
     def dialect_name(cls) -> str:
         return "rest"
+
+    @classmethod
+    def descriptor(cls) -> DriverMetadata:
+        # Imported from a sibling module that pulls in no client library, so a
+        # roster sweep over every registered driver stays free of heavy deps.
+        from r64_db_engine.drivers.rest.descriptor import REST
+
+        return REST
 
     async def connect(self, config: dict[str, Any]) -> None:
         """Load and validate the book. No network call is made here.
@@ -220,8 +229,7 @@ class RestDriver(Driver):
         if source_type == "string":
             return str(value)
         raise ValueError(
-            f"unknown declared output type {source_type!r} "
-            f"(known: {sorted(_PANDAS_DTYPE)})"
+            f"unknown declared output type {source_type!r} (known: {sorted(_PANDAS_DTYPE)})"
         )
 
 

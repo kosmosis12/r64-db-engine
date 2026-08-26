@@ -147,9 +147,60 @@ class Driver(ABC):
         this internally."""
 ```
 
-**Driver registration:** drivers register themselves via `drivers/__init__.py` exposing a `DRIVERS: dict[str, type[Driver]]` map. CLI resolves `dialect: postgres` in config to `DRIVERS["postgres"]` at daemon startup.
+**Driver registration:** drivers register themselves via `drivers/__init__.py`, which exposes `DRIVERS: MutableMapping[str, type[Driver]]`. The registry is **lazy**: membership, iteration and length are answered from a pure-data manifest, and a driver module is imported only when a value is actually looked up (`resolve()`, or `DRIVERS[key]`). CLI resolves `dialect: postgres` to `DRIVERS["postgres"]` at daemon startup.
+
+Laziness is a contract, not an optimization. Two paths ask purely name-level questions — `core.config` validating a dialect string, and the descriptor sweep below — and neither may import a database client to answer them. Gate MF-DESC check 2 asserts this against `sys.modules` in a clean interpreter.
 
 **What this enforces:** the daemon, scheduler, ramdb writer, state store, and health endpoint never import from `drivers/postgres/`. Adding a Redshift driver requires zero changes to `core/`. This is the discipline that makes `r64-db-engine` an engine instead of a Postgres script with delusions.
+
+> **Firewall check.** The historical grep `grep -rn "import.*drivers" src/r64_db_engine/core/` **does not actually enforce this** — the regex needs "import" before "drivers" on the line, so it misses `from r64_db_engine.drivers.postgres.driver import X` entirely and prints HOLDS. The enforcing check is the AST walk in `tests/factory/test_gate_mf_desc.py` (check 1), which additionally requires the sanctioned registry import to be function-scoped. Do not treat the grep as the gate.
+
+---
+
+### 3.2 Connector descriptor — the declarative identity
+
+**Read this alongside SPEC before any connector decision.** `core/descriptor.py` defines `DriverMetadata`, and every driver returns one from the `Driver.descriptor()` classmethod. It is the single source for a connector's identity, and it is canonical contract surface: a connector fact that is not in the descriptor is not a fact the factory can render, document, or check.
+
+It exists because a driver's identity used to be written in four hand-maintained places that drifted against each other — the registry, the cockpit's chip list, the per-source conformance badges, and per-source prose in SKILL.md. Four copies of one fact is three opportunities for a lie. The shape follows Apache Superset's `db_engine_specs` `metadata` block, which feeds its registry, UI, capability matrix and all of its doc pages from one declaration.
+
+```python
+@dataclass(frozen=True)
+class DriverMetadata:
+    dialect: str                        # the registry key — the ONE identity, not a URI
+    engine_name: str                    # human label for chip and doc heading
+    auth_mode: AuthMode                 # none | password | keypair | iam (declaration only)
+    required_env_keys: tuple[str, ...]  # NAMES ONLY, validated ^[A-Z][A-Z0-9_]*$ (Law 3)
+    config_profile: str                 # which sources/*.yaml shape this driver expects
+    doc_summary: str                    # prose -> the generated doc page
+    capabilities: Capabilities          # ingestion-shape flags the pull path branches on
+    type_mappings: tuple[TypeMap, ...]  # source type -> arrow type + representability verdict
+    custom_errors: tuple[ErrorMap, ...] # raw-exception regex -> reason code + value-free message
+    extras_package: str | None          # pip extra, or None when deps are in the base set
+    notes: tuple[str, ...]              # declarations that did not fit a capability flag
+```
+
+Rules the ABC and the generator enforce:
+
+- **Law 1.** A descriptor is static data, answerable from the source tree. Resolving one opens no connection, reads no environment value, consults no network.
+- **Law 3 at the authoring boundary.** `required_env_keys` are NAMES. `DriverMetadata.__post_init__` refuses a value-shaped entry, because this tuple is copied verbatim into artifacts that are committed and served — by the time a value reached the roster JSON the leak would already have happened.
+- **Value-free errors.** `ErrorMap.operator_message` is refused if it carries any interpolation placeholder. `pattern` matches the raw driver exception (provider bytes stay on that side of the line); `matches()` returns a bool and never hands back what it matched.
+- **A non-NATIVE `TypeMap` must carry a note.** An undocumented degradation is exactly the tribal knowledge the descriptor exists to convert into data.
+- **Lazy.** Each driver's descriptor lives in `drivers/<dialect>/descriptor.py`, which imports no client library, so a full sweep costs nothing.
+- **A descriptor is NOT a verdict.** It declares shape. Whether a driver is conformance-green is a separate, checksum-backed fact the oracle owns, joined in downstream from the evidence packs. There is no code path by which declaring well produces a green.
+
+**Generated artifacts.** `factory/generate_descriptor_artifacts.py` emits all of the following from the descriptors, deterministically (byte-identical across runs; no wall clock reaches an artifact). Regenerate with `python -m factory.generate_descriptor_artifacts`; `--check` fails on staleness without writing.
+
+| artifact | consumer | replaces |
+|---|---|---|
+| `factory/artifacts/connector-roster.json` | meshroad cockpit chips | the hardcoded `gui/sources.py ROSTER` |
+| `factory/artifacts/factory-status.json` | FORGE-VIEW cards | hand-assembled per-source facts (FV-1) |
+| `docs/connectors/*.md` | operators | hand-written per-source SKILL prose |
+
+These are **projections**: inert data. The cockpit reads them and never imports the driver registry or touches the live control plane (FV-1). Emitting stays in r64-db-engine; consuming stays in meshroad.
+
+**Three conformance states, never two.** `passing` (a last-green evidence pack, no open repair brief), `drifted` (a last-green pack with a repair brief open against it — the green shown is stale), and `pending` — *"declared, pending conformance"*, for a driver that declares a shape nothing has yet checked against a real source. A pending driver is never rendered green and never rendered blank (FV-2 could-not-observe discipline).
+
+**Four Superset mechanisms are explicitly rejected**, with rationale in the `core/descriptor.py` module docstring so the next reader of Superset does not add them back: URI-as-identity (`supports_url()` — the recipe lane has no URI, and the dialect key is more general), a capability *score* (our checksum-backed binary verdict is stronger than a feature count), `_time_grain_expressions` (grain lives downstream in DataFusion/meshbox, not the connector), and OAuth2 redirect / SSH tunnel machinery (env-file plus the tailnet cover it; `AuthMode` declares a mode but builds no flow).
 
 ---
 

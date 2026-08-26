@@ -173,8 +173,17 @@ def _parse_pagination(doc: Any, where: str) -> Pagination:
         raise RecipeBookError(f"{where}.pagination must be a mapping")
     _reject_unknown(
         doc,
-        {"type", "cursor_path", "cursor_param", "page_param", "size_param",
-         "page_size", "rel", "max_pages", "allowed_next_paths"},
+        {
+            "type",
+            "cursor_path",
+            "cursor_param",
+            "page_param",
+            "size_param",
+            "page_size",
+            "rel",
+            "max_pages",
+            "allowed_next_paths",
+        },
         f"{where}.pagination",
     )
     ptype = doc.get("type", "none")
@@ -243,8 +252,17 @@ def _parse_recipe(doc: dict[str, Any], index: int) -> Recipe:
         raise RecipeBookError(f"{where} must be a mapping")
     _reject_unknown(
         doc,
-        {"name", "method", "url", "auth", "params_schema", "response_schema",
-         "pagination", "extract", "static_params"},
+        {
+            "name",
+            "method",
+            "url",
+            "auth",
+            "params_schema",
+            "response_schema",
+            "pagination",
+            "extract",
+            "static_params",
+        },
         where,
     )
     name = _require(doc, "name", where)
@@ -252,7 +270,9 @@ def _parse_recipe(doc: dict[str, Any], index: int) -> Recipe:
 
     method = str(_require(doc, "method", where)).upper()
     if method not in HTTP_METHODS:
-        raise RecipeBookError(f"{where}.method must be one of {sorted(HTTP_METHODS)}, got {method!r}")
+        raise RecipeBookError(
+            f"{where}.method must be one of {sorted(HTTP_METHODS)}, got {method!r}"
+        )
 
     url = str(_require(doc, "url", where))
     # Validated at LOAD, so a book that names a plaintext or malformed endpoint
@@ -351,8 +371,7 @@ def parse_book(doc: dict[str, Any], path: Path | None = None) -> RecipeBook:
         name = _require(step, "recipe", where)
         if name not in by_name:
             raise RecipeBookError(
-                f"{where} names recipe {name!r}, which is not defined "
-                f"(defined: {sorted(by_name)})"
+                f"{where} names recipe {name!r}, which is not defined (defined: {sorted(by_name)})"
             )
         bind = dict(step.get("bind") or {})
         params = dict(step.get("params") or {})

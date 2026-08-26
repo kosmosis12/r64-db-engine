@@ -11,9 +11,11 @@ against the live container, plus the recipe lane against the live API.
 from __future__ import annotations
 
 import configparser
+import functools
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -62,6 +64,59 @@ DEPLOYED_PYTHON = DEPLOYMENT_ROOT / ".venv" / "bin" / "python"
 ON_DEPLOYMENT_HOST = DEPLOYMENT_ROOT == conformance.REPO_ROOT
 
 
+#: A unit systemd-analyze has nothing to complain about. Deliberately minimal:
+#: everything it declares is either mandatory or trivially satisfiable, so any
+#: complaint the verifier raises against it is about the SUBSTRATE and not about
+#: the unit — which is the whole point of probing with it.
+_PROBE_UNIT = """[Unit]
+Description=r64 substrate probe
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+"""
+
+
+@functools.lru_cache(maxsize=1)
+def _systemd_analyze_unusable() -> str | None:
+    """Why `systemd-analyze verify` cannot render a verdict here, or None.
+
+    `shutil.which` proves the BINARY is on PATH. It does not prove the binary
+    can do its job: `verify` reads the system's unit search path, resolves
+    ExecStart against the real filesystem, and in a container or an execution
+    wrapper without a reachable systemd it emits complaints that have nothing
+    to do with the units under test. The assertions below then read as a
+    REGRESSION in units that are in fact fine — a check that could not observe
+    reporting absence, which is exactly what the COULD-NOT-OBSERVE doctrine
+    forbids.
+
+    So the probe runs the SAME operation on a unit that is known good. Anything
+    other than a silent success means this context cannot verify units, and the
+    honest record is a skip. Detecting rather than assuming also means this
+    needs no allowlist of sandbox names: it asks the tool.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = Path(tmp) / "r64-substrate-probe.service"
+        probe.write_text(_PROBE_UNIT)
+        try:
+            result = subprocess.run(
+                ["systemd-analyze", "verify", f"./{probe.name}"],
+                cwd=tmp, capture_output=True, text=True, check=False, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"systemd-analyze could not be executed here ({type(exc).__name__}: {exc})"
+    if result.returncode != 0 or result.stderr.strip():
+        detail = result.stderr.strip().splitlines()
+        return (
+            f"systemd-analyze verify cannot reach systemd in this context "
+            f"(rc={result.returncode} on a known-good probe unit"
+            + (f"; first complaint: {detail[0]}" if detail else "")
+            + "). The units are not observable here, so this is recorded as a skip "
+            "rather than as a failure of units this context never actually checked."
+        )
+    return None
+
+
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze not present")
 @pytest.mark.skipif(
     not DEPLOYED_PYTHON.exists(),
@@ -72,6 +127,9 @@ ON_DEPLOYMENT_HOST = DEPLOYMENT_ROOT == conformance.REPO_ROOT
 )
 @pytest.mark.parametrize("unit", ["r64-factory-conformance.service", "r64-factory-conformance.timer"])
 def test_units_pass_systemd_analyze_verify(unit: str) -> None:
+    unusable = _systemd_analyze_unusable()
+    if unusable is not None:
+        pytest.skip(unusable)
     result = subprocess.run(
         ["systemd-analyze", "verify", f"./{unit}"],
         cwd=SYSTEMD_DIR, capture_output=True, text=True, check=False,
@@ -289,3 +347,188 @@ def test_an_unreachable_source_is_a_red_sweep_not_a_skip(tmp_path: Path) -> None
     # And it must be reported as an error, with a brief, rather than swallowed.
     assert "ERROR" in result.stdout
     assert (tmp_path / "briefs" / "REPAIR-BRIEF-clickhouse-19700101.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Auto-commit: the evidence cadence
+# ---------------------------------------------------------------------------
+#
+# These are fast and unconditional. The rule they protect — a failing sweep
+# never files its pack into history — is the one thing about auto-commit that
+# must hold without a live source, so it is tested without one.
+
+
+def _sweep_module():
+    """Import the extensionless sweep script as a module.
+
+    The sweep has no `.py` suffix because it is an executable an operator runs
+    by name, so a normal import will not find it.
+    """
+    import importlib.machinery
+    import importlib.util
+
+    spec = importlib.util.spec_from_loader(
+        "factory_conformance_sweep",
+        importlib.machinery.SourceFileLoader("factory_conformance_sweep", str(SWEEP)),
+    )
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
+
+
+def _green(target: str = "clickhouse-meshbench", table: str = "perf_1m") -> dict:
+    return {"target": target, "table": table, "dialect": "clickhouse", "verdict": "PASS"}
+
+
+def _repo(tmp_path: Path) -> Path:
+    """A throwaway git repo with an evidence subtree, committed once."""
+    repo = tmp_path / "repo"
+    (repo / "factory" / "evidence").mkdir(parents=True)
+    (repo / "README.md").write_text("seed\n")
+    for argv in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "test@example.invalid"],
+        ["config", "user.name", "Test"],
+        ["add", "-A"],
+        ["commit", "-qm", "seed"],
+    ):
+        subprocess.run(["git", *argv], cwd=repo, check=True, capture_output=True)
+    return repo
+
+
+def test_a_failing_run_is_never_auto_committed() -> None:
+    sweep = _sweep_module()
+    ok, reason = sweep.should_auto_commit([_green(), {**_green(), "verdict": "FAIL"}], [])
+    assert ok is False
+    # The refusal names what failed, so the skip is never implicit.
+    assert "not PASS" in reason and "FAIL" in reason
+
+
+def test_unresolved_drift_blocks_auto_commit_even_when_every_battery_is_green() -> None:
+    sweep = _sweep_module()
+    ok, reason = sweep.should_auto_commit([_green()], [{"recipe": "r", "reason": "schema"}])
+    assert ok is False
+    assert "drift" in reason
+
+
+def test_a_fully_green_sweep_is_allowed_to_commit() -> None:
+    sweep = _sweep_module()
+    ok, reason = sweep.should_auto_commit([_green(), _green("rest-openmeteo", "hourly")], [])
+    assert ok is True
+    assert reason == "2/2 PASS"
+
+
+def test_an_empty_result_set_is_not_a_green_sweep() -> None:
+    sweep = _sweep_module()
+    ok, _ = sweep.should_auto_commit([], [])
+    assert ok is False
+
+
+def test_the_commit_subject_matches_the_agreed_pattern() -> None:
+    sweep = _sweep_module()
+    message = sweep.commit_message("20260817", [_green(), _green("rest-openmeteo", "hourly")], None)
+    assert message.splitlines()[0] == "evidence: sweep 20260817, 2/2 PASS"
+    # The body carries the findings, so `git log` answers what was green.
+    assert "clickhouse-meshbench/perf_1m (clickhouse): PASS" in message
+
+
+def test_auto_commit_commits_the_evidence_subtree(tmp_path: Path) -> None:
+    sweep = _sweep_module()
+    repo = _repo(tmp_path)
+    evidence = repo / "factory" / "evidence"
+    (evidence / "EVIDENCE-clickhouse-20260817.json").write_text('{"verdict": "PASS"}')
+
+    sha = sweep.auto_commit_green(evidence, "evidence: sweep 20260817, 1/1 PASS", repo_root=repo)
+
+    assert sha is not None
+    log = subprocess.run(
+        ["git", "log", "-1", "--format=%H%n%s", "--name-only"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert sha in log
+    assert "evidence: sweep 20260817, 1/1 PASS" in log
+    assert "factory/evidence/EVIDENCE-clickhouse-20260817.json" in log
+
+
+def test_auto_commit_leaves_unrelated_working_tree_changes_alone(tmp_path: Path) -> None:
+    """The fence that matters most: this runs unattended, at 04:00, on a Sunday.
+
+    A `git commit -a` on a timer would absorb whatever Kos happened to be
+    editing. Both a dirty tracked file and an unrelated STAGED file must survive
+    the sweep's commit untouched.
+    """
+    sweep = _sweep_module()
+    repo = _repo(tmp_path)
+    evidence = repo / "factory" / "evidence"
+    (evidence / "EVIDENCE-rest-20260817.json").write_text('{"verdict": "PASS"}')
+
+    (repo / "README.md").write_text("a half-finished edit\n")
+    (repo / "staged.py").write_text("import os\n")
+    subprocess.run(["git", "add", "staged.py"], cwd=repo, check=True, capture_output=True)
+
+    sweep.auto_commit_green(evidence, "evidence: sweep 20260817, 1/1 PASS", repo_root=repo)
+
+    files = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert files == ["factory/evidence/EVIDENCE-rest-20260817.json"]
+
+    # The unrelated edit is still dirty and the unrelated staged file still staged.
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert " M README.md" in status
+    assert "A  staged.py" in status
+
+
+def test_auto_commit_is_a_no_op_when_the_evidence_is_unchanged(tmp_path: Path) -> None:
+    sweep = _sweep_module()
+    repo = _repo(tmp_path)
+    evidence = repo / "factory" / "evidence"
+    (evidence / "EVIDENCE-rest-20260817.json").write_text('{"verdict": "PASS"}')
+    sweep.auto_commit_green(evidence, "evidence: sweep 20260817, 1/1 PASS", repo_root=repo)
+
+    before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    # Nothing changed since; a second sweep must not create an empty commit.
+    assert sweep.auto_commit_green(evidence, "again", repo_root=repo) is None
+    after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    assert before == after
+
+
+def test_auto_commit_refuses_an_evidence_dir_outside_the_checkout(tmp_path: Path) -> None:
+    """Refused by name, not silently skipped — it is a misconfiguration."""
+    sweep = _sweep_module()
+    repo = _repo(tmp_path)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+
+    with pytest.raises(sweep.AutoCommitRefused) as exc:
+        sweep.auto_commit_green(outside, "evidence: sweep 20260817, 1/1 PASS", repo_root=repo)
+    assert "inside the checkout" in str(exc.value)
+
+
+def test_auto_commit_refuses_an_oversized_payload(tmp_path: Path) -> None:
+    """A meshbench-sized artifact must not land in history on a timer."""
+    sweep = _sweep_module()
+    repo = _repo(tmp_path)
+    evidence = repo / "factory" / "evidence"
+    (evidence / "huge.arrow").write_bytes(b"\0" * (sweep._COMMIT_MAX_BYTES + 1))
+
+    with pytest.raises(sweep.AutoCommitRefused) as exc:
+        sweep.auto_commit_green(evidence, "evidence: sweep 20260817, 1/1 PASS", repo_root=repo)
+    assert "refusing to auto-commit" in str(exc.value)
+    # And it refused BEFORE staging anything.
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    assert status.startswith("??")
+
+
+def test_the_service_passes_auto_commit_because_the_timer_is_the_cadence() -> None:
+    assert "--auto-commit" in _unit(SERVICE)["Service"]["ExecStart"]

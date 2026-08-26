@@ -10,7 +10,7 @@
   "dialect": "rest",
   "table": "open_meteo_berlin_hourly",
   "source": "open_meteo_berlin_hourly",
-  "generated_utc": "2026-08-17T15:34:34Z",
+  "generated_utc": "2026-08-17T15:54:06Z",
   "invocation": {
     "config": "/home/kos/builds/r64-db-engine/factory/targets/rest-openmeteo.yaml",
     "ground_truth": "/home/kos/builds/r64-db-engine/bench/GROUND-TRUTH-openmeteo.json",
@@ -22,8 +22,8 @@
   },
   "provenance": {
     "git": {
-      "commit": "fae9c815d3aa26bbff7e23c4b5734f3c4572ac0a",
-      "branch": "feat/meshforge-factory",
+      "commit": "83391564824fd2ab5de487755fa355a9fe238f34",
+      "branch": "main",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
     },
@@ -134,8 +134,8 @@
       "httpx": "0.28.1"
     },
     "git": {
-      "commit": "fae9c815d3aa26bbff7e23c4b5734f3c4572ac0a",
-      "branch": "feat/meshforge-factory",
+      "commit": "83391564824fd2ab5de487755fa355a9fe238f34",
+      "branch": "main",
       "dirty": false,
       "dirty_exemption": "factory/evidence/"
     }
@@ -642,7 +642,7 @@
         },
         "sql": "SELECT count(*), min(time), max(time) FROM open_meteo_berlin_hourly",
         "addr": "127.0.0.1:8903",
-        "pid": 1322530,
+        "pid": 1352865,
         "baseline": {
           "cache_hits": 0,
           "cache_misses": 0,
